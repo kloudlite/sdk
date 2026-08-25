@@ -1,7 +1,29 @@
-import { requireSession } from "@/lib/session";
-import { NotYet } from "@/components/app/not-yet";
+import { notFound, redirect } from "next/navigation";
+import { getSession } from "@/lib/session";
+import { apiToken } from "@/lib/api-token";
+import { listWorkspaces } from "@/lib/api";
+import { WorkspaceList } from "@/components/app/workspace-list";
 
-export default async function Page() {
-  await requireSession();
-  return <NotYet title="Workspaces">Workspaces are not available yet.</NotYet>;
+/** Same guard shape as the repos org page: identity here, access left to the api. */
+export default async function Page({ params }: { params: Promise<{ owner: string }> }) {
+  const { owner } = await params;
+  const session = await getSession();
+  if (!session) redirect("/login");
+  if (!session.user.username) redirect("/welcome");
+
+  const token = await apiToken();
+  if (!token) redirect("/login");
+
+  const list = await listWorkspaces(token);
+  if (!list.ok) {
+    if (list.kind === "unauthorized") redirect("/login?from=expired");
+    if (list.kind === "notFound") notFound();
+    throw new Error(list.message);
+  }
+
+  return (
+    <section>
+      <WorkspaceList owner={owner} workspaces={list.value} />
+    </section>
+  );
 }
