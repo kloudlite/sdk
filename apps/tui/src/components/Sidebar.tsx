@@ -19,9 +19,9 @@ function Heading({ children, count, width, flush }: { children: string; count?: 
       <text>
         <span fg={theme.muted} attributes={TextAttributes.BOLD}>{children}</span>
         {count !== undefined && (
-          <span fg={theme.border} attributes={TextAttributes.DIM}>{"  "}{String(count)}</span>
+          <span fg={theme.border}>{"  "}{String(count)}</span>
         )}
-        <span fg={theme.border} attributes={TextAttributes.DIM}>{` ${"─".repeat(Math.max(0, width - label.length - 3))}`}</span>
+        <span fg={theme.border}>{` ${"─".repeat(Math.max(0, width - label.length - 3))}`}</span>
       </text>
     </box>
   );
@@ -114,7 +114,7 @@ export function Sidebar({
         <box flexDirection="column" flexShrink={0}>
           <Heading count={count} width={width - 2} flush>Workspaces</Heading>
           {workspaces.length === 0 && (
-            <Row left={<span fg={theme.muted} attributes={TextAttributes.DIM}>none yet — a to create one</span>} />
+            <Row left={<span fg={theme.muted}>none yet — a to create one</span>} />
           )}
           {workspaces.map((w, i) => {
             const mine = w.owner === CURRENT_USER;
@@ -144,7 +144,6 @@ export function Sidebar({
                   right={
                     <span
                       fg={running[i] ? theme.accent : theme.muted}
-                      attributes={running[i] ? undefined : TextAttributes.DIM}
                     >
                       {tag}
                     </span>
@@ -179,7 +178,6 @@ export function Sidebar({
                 right={
                   <span
                     fg={running[i] ? theme.accent : theme.muted}
-                    attributes={running[i] ? undefined : TextAttributes.DIM}
                   >
                     {stateTag}
                   </span>
@@ -213,7 +211,7 @@ export function Sidebar({
               </span>
             }
             right={
-              <span attributes={TextAttributes.DIM}>
+              <span>
                 {svc.interceptedBy ? (
                   <span fg={theme.accent}>{"→ "}{svc.interceptedBy}{"  "}</span>
                 ) : ""}

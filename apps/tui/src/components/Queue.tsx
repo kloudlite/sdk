@@ -32,13 +32,13 @@ export function Queue({
           <span fg={theme.warning} attributes={TextAttributes.BOLD}>
             QUEUED
           </span>
-          <span fg={theme.border} attributes={TextAttributes.DIM}>
+          <span fg={theme.border}>
             {"  "}
             {String(messages.length)}
           </span>
         </text>
         {selected !== null && (
-          <text fg={theme.muted} attributes={TextAttributes.DIM}>
+          <text fg={theme.muted}>
             enter edit · d drop · esc done
           </text>
         )}
@@ -58,7 +58,7 @@ export function Queue({
           >
             <text>
               <span fg={on ? theme.accent : theme.border}>{on ? "› " : "  "}</span>
-              <span fg={theme.muted} attributes={TextAttributes.DIM}>
+              <span fg={theme.muted}>
                 {m.kind === "steer" ? "steer " : "after "}
               </span>
               <span fg={on ? theme.fg : theme.muted}>{clip(m.text, width - 12)}</span>

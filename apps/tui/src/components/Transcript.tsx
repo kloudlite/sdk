@@ -48,7 +48,7 @@ function collapse(text: string | undefined, open: boolean): { text: string; hidd
 function More({ hidden, open, onToggle }: { hidden: number; open: boolean; onToggle?: () => void }) {
   return (
     <box height={1} onMouseDown={onToggle}>
-      <text fg={theme.muted} attributes={TextAttributes.DIM}>
+      <text fg={theme.muted}>
         {open ? "… " : `… +${hidden} lines `}
         <span fg={theme.accent}>ctrl+o</span>
         {open ? " to collapse" : " to expand"}
@@ -152,7 +152,7 @@ function Row({
       const summary = entry.text.trim().split("\n")[0] ?? "";
       return (
         <box paddingLeft={3} height={1} overflow="hidden">
-          <text fg={theme.muted} attributes={TextAttributes.DIM | TextAttributes.ITALIC}>
+          <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
             {summary}
           </text>
         </box>
@@ -245,7 +245,7 @@ function Row({
     case "info":
       return (
         <box paddingLeft={3}>
-          <text fg={theme.muted} attributes={TextAttributes.DIM}>
+          <text fg={theme.muted}>
             {entry.text}
           </text>
         </box>

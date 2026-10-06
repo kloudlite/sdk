@@ -372,7 +372,7 @@ export function Files({
                 return (
                   <box key={`h${row.label}`} marginTop={i === 0 ? 0 : 1} flexDirection="row" justifyContent="space-between" paddingRight={1}>
                     <text fg={theme.muted}><b>{row.label}</b></text>
-                    {row.extra ? <text fg={theme.muted} attributes={TextAttributes.DIM}>{row.extra}</text> : null}
+                    {row.extra ? <text fg={theme.muted}>{row.extra}</text> : null}
                   </box>
                 );
               if (row.kind === "change")

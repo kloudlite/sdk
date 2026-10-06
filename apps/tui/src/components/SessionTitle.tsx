@@ -45,7 +45,7 @@ export function SessionTitle({
           <span fg={theme.muted}>{clip(description, width)}</span>
         </text>
       ) : null}
-      <text fg={theme.border} attributes={TextAttributes.DIM}>
+      <text fg={theme.border}>
         {"─".repeat(Math.max(0, width))}
       </text>
     </box>

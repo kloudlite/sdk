@@ -106,14 +106,14 @@ export function Processes({
                       <span fg={on ? theme.bg : color(p.status)}>•</span>{" "}
                       <span fg={on ? theme.bg : theme.fg}>{p.name}</span>
                       {p.port ? <span fg={on ? theme.bg : theme.muted}>:{p.port}</span> : ""}
-                      <span fg={on ? theme.bg : theme.muted} attributes={TextAttributes.DIM}>
+                      <span fg={on ? theme.bg : theme.muted}>
                         {"  "}
                         {detail(p)}
                       </span>
                     </text>
                   </box>
                   <box height={1} overflow="hidden" paddingLeft={3}>
-                    <text fg={theme.muted} attributes={TextAttributes.DIM}>{p.command}</text>
+                    <text fg={theme.muted}>{p.command}</text>
                   </box>
                 </box>
               );

@@ -154,7 +154,7 @@ export function Login({
       )}
 
       {!pending && (
-        <text fg={theme.muted} attributes={TextAttributes.DIM}>
+        <text fg={theme.muted}>
           waiting… esc to cancel
         </text>
       )}
