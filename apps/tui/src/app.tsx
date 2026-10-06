@@ -1,20 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { RGBA } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { Registry } from "@kloudlite-tui/tools";
+import { SessionTitle } from "./components/SessionTitle.tsx";
+import { Queue } from "./components/Queue.tsx";
 import { Transcript, type Entry } from "./components/Transcript.tsx";
 import { Prompt } from "./components/Prompt.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { HintBar } from "./components/HintBar.tsx";
-import { Tabs } from "./components/Tabs.tsx";
 import { Files } from "./components/Files.tsx";
+import { Processes } from "./components/Processes.tsx";
 import { Spinner } from "./components/Spinner.tsx";
 import { menuItems, placeholders } from "./slash.ts";
-import { CURRENT_USER, envLabel, MOCK_ENVIRONMENTS } from "./workspaces.ts";
+import { CURRENT_USER, envLabel, MOCK_ENVIRONMENTS, MOCK_WORKSPACES, parentFor, wsPath } from "./workspaces.ts";
 import { setTheme, theme, themeNames } from "./theme.ts";
 import { catalog, loadProviderAuth, modelLabel } from "./models.ts";
 import {
   clearSessionHistory,
   createSession,
+  describeSession,
+  listSessions,
+  nameSession,
   loginOptions,
   readSettings,
   resolveModel,
@@ -25,14 +31,47 @@ import {
 import { Login } from "./components/Login.tsx";
 import { AskPanel, type Ask } from "./components/Ask.tsx";
 import { toolDiff } from "./diff.ts";
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import {
   getSession,
+  newSessionId,
   patchSession,
+  sessionBase,
+  sessionIdOf,
   sessionKey,
+  type QueuedMessage,
   type SessionMap,
 } from "./sessions.ts";
 
+// opencode's responsive rule (routes/session/index.tsx): one breakpoint at
+// 120 columns. The sidebar defaults to 42 either way — wide terminals
+// dock it on the right of the row, narrow ones only show it when explicitly
+// opened, and then as an absolute overlay above a dimmed transcript.
 const SIDEBAR_WIDTH = 42;
+/** Resizing stays inside what the layout can honour: the tree needs room to
+ *  read, and the transcript must keep more than half the terminal. */
+const SIDEBAR_MIN = 28;
+const SIDEBAR_MAX = 64;
+const SIDEBAR_STEP = 4;
+const clampSidebar = (n: number) => Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(n)));
+
+/** "3m ago" / "2h ago" / "5d ago" — session list hint. */
+function ago(at: number): string {
+  const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / 1440)}d ago`;
+}
+
+/**
+ * What the session column shows. The title bar names the current context on
+ * the left and lists these on the right — click one (or press f) to open it.
+ */
+type ViewId = "agent" | "files" | "processes";
+const WIDE_COLUMNS = 120;
 
 /**
  * Sessions are hierarchical: each environment has a main session, and each
@@ -52,37 +91,63 @@ export function App({
   const { width: columns, height: rows } = useTerminalDimensions();
   const [sessions, setSessions] = useState<SessionMap>({});
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<"agent" | "shell">("agent");
   // vim-style modal keyboard: NORMAL (default) = letter commands, INSERT = typing
-  const [keyMode, setKeyMode] = useState<"normal" | "insert">("normal");
+  // vim keys are a setting; without them the prompt is always live and the
+  // letter commands move to ctrl+<letter> (what the splash already advertises)
+  const [keyMode, setKeyMode] = useState<"normal" | "insert">(
+    () => (readSettings().vim ?? "off") === "on" ? "normal" : "insert",
+  );
   const [hint, setHint] = useState(0);
   // 0 = main context (orchestrator); 1..N = inside workspaces[focus - 1]
   const [focus, setFocus] = useState(0);
-  // Environment tabs: indexes into MOCK_ENVIRONMENTS that are open; one active
-  const [openEnvs, setOpenEnvs] = useState<number[]>([0, 1, 2]);
   const [env, setEnv] = useState(0);
-  // environments are state: /move re-homes a workspace into another one
   const [envs, setEnvs] = useState(MOCK_ENVIRONMENTS);
+  // workspaces belong to the working session, not to an environment: connecting
+  // elsewhere carries this exact list over, and never pulls another session's in
+  const [allWorkspaces, setWorkspaces] = useState(MOCK_WORKSPACES);
   const [palette, setPalette] = useState(false);
-  // files view (NORMAL: f) — review surface for the current workspace
-  const [filesOpen, setFilesOpen] = useState(false);
+  const [view, setView] = useState<ViewId>("agent");
   const [filesRefresh, setFilesRefresh] = useState(0);
   // "/" command overlay (NORMAL mode): filter + pick slash commands top-level
   const [cmdMode, setCmdMode] = useState(false);
+  /** Open the command overlay. The draft always carries its leading "/", so
+   *  what the user sees matches what they typed and what gets submitted. */
   const openCmd = (prefill = "") => {
     setCmdMode(true);
     setHistIdx(null);
-    setInput(prefill);
+    setInput(`/${prefill}`);
   };
   const [login, setLogin] = useState<{ provider: string; type: "oauth" | "api_key" } | null>(null);
   // provider id → auth status, resolved once on startup
   const [auth, setAuth] = useState<Map<string, { ok: boolean; envKey?: string }>>(new Map());
+  // Every context — the environment's main sessions and each workspace's —
+  // can hold several named sessions: base key → id of the one in use, plus a
+  // name cache so the UI can label them.
+  const [sessionId, setSessionId] = useState<Record<string, string>>({});
+
+  const [sessionNames, setSessionNames] = useState<Record<string, string>>(() =>
+    Object.fromEntries(listSessions().flatMap((m) => (m.name ? [[m.key, m.name]] : []))),
+  );
+  const [sessionDescs, setSessionDescs] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      listSessions().flatMap((m) => (m.description ? [[m.key, m.description]] : [])),
+    ),
+  );
+  // index into the active session's queue while editing it, else null
+  const [queuePick, setQueuePick] = useState<number | null>(null);
+  // narrow terminals (<= 120 cols): sidebar opened explicitly, as an overlay
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   // bumped to re-render after an in-place theme swap
   const [, setThemeTick] = useState(0);
-  // persisted UI preferences (sidebar visibility, thinking visibility)
+  // persisted UI preferences (sidebar/thinking visibility, vim keys)
   const [prefs, setPrefs] = useState(() => {
     const s = readSettings();
-    return { sidebar: s.sidebar ?? "show", thinking: s.thinking ?? "show" };
+    return {
+      sidebar: s.sidebar ?? "show",
+      thinking: s.thinking ?? "show",
+      vim: s.vim ?? "off",
+      sidebarWidth: clampSidebar(s.sidebarWidth ?? SIDEBAR_WIDTH),
+    };
   });
   // Live agent sessions, one per session key (created lazily on first prompt).
   const agents = useRef(new Map<string, Promise<AgentSession>>());
@@ -94,10 +159,17 @@ export function App({
   const alwaysAllow = useRef(new Map<string, Set<string>>());
 
   const environment = envs[env]!;
-  const workspaces = environment.workspaces;
+  const mainBase = sessionBase();
+  const mainSession = sessionId[mainBase] ?? "main";
+  // working session › main session › workspaces: only this session's workspaces
+  const workspaces = allWorkspaces.filter((w) => (w.session ?? "main") === mainSession);
+  const mainKey = sessionKey(undefined, mainSession);
+  // sessions belong to the context you are in: the environment's, or this
+  // workspace's own
+  const activeBase = sessionBase(focus === 0 ? undefined : workspaces[focus - 1]!.id);
   const activeKey = sessionKey(
-    environment.id,
     focus === 0 ? undefined : workspaces[focus - 1]!.id,
+    sessionId[activeBase] ?? "main",
   );
   const session = getSession(sessions, activeKey);
   const busy = session.busy;
@@ -107,6 +179,12 @@ export function App({
     renderer.destroy();
     process.exit(0);
   }
+
+  // the file views only exist inside a workspace; leaving one goes back
+  useEffect(() => {
+    if (focus === 0) setView("agent");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
 
   // Switching sessions leaves history recall; also wake the session so a
   // persisted transcript is restored without needing a first prompt.
@@ -130,7 +208,8 @@ export function App({
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") return exit();
-    if (login || asks.length > 0 || filesOpen) return; // modal / files view owns the keyboard
+    // a full-column view owns the keyboard while it is up
+    if (login || asks.length > 0 || filesView || processesView) return;
     if (palette && key.name === "escape") {
       setPalette(false);
       setInput("");
@@ -142,49 +221,6 @@ export function App({
       return;
     }
     const menuOpen = palette || cmdMode;
-    // contextual actions for the current selection (NORMAL: a)
-    if (keyMode === "normal" && !palette && !cmdMode && key.name === "a" && !key.ctrl && !key.meta) {
-      if (focus > 0) {
-        const ws = workspaces[focus - 1]!;
-        const intercepting = environment.services.some((s) => s.interceptedBy === ws.name);
-        pushAskRef.current({
-          title: ws.name,
-          subtitle: `attached to ${envLabel(environment)}`,
-          layout: "list",
-          options: [
-            { id: "attach", label: "Attach to environment…" },
-            { id: "intercept", label: "Intercept a service…" },
-            ...(intercepting ? [{ id: "release", label: "Release interception" }] : []),
-            { id: "clone", label: "Clone workspace" },
-            { id: "cancel", label: "Cancel" },
-          ],
-          escapeId: "cancel",
-        }).then((id) => {
-          if (id === "attach") askAttach();
-          if (id === "intercept") askIntercept();
-          if (id === "release") releaseInterception();
-          if (id === "clone") cloneWorkspace();
-        });
-      } else {
-        pushAskRef.current({
-          title: envLabel(environment),
-          subtitle: environment.owner === CURRENT_USER ? "your environment" : `owned by ${environment.owner}`,
-          layout: "list",
-          options: [
-            { id: "new", label: "New workspace…" },
-            { id: "clone-env", label: "Clone environment" },
-            { id: "close", label: "Close tab" },
-            { id: "cancel", label: "Cancel" },
-          ],
-          escapeId: "cancel",
-        }).then((id) => {
-          if (id === "new") openCmd("workspace new ");
-          if (id === "clone-env") cloneEnvironment();
-          if (id === "close") closeTab();
-        });
-      }
-      return;
-    }
     const n = workspaces.length;
     // only your own workspaces can be entered; others are visible but attached
     // to their owner's session
@@ -197,16 +233,83 @@ export function App({
       setFocus((f) => {
         const pos = Math.max(0, ring.indexOf(f));
         const next = ring[(pos + delta + ring.length) % ring.length]!;
-        if (next === 0) setMode("agent"); // shell only exists inside a workspace
         return next;
       });
-    const tabMove = (delta: number) => {
-      const pos = openEnvs.indexOf(env);
-      const next = openEnvs[(pos + delta + openEnvs.length) % openEnvs.length]!;
-      setEnv(next);
-      setFocus(0);
-      setMode("agent");
+
+    /**
+     * The command surface, shared by both key schemes: a bare letter in vim's
+     * NORMAL mode, ctrl+<letter> when vim is off (where typing must reach the
+     * prompt). Returns true once it has handled the key.
+     */
+    const command = (name: string, seq?: string): boolean => {
+      // queue editing: target the queue, then pick/edit/drop within it
+      if (queuePick !== null) {
+        const q = session.queued;
+        if (name === "j") {
+          setQueuePick(Math.min(q.length - 1, queuePick + 1));
+          return true;
+        }
+        if (name === "k") {
+          setQueuePick(Math.max(0, queuePick - 1));
+          return true;
+        }
+        if (name === "d") {
+          const next = q.filter((_, i) => i !== queuePick);
+          rewriteQueue(activeKey, next);
+          setQueuePick(next.length === 0 ? null : Math.min(queuePick, next.length - 1));
+          return true;
+        }
+      }
+      if (name === "q") {
+        setQueuePick(session.queued.length > 0 && queuePick === null ? 0 : null);
+        return true;
+      }
+      if (name === "f") {
+        cycleView();
+        return true;
+      }
+      if (name === "j") {
+        cycle(1);
+        return true;
+      }
+      if (name === "k") {
+        cycle(-1);
+        return true;
+      }
+      if (name === "p") {
+        setInput("");
+        setHistIdx(null);
+        setPalette(true);
+        return true;
+      }
+      if (name === "b") {
+        setFocus(0);
+        return true;
+      }
+      if (/^[0-9]$/.test(name)) {
+        const d = Number(name);
+        if (d === 0) setFocus(0);
+        else if (d <= n && workspaces[d - 1]!.owner === CURRENT_USER) setFocus(d);
+        return true;
+      }
+      if (seq === "[" || seq === "]") {
+        // ponytail: opentui gives no drag stream, so the divider cannot be
+        // dragged — resize is keyboard-only ([ / ] and /settings width)
+        resizeSidebar(seq === "]" ? SIDEBAR_STEP : -SIDEBAR_STEP);
+        return true;
+      }
+      if (seq === "?") {
+        openHelp();
+        return true;
+      }
+      return false;
     };
+
+    // ---- vim off: ctrl+<letter> commands, everything else types ----
+    if (prefs.vim === "off" && key.ctrl && !key.meta && !menuOpen) {
+      if (command(key.name)) return;
+    }
+
     if (key.name === "tab" && !menuOpen && keyMode === "normal") return cycle(key.shift ? -1 : 1);
     // ↑/↓ recall this session's prompt history (menu closed only)
     if (keyMode === "insert" && !menuOpen && (key.name === "up" || key.name === "down")) {
@@ -228,11 +331,26 @@ export function App({
       }
       return;
     }
-    // leaving shell mode: backspace on an empty prompt
-    if (mode === "shell" && (key.name === "backspace" || key.name === "delete") && input === "") {
-      setMode("agent");
+    // enter in the queue pulls the picked message back into the prompt
+    if (key.name === "return" && queuePick !== null && !menuOpen) {
+      const picked = session.queued[queuePick];
+      if (!picked) return setQueuePick(null);
+      rewriteQueue(activeKey, session.queued.filter((_, i) => i !== queuePick));
+      setQueuePick(null);
+      setInput(picked.text);
+      return setKeyMode("insert");
     }
     if (key.name === "escape") {
+      if (queuePick !== null) return setQueuePick(null); // esc leaves the queue
+      if (prefs.vim === "off") {
+        if (input) {
+          setInput(""); // esc abandons the draft
+          setHistIdx(null);
+          return;
+        }
+        if (busy) return interrupt(activeKey);
+        return;
+      }
       if (keyMode === "insert") {
         setInput(""); // esc abandons the draft
         setHistIdx(null);
@@ -242,48 +360,43 @@ export function App({
       return;
     }
 
-    // ---- NORMAL mode: single letters are commands (no modifiers, tmux-safe) ----
-    if (keyMode === "normal" && !palette && !cmdMode && !key.ctrl && !key.meta && !key.option) {
+    // ---- vim NORMAL mode: single letters are commands (no modifiers, tmux-safe) ----
+    if (
+      prefs.vim === "on" &&
+      keyMode === "normal" &&
+      !palette &&
+      !cmdMode &&
+      !key.ctrl &&
+      !key.meta &&
+      !key.option
+    ) {
       if (key.name === "i") return setKeyMode("insert");
       if (key.sequence === "/") return openCmd();
-      if (key.name === "f") {
-        if (focus > 0) setFilesOpen(true);
-        else append(activeKey, { kind: "info", text: "enter a workspace first — f browses its files and diffs" });
-        return;
-      }
-      if (key.sequence === "!") {
-        if (focus > 0) {
-          setMode("shell");
-          setKeyMode("insert");
-        }
-        return;
-      }
-      if (key.name === "j") return cycle(1);
-      if (key.name === "k") return cycle(-1);
-      if (key.name === "h") return tabMove(-1);
-      if (key.name === "l") return tabMove(1);
-      if (/^[0-9]$/.test(key.name)) {
-        const d = Number(key.name);
-        if (d === 0) {
-          setMode("agent");
-          return setFocus(0);
-        }
-        if (d <= n && workspaces[d - 1]!.owner === CURRENT_USER) return setFocus(d);
-        return;
-      }
-      if (key.name === "p") {
-        setInput("");
-        setHistIdx(null);
-        return setPalette(true);
-      }
-      if (key.name === "m") {
-        if (focus > 0) askAttach();
-        return;
-      }
-      if (key.sequence === "?") return openHelp();
+      if (command(key.name, key.sequence)) return;
       return; // unbound NORMAL-mode keys do nothing (never leak into the input)
     }
   });
+
+  /**
+   * Replace a session's queue. pi exposes no per-item removal, so the only way
+   * to drop or change one is to clear the queue and re-queue what we keep, in
+   * order — each onto the queue its kind names.
+   * ponytail: a full rewrite per edit; fine for a handful of queued prompts.
+   */
+  function rewriteQueue(key: string, next: QueuedMessage[]): void {
+    agents.current
+      .get(key)
+      ?.then(async (agent) => {
+        agent.clearQueue();
+        for (const m of next) {
+          if (m.kind === "steer") await agent.steer(m.text);
+          else await agent.followUp(m.text);
+        }
+      })
+      .catch(() => {});
+    // reflect it immediately; a queue_update event will confirm
+    setSessions((map) => patchSession(map, key, { queued: next }));
+  }
 
   /** Human summary of a tool call, opencode-style: the salient arg, not JSON. */
   function toolSummary(name: string, args: any): string {
@@ -406,7 +519,10 @@ export function App({
       case "queue_update":
         setSessions((map) =>
           patchSession(map, key, {
-            queued: (event.steering?.length ?? 0) + (event.followUp?.length ?? 0),
+            queued: [
+              ...(event.steering ?? []).map((text: string) => ({ text, kind: "steer" as const })),
+              ...(event.followUp ?? []).map((text: string) => ({ text, kind: "followUp" as const })),
+            ],
           }),
         );
         break;
@@ -494,6 +610,16 @@ export function App({
     });
   }
 
+  /** One key for "what does the column show": chat › files › processes. */
+  function cycleView(): void {
+    if (focus === 0) {
+      append(activeKey, { kind: "info", text: "enter a workspace first — f opens its files" });
+      return;
+    }
+    const ring: ViewId[] = ["agent", "files", "processes"];
+    setView(ring[(ring.indexOf(view) + 1) % ring.length]!);
+  }
+
   /** Help popup: the keyboard/command reference in a panel, not the transcript. */
   function openHelp() {
     pushAskRef.current({
@@ -501,12 +627,11 @@ export function App({
       body: [
         "Navigation (NORMAL mode)",
         "  i           type a prompt        /    commands",
-        "  j k         workspace ring       h l  environments",
+        "  j k         workspace ring       p    jump: env · session · ws",
+        "  f           cycle views           r    (in files) rescan",
         "  1-9 · 0     workspace N · main   p    jump anywhere",
-        "  a           actions              m    move workspace",
-        "  f           files & diffs        r    (in files) rescan",
-        "  u d         scroll               !    shell (in a workspace)",
         "  esc         interrupt the agent  ?    this help",
+        "  u d         scroll",
         "",
         "Typing (INSERT mode)",
         "  enter       send                 shift+enter · \\+enter  new line",
@@ -601,65 +726,56 @@ export function App({
     for (const agent of agents.current.values()) agent.then((a) => a.dispose()).catch(() => {});
   }, []);
 
-  // "!" typed on an empty prompt enters shell mode. Intercepted here (single
-  // writer of input state) rather than in a second key handler, so there is
-  // no ordering dependence between handlers.
+  /** Widen or narrow the sidebar by `delta`, clamped, and persist it. */
+  function resizeSidebar(delta: number) {
+    setPrefs((p) => {
+      const sidebarWidth = clampSidebar(p.sidebarWidth + delta);
+      writeSettings({ sidebarWidth });
+      return { ...p, sidebarWidth };
+    });
+  }
+
   function changeInput(v: string) {
     setHistIdx(null); // typing exits history recall
-    // shell runs inside a workspace; there is no shell at the main context
-    if (!palette && mode === "agent" && v === "!" && input === "" && focus > 0) {
-      setMode("shell");
-      return;
-    }
+    // a leading "/" on an empty draft is the command overlay, not text — the
+    // prompt owns the key when it is live, so this is where "/" is caught.
+    // The "/" stays in the draft: Input keeps its own copy of the value, and
+    // clearing it here would desync the two.
+    if (v === "/" && !cmdMode && !palette) setCmdMode(true);
     setInput(v);
   }
 
   // ---- environment / workspace verbs (mock-state mutations) ----
+  // ponytail: no human surface reaches these any more — the agent drives the
+  // workspace lifecycle, so they are the shape the future agent tools call.
+  // Until those tools exist nothing invokes them; delete them if that changes.
   const uid = useRef(100);
   const freshId = () => `w${uid.current++}`;
 
-  function attachTo(target: number) {
-    if (focus === 0 || target === -1 || target === env) return;
-    const ws = workspaces[focus - 1]!;
+  /**
+   * Point this working session at another environment. The workspaces are the
+   * session's, so they simply come along; only the interceptions held in the
+   * environment being left have to be released.
+   */
+  function connectEnv(target: number) {
+    if (target === env || target < 0) return;
+    const names = new Set(workspaces.map((w) => w.name));
     setEnvs((prev) =>
-      prev.map((e, i) => {
-        if (i === env)
-          return {
-            ...e,
-            workspaces: e.workspaces.filter((w) => w.id !== ws.id),
-            // detaching releases any interception it held here
-            services: e.services.map((s) => (s.interceptedBy === ws.name ? { ...s, interceptedBy: undefined } : s)),
-          };
-        if (i === target) return { ...e, workspaces: [...e.workspaces, ws] };
-        return e;
-      }),
+      prev.map((e, i) =>
+        i === env
+          ? {
+              ...e,
+              services: e.services.map((s) =>
+                s.interceptedBy && names.has(s.interceptedBy) ? { ...s, interceptedBy: undefined } : s,
+              ),
+            }
+          : e,
+      ),
     );
-    // follow the workspace: open + activate the target env, keep it focused
-    setOpenEnvs((open) => (open.includes(target) ? open : [...open, target]));
     setEnv(target);
-    setFocus(envs[target]!.workspaces.length + 1);
-  }
-
-  function askAttach() {
-    const ws = workspaces[focus - 1]!;
-    pushAskRef.current({
-      title: "Attach to environment",
-      subtitle: `${ws.name} → choose where to plug in`,
-      layout: "list",
-      options: [
-        ...envs
-          .map((e, i) => ({
-            id: String(i),
-            label: envLabel(e),
-            hint: e.owner === CURRENT_USER ? (openEnvs.includes(i) ? "open" : "") : `owned by ${e.owner}`,
-          }))
-          .filter((o) => Number(o.id) !== env),
-        { id: "cancel", label: "Cancel" },
-      ],
-      escapeId: "cancel",
-    }).then((id) => {
-      if (id !== "cancel") attachTo(Number(id));
-    });
+    setFocus(0);
+    setView("agent");
+    append(mainKey, { kind: "info", text: `connected to ${envLabel(envs[target]!)}` });
   }
 
   function interceptService(name: string) {
@@ -673,25 +789,6 @@ export function App({
       ),
     );
     append(activeKey, { kind: "info", text: `intercepting ${name}.${environment.name} → ${ws.name}` });
-  }
-
-  function askIntercept() {
-    pushAskRef.current({
-      title: "Intercept a service",
-      subtitle: `traffic will route to ${workspaces[focus - 1]!.name}`,
-      layout: "list",
-      options: [
-        ...environment.services.map((s) => ({
-          id: s.name,
-          label: `${s.name}:${s.port}`,
-          hint: s.interceptedBy ? `⇄ ${s.interceptedBy}` : "",
-        })),
-        { id: "cancel", label: "Cancel" },
-      ],
-      escapeId: "cancel",
-    }).then((id) => {
-      if (id !== "cancel") interceptService(id);
-    });
   }
 
   function releaseInterception() {
@@ -711,50 +808,29 @@ export function App({
       id: freshId(),
       name,
       owner: CURRENT_USER,
+      session: mainSession,
       status: "running" as const,
       ports: [],
       repo: `kloudlite/${name}`,
       branch: "main",
     };
-    setEnvs((prev) => prev.map((e, i) => (i === env ? { ...e, workspaces: [...e.workspaces, ws] } : e)));
-    setFocus(environment.workspaces.length + 1);
+    setWorkspaces((prev) => [...prev, ws]);
+    setFocus(workspaces.length + 1);
   }
 
+  /** Clone as an ephemeral workspace hanging off this one (never deeper). */
   function cloneWorkspace() {
     const src = workspaces[focus - 1]!;
-    const ws = { ...src, id: freshId(), name: `${src.name}-copy`, owner: CURRENT_USER };
-    setEnvs((prev) => prev.map((e, i) => (i === env ? { ...e, workspaces: [...e.workspaces, ws] } : e)));
-    setFocus(environment.workspaces.length + 1);
-  }
-
-  function cloneEnvironment() {
-    // clones services and YOUR attached workspaces; the copy is yours
-    const src = environment;
-    const cloned = {
+    const ws = {
       ...src,
-      id: `e${uid.current++}`,
+      id: freshId(),
       name: `${src.name}-copy`,
       owner: CURRENT_USER,
-      services: src.services.map((s) => ({ ...s })),
-      workspaces: src.workspaces
-        .filter((w) => w.owner === CURRENT_USER)
-        .map((w) => ({ ...w, id: freshId() })),
+      session: mainSession,
+      parent: parentFor(workspaces, src),
     };
-    setEnvs((prev) => [...prev, cloned]);
-    setOpenEnvs((open) => [...open, envs.length]);
-    setEnv(envs.length);
-    setFocus(0);
-    setMode("agent");
-  }
-
-  function closeTab() {
-    setOpenEnvs((open) => {
-      if (open.length <= 1) return open;
-      const next = open.filter((i) => i !== env);
-      setEnv(next[0]!);
-      setFocus(0);
-      return next;
-    });
+    setWorkspaces((prev) => [...prev, ws]);
+    setFocus(workspaces.length + 1);
   }
 
   function submit(text: string) {
@@ -776,9 +852,41 @@ export function App({
       agents.current.delete(key);
       clearSessionHistory(key); // archive persisted transcripts
       setSessions((map) =>
-        patchSession(map, key, { entries: [], history: [], tokens: 0, queued: 0, busy: false }),
+        patchSession(map, key, { entries: [], history: [], tokens: 0, queued: [], busy: false }),
       );
       ensureAgent(key, { fresh: true }).catch(() => {});
+      return;
+    }
+    if (trimmed.startsWith("/session")) {
+      const rest = trimmed.slice("/session".length).trim();
+      const [verb, ...words] = rest.split(/\s+/);
+      const arg = words.join(" ").trim();
+      const ws = focus === 0 ? undefined : workspaces[focus - 1]!.id;
+      if (verb === "name" && arg) {
+        // name the session in use, so it can be found in the list later
+        nameSession(activeKey, arg);
+        setSessionNames((n) => ({ ...n, [activeKey]: arg }));
+        return append(activeKey, { kind: "info", text: `session named "${arg}"` });
+      }
+      if ((verb === "desc" || verb === "describe") && arg) {
+        describeSession(activeKey, arg);
+        setSessionDescs((d) => ({ ...d, [activeKey]: arg }));
+        return append(activeKey, { kind: "info", text: `session described "${arg}"` });
+      }
+      if (verb === "new" && arg) {
+        const id = newSessionId();
+        const key = sessionKey(ws, id);
+        nameSession(key, arg);
+        setSessionNames((n) => ({ ...n, [key]: arg }));
+        setSessionId((m) => ({ ...m, [activeBase]: id }));
+        ensureAgent(key).catch(() => {});
+        return;
+      }
+      if (verb === "use" && arg) {
+        setSessionId((m) => ({ ...m, [activeBase]: arg }));
+        return;
+      }
+      openCmd("session ");
       return;
     }
     if (trimmed === "/tools") {
@@ -790,7 +898,7 @@ export function App({
     }
     if (trimmed === "/help") return openHelp();
     if (trimmed === "/files") {
-      if (focus > 0) setFilesOpen(true);
+      if (focus > 0) setView("files");
       else append(activeKey, { kind: "info", text: "enter a workspace first — /files browses its files and diffs" });
       return;
     }
@@ -820,60 +928,23 @@ export function App({
         setLogin({ provider, type: type === "api_key" ? "api_key" : "oauth" });
       return;
     }
-    if (trimmed === "/attach" || trimmed.startsWith("/attach ")) {
-      if (focus === 0) {
-        append(activeKey, {
-          kind: "info",
-          text: "enter a workspace first — /attach re-points the current workspace",
-        });
-        return;
-      }
-      const typed = trimmed.slice(7).trim();
-      if (typed) attachTo(envs.findIndex((e) => envLabel(e) === typed || e.name === typed));
-      else askAttach();
-      return;
-    }
-    if (trimmed === "/intercept" || trimmed.startsWith("/intercept ")) {
-      if (focus === 0) {
-        append(activeKey, { kind: "info", text: "enter a workspace first — interception routes a service into it" });
-        return;
-      }
-      const typed = trimmed.slice(10).trim();
-      if (typed) interceptService(typed);
-      else askIntercept();
-      return;
-    }
-    if (trimmed === "/release") {
-      if (focus > 0) releaseInterception();
-      return;
-    }
-    if (trimmed.startsWith("/workspace")) {
-      const rest = trimmed.slice(10).trim();
-      if (rest.startsWith("new")) {
-        const name = rest.slice(3).trim();
-        if (name) newWorkspace(name);
-        else openCmd("workspace new ");
-        return;
-      }
-      if (rest === "clone") {
-        if (focus > 0) cloneWorkspace();
-        else append(activeKey, { kind: "info", text: "enter a workspace first — /workspace clone copies the current one" });
-        return;
-      }
-      openCmd("workspace ");
-      return;
-    }
-    if (trimmed === "/env clone") return cloneEnvironment();
-    if (trimmed === "/env close") return closeTab();
-    if (trimmed === "/env") {
-      openCmd("env ");
-      return;
-    }
     if (trimmed.startsWith("/settings ")) {
       const [key, value] = trimmed.slice(10).trim().split(/\s+/);
       if ((key === "sidebar" || key === "thinking") && (value === "show" || value === "hide")) {
         setPrefs((p) => ({ ...p, [key]: value }));
         writeSettings({ [key]: value });
+        // narrow terminal: "show" also opens the overlay, "hide" closes it
+        if (key === "sidebar") setSidebarOpen(value === "show");
+      }
+      if (key === "width" && (value === "wider" || value === "narrower" || value === "reset")) {
+        if (value === "reset") resizeSidebar(SIDEBAR_WIDTH - prefs.sidebarWidth);
+        else resizeSidebar(value === "wider" ? SIDEBAR_STEP : -SIDEBAR_STEP);
+      }
+      if (key === "vim" && (value === "on" || value === "off")) {
+        setPrefs((p) => ({ ...p, vim: value }));
+        writeSettings({ vim: value });
+        // leaving vim behind drops you in the prompt; entering it starts in NORMAL
+        setKeyMode(value === "on" ? "normal" : "insert");
       }
       return;
     }
@@ -886,6 +957,12 @@ export function App({
     // The turn belongs to the session it started in; prompting while the
     // agent streams queues it as steering (pi handles the queue).
     const key = activeKey;
+    // an unnamed session takes its title from the first thing asked of it
+    if (!sessionNames[key]) {
+      const title = trimmed.replace(/\s+/g, " ").slice(0, 40);
+      nameSession(key, title);
+      setSessionNames((n) => ({ ...n, [key]: title }));
+    }
     append(key, { kind: "user", text: trimmed });
     setSessions((map) =>
       patchSession(map, key, (s) => ({ history: [...s.history, trimmed] })),
@@ -898,19 +975,6 @@ export function App({
 
   type JumpItem = { label: string; hint: string; group: string; run: () => void };
   const paletteItems: JumpItem[] = [
-    ...envs.map((e, i) => ({
-      label: envLabel(e),
-      hint:
-        e.owner === CURRENT_USER
-          ? i === env ? "active" : openEnvs.includes(i) ? "open" : ""
-          : `owned by ${e.owner}`,
-      group: "Environments",
-      run: () => {
-        setOpenEnvs((open) => (open.includes(i) ? open : [...open, i]));
-        setEnv(i);
-        setFocus(0);
-      },
-    })),
     ...workspaces
       .map((w, i) => ({ w, i }))
       .filter(({ w }) => w.owner === CURRENT_USER)
@@ -947,36 +1011,44 @@ export function App({
         }),
       themes: themeNames,
       logins: loginOptions(),
-      attach:
-        focus > 0
-          ? envs
-              .map((e, i) => ({
-                name: envLabel(e),
-                hint:
-                  e.owner === CURRENT_USER
-                    ? openEnvs.includes(i)
-                      ? "environment · open"
-                      : "environment"
-                    : `owned by ${e.owner}`,
-              }))
-              .filter((_, i) => i !== env)
-          : [],
-      intercepts:
-        focus > 0
-          ? environment.services.map((s) => ({
-              name: s.name,
-              hint: s.interceptedBy ? `⇄ ${s.interceptedBy}` : `:${s.port}`,
-            }))
-          : [],
-      settings: (["sidebar", "thinking"] as const).flatMap((key) =>
-        (["show", "hide"] as const).map((value) => ({
-          key,
+      // this environment's main sessions, newest first
+      // sessions of the context you are in (environment main, or this workspace)
+      sessions: listSessions(activeBase)
+        .filter((m) => m.key === activeBase || m.key.startsWith(`${activeBase}:`))
+        .map((m) => {
+          const id = sessionIdOf(activeBase, m.key);
+          return {
+            id,
+            label: m.name ?? (id === "main" ? "main" : "untitled"),
+            hint: [id === (sessionId[activeBase] ?? "main") ? "current" : "", ago(m.updated)]
+              .filter(Boolean)
+              .join(" · "),
+          };
+        }),
+      settings: [
+        ...(["sidebar", "thinking"] as const).flatMap((key) =>
+          (["show", "hide"] as const).map((value) => ({
+            key,
+            value,
+            hint: prefs[key] === value ? "current" : "",
+          })),
+        ),
+        ...(["wider", "narrower", "reset"] as const).map((value) => ({
+          key: "width",
           value,
-          hint: prefs[key] === value ? "current" : "",
+          hint:
+            value === "reset"
+              ? `back to ${SIDEBAR_WIDTH}`
+              : `${prefs.sidebarWidth} cols${prefs.sidebarWidth === (value === "wider" ? SIDEBAR_MAX : SIDEBAR_MIN) ? " — at the limit" : ""}`,
         })),
-      ),
+        ...(["on", "off"] as const).map((value) => ({
+          key: "vim",
+          value,
+          hint: prefs.vim === value ? "current" : value === "on" ? "letter commands" : "type freely",
+        })),
+      ],
     }),
-    [auth, prefs, envs, env, focus, openEnvs, environment],
+    [auth, prefs, envs, env, focus, environment, activeBase, sessionId, sessionNames],
   );
   const jumpMatches = useMemo(
     () =>
@@ -984,7 +1056,7 @@ export function App({
         ? paletteItems.filter((it) => it.label.toLowerCase().includes(input.toLowerCase()))
         : [],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [palette, input, envs, env, focus, openEnvs],
+    [palette, input, envs, env, focus],
   );
   const menu = useMemo(() => {
     if (palette)
@@ -993,24 +1065,50 @@ export function App({
         label: it.label,
         hint: it.hint ? `${it.group} · ${it.hint}` : it.group,
       }));
-    if (cmdMode) return menuItems(input.startsWith("/") ? input : `/${input}`, menuCtx);
+    if (cmdMode) return menuItems(input, menuCtx);
     return [];
   }, [palette, cmdMode, jumpMatches, input, menuCtx]);
+  const filesView = view === "files" && focus > 0;
+  const processesView = view === "processes" && focus > 0;
+  const wide = columns > WIDE_COLUMNS;
+  // "show" is opencode's "auto": docked when wide, otherwise only when opened
+  const sidebarVisible = prefs.sidebar === "show" && (wide || sidebarOpen);
+  // opencode: dimensions.width - sidebar - 4 (the column's paddingX)
+  const contentWidth = columns - (sidebarVisible && wide ? prefs.sidebarWidth : 0) - 4;
   const modalOpen = login !== null || asks.length > 0;
   // typing reaches the input only in INSERT (jump mode always types the filter)
-  const inputLive = !modalOpen && (keyMode === "insert" || palette || cmdMode);
+  const inputLive = !modalOpen && (prefs.vim === "off" || keyMode === "insert" || palette || cmdMode);
+
+  // just where you are: the workspace (with its parent, if it is an ephemeral
+  // one), or the working session at the main context — the same inherited names
+  // the title bar shows, never derived from a prompt.
+  const contextPath = (
+    focus === 0 ? ["Working Session"] : wsPath(workspaces, workspaces[focus - 1]!)
+  ).join(" › ");
+
+  const sidebarEl = (
+    <Sidebar
+      workspaces={workspaces}
+      services={environment.services}
+      envName={environment.name}
+      snapshot={environment.snapshot}
+      envOwner={environment.owner === CURRENT_USER ? undefined : environment.owner}
+      focus={focus}
+      width={prefs.sidebarWidth}
+      running={workspaces.map((w) => getSession(sessions, w.id).busy)}
+      onFocus={(f) => {
+        setFocus(f);
+      }}
+    />
+  );
 
   return (
     // pinned to the terminal size: without it the tree grows with content
     // and pushes the strip/hint bar (and tabs) off screen
     <box flexDirection="column" width={columns} height={rows} backgroundColor={theme.bg}>
-      <Tabs
-        names={openEnvs.map((i) => envLabel(envs[i]!))}
-        active={openEnvs.indexOf(env)}
-        width={columns}
-      />
       <box flexDirection="row" flexGrow={1} minHeight={0} flexBasis={0} flexShrink={1} overflow="hidden">
-        {/* opencode session main column: paddingX 2, paddingBottom 1, gap 1 */}
+        {/* session column: paddingX 2, paddingBottom 1, gap 1 — no top
+            padding, the title bar is the column's top edge */}
         <box
           flexDirection="column"
           flexGrow={1}
@@ -1031,19 +1129,38 @@ export function App({
                 }}
               />
             </box>
-          ) : filesOpen && focus > 0 ? (
+          ) : processesView ? (
+            <Processes
+              workspace={workspaces[focus - 1]!.name}
+              processes={workspaces[focus - 1]!.processes ?? []}
+              onClose={() => setView("agent")}
+              onCycle={cycleView}
+            />
+          ) : filesView ? (
             <Files
               root={process.cwd()}
               workspace={workspaces[focus - 1]!.name}
               refreshKey={filesRefresh}
-              onClose={() => setFilesOpen(false)}
+              onClose={() => setView("agent")}
+              onCycle={cycleView}
             />
           ) : (
+            <>
+            <SessionTitle
+              // the title is inherited, never derived from the first prompt:
+              // the main session is the working session, a workspace session is
+              // the workspace, an ephemeral one is its own agent name
+              title={focus === 0 ? "Working Session" : workspaces[focus - 1]!.name}
+              description={sessionDescs[activeKey]}
+              busy={busy}
+              width={contentWidth}
+              onOpen={() => openCmd("session ")}
+            />
             <Transcript
               keys={
                 modalOpen
                   ? "off"
-                  : keyMode === "normal" && !palette && !cmdMode
+                  : prefs.vim === "on" && keyMode === "normal" && !palette && !cmdMode
                     ? "normal"
                     : "page"
               }
@@ -1053,11 +1170,18 @@ export function App({
                   : session.entries
               }
             />
+            </>
           )}
           {/* prompt block, opencode structure: card + strip + footer row stack
               tight; question/permission panels replace the whole block */}
-          {!filesOpen && (
+          {!filesView && !processesView && (
           <box flexDirection="column" flexShrink={0}>
+          <Queue
+            messages={session.queued}
+            selected={queuePick}
+            width={contentWidth}
+            onSelect={(i) => setQueuePick(i)}
+          />
           {busy && asks.length === 0 && (
             <box paddingLeft={1} marginBottom={1} flexDirection="row">
               <text>
@@ -1089,12 +1213,18 @@ export function App({
                   ? (text) => {
                       setCmdMode(false);
                       setInput("");
-                      submit(text.startsWith("/") ? text : `/${text}`);
+                      submit(text);
                     }
                   : submit
               }
               overlay={
-                palette ? "jump" : cmdMode ? "command" : keyMode === "normal" ? "normal" : undefined
+                palette
+                  ? "jump"
+                  : cmdMode
+                    ? "command"
+                    : prefs.vim === "on" && keyMode === "normal"
+                      ? "normal"
+                      : undefined
               }
               onPick={
                 palette
@@ -1107,7 +1237,7 @@ export function App({
                     ? (insert) => {
                         if (insert.endsWith(" ")) {
                           // command with options: stay in the overlay, filter them
-                          setInput(insert.slice(1));
+                          setInput(insert);
                           return;
                         }
                         setCmdMode(false);
@@ -1117,7 +1247,6 @@ export function App({
                     : undefined
               }
               placeholder={palette ? "Jump to…" : cmdMode ? "Type a command…" : session.entries.length === 0 ? placeholders[hint]! : ""}
-              mode={mode}
               model={modelLabel(session.model)}
               provider={session.model.provider}
               workspace={focus === 0 ? undefined : workspaces[focus - 1]!.name}
@@ -1125,29 +1254,47 @@ export function App({
               menu={menu}
             />
           <HintBar
-            normal={keyMode === "normal" && !palette && !cmdMode}
+            normal={prefs.vim === "on" && keyMode === "normal" && !palette && !cmdMode}
+            vim={prefs.vim === "on"}
             busy={busy}
             tokens={session.tokens}
-            queued={session.queued}
-            active={focus === 0 ? "main" : `main › ${workspaces[focus - 1]!.name}`}
+            queued={session.queued.length}
+            active={contextPath}
             inWorkspace={focus > 0}
+            compact={!wide}
+            onHint={(id) => {
+              if (id === "type") return setKeyMode("insert");
+              if (id === "jump") {
+                setInput("");
+                return setPalette(true);
+              }
+              if (id === "files") return focus > 0 ? setView("files") : undefined;
+              if (id === "commands") return openCmd();
+              if (id === "help") return openHelp();
+              if (id === "queue") {
+                setKeyMode("normal");
+                return setQueuePick(session.queued.length > 0 ? 0 : null);
+              }
+            }}
           />
           </>
           )}
           </box>
           )}
         </box>
-        {prefs.sidebar === "show" && (
-        <Sidebar
-          workspaces={workspaces}
-          services={environment.services}
-          envName={environment.name}
-          envOwner={environment.owner === CURRENT_USER ? undefined : environment.owner}
-          focus={focus}
-          width={SIDEBAR_WIDTH}
-          tokens={session.tokens}
-          running={workspaces.map((w) => getSession(sessions, w.id).busy)}
-        />
+        {sidebarVisible && wide && sidebarEl}
+        {sidebarVisible && !wide && (
+          <box
+            position="absolute"
+            top={0}
+            left={0}
+            right={0}
+            bottom={0}
+            alignItems="flex-end"
+            backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
+          >
+            {sidebarEl}
+          </box>
         )}
       </box>
     </box>

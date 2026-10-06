@@ -1,141 +1,243 @@
 import { TextAttributes } from "@opentui/core";
 import { theme } from "../theme.ts";
-import { CURRENT_USER, type Service, type Workspace, type WorkspaceStatus } from "../workspaces.ts";
+import { CURRENT_USER, type Service, type Workspace } from "../workspaces.ts";
 
 // resolved per render: the theme singleton mutates on /theme
-const dot = (status: WorkspaceStatus) =>
-  ({ attached: theme.accent, running: theme.success, cloning: theme.warning, stopped: theme.muted })[status];
 
-/** opencode-style: quiet sections — bold header, plain rows, color carries state. */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/** Clip to a width with an ellipsis — rows are one line, always. */
+const clip = (text: string, max: number) =>
+  max <= 1 ? "" : text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+/**
+ * Section label: bold title-case, then a hairline across the rest of the row —
+ * the same separator the session title bar uses, instead of SHOUTING CAPS.
+ */
+function Heading({ children, count, width, flush }: { children: string; count?: number; width: number; flush?: boolean }) {
+  const label = count === undefined ? children : `${children}  ${count}`;
   return (
-    <box flexDirection="column">
-      <text fg={theme.fg}><b>{title}</b></text>
-      {children}
+    <box paddingLeft={1} paddingRight={1} height={1} marginTop={flush ? 0 : 1}>
+      <text>
+        <span fg={theme.muted} attributes={TextAttributes.BOLD}>{children}</span>
+        {count !== undefined && (
+          <span fg={theme.border} attributes={TextAttributes.DIM}>{"  "}{String(count)}</span>
+        )}
+        <span fg={theme.border} attributes={TextAttributes.DIM}>{` ${"─".repeat(Math.max(0, width - label.length - 3))}`}</span>
+      </text>
     </box>
   );
 }
 
+/** Label left, meta right; a raised band when selected. */
+function Row({
+  left,
+  right,
+  on = false,
+  onMouseDown,
+}: {
+  left: React.ReactNode;
+  right?: React.ReactNode;
+  on?: boolean;
+  onMouseDown?: () => void;
+}) {
+  return (
+    <box
+      flexDirection="row"
+      justifyContent="space-between"
+      height={1}
+      overflow="hidden"
+      paddingLeft={1}
+      paddingRight={1}
+      backgroundColor={on ? theme.surfaceRaised : undefined}
+      onMouseDown={onMouseDown}
+    >
+      <text>{left}</text>
+      <text>
+        {right}
+      </text>
+    </box>
+  );
+}
+
+/**
+ * Session header, WORKSPACES (each with its ephemeral tasks under a guide
+ * rail), and a pinned Environment block at the bottom — the connected
+ * environment with the services that belong to it directly under it.
+ */
 export function Sidebar({
   workspaces,
   services,
   envName,
   envOwner,
+  snapshot,
   running,
   focus,
   width,
-  tokens,
+  onFocus,
 }: {
   workspaces: Workspace[];
   services: Service[];
   envName: string;
-  /** Environment owner, shown when it isn't the signed-in user. */
   envOwner?: string;
-  /** Per-workspace: session has a turn running */
+  /** The restore point the environment is on, if the agent switched to one. */
+  snapshot?: string;
+  /** Per-workspace: its session has a turn running */
   running: boolean[];
-  /** 0 = main context, 1..N = workspace */
+  /** 0 = the session, 1..N = workspace */
   focus: number;
   width: number;
-  tokens: number;
+  onFocus?: (focus: number) => void;
+  /** The environment row opens the connect picker. */
 }) {
-  const ws = focus > 0 ? workspaces[focus - 1] : undefined;
+  const inner = width - 4; // padding + row padding
+  // the tree counts workspaces, not their ephemeral tasks
+  const count = workspaces.filter((w) => !w.parent).length;
+
   return (
-    <box
-      flexDirection="column"
-      width={width}
-      height="100%"
-      flexShrink={0}
-      paddingLeft={2}
-      paddingRight={2}
-      paddingTop={1}
-      paddingBottom={1}
-      backgroundColor={theme.sidebarBg}
-    >
-      <scrollbox flexGrow={1} flexBasis={0} flexShrink={1} scrollbarOptions={{ visible: false }}>
-      <box flexDirection="column" flexShrink={0} gap={1} paddingRight={1}>
-      {/* the hierarchy: env › main › your workspaces, current level marked */}
-      <box flexDirection="column">
+    <box flexDirection="column" width={width} height="100%" flexShrink={0} backgroundColor={theme.sidebarBg}>
+      {/* session header: the product mark, then what we're connected to */}
+      <box
+        flexDirection="row"
+        height={3}
+        alignItems="center"
+        paddingLeft={2}
+        backgroundColor={focus === 0 ? theme.surfaceRaised : theme.surface}
+        onMouseDown={onFocus ? () => onFocus(0) : undefined}
+      >
         <text>
-          {envOwner ? <span fg={theme.muted}>{envOwner}/</span> : ""}
-          <span fg={focus === 0 ? theme.accent : theme.fg}><b>{envName}</b></span>
-          {focus === 0 ? <span fg={theme.muted}> ‹ you are here</span> : ""}
+          <span fg={theme.accent}>✦ </span>
+          <span fg={theme.fg} attributes={TextAttributes.BOLD}>Working</span>
+          <span fg={theme.muted}> Session</span>
         </text>
-        {workspaces.length === 0 && (
-          <text fg={theme.muted} attributes={TextAttributes.DIM}>{"└─ "}none attached — a to create one</text>
-        )}
-        {workspaces.map((w, i) => {
-          const isLast = i === workspaces.length - 1;
-          const mine = w.owner === CURRENT_USER;
-          const active = mine && focus === i + 1;
-          return (
-            <text key={w.id}>
-              <span fg={theme.muted}>{isLast ? "└─ " : "├─ "}</span>
-              <span fg={dot(w.status)}>•</span>{" "}
-              <span
-                fg={active ? theme.accent : theme.muted}
-                attributes={active ? TextAttributes.BOLD : undefined}
-              >
-                {w.name}
-              </span>
-              {!mine ? (
-                <span fg={theme.muted} attributes={TextAttributes.DIM}> · {w.owner}</span>
-              ) : (
-                ""
-              )}
-              {running[i] ? <span fg={theme.warning}> ⋯</span> : ""}
-              {active ? <span fg={theme.muted}> ‹ here</span> : ""}
-            </text>
-          );
-        })}
       </box>
-      <Section title="Services">
-        {services.map((svc) => (
-          <text key={svc.name}>
-            <span fg={theme.muted} attributes={TextAttributes.DIM}>
-              {svc.name}.{envName}:{svc.port}
-            </span>
-            {svc.interceptedBy ? (
-              <span fg={theme.warning}>
-                {" "}→ {svc.interceptedBy}
-                {(() => {
-                  const owner = workspaces.find((w) => w.name === svc.interceptedBy)?.owner;
-                  return owner && owner !== CURRENT_USER ? ` · ${owner}` : "";
-                })()}
-              </span>
-            ) : (
-              ""
-            )}
-          </text>
-        ))}
-      </Section>
 
-      <Section title="Context">
-        <text fg={theme.muted}>{tokens.toLocaleString()} tokens</text>
-        <text fg={theme.muted}>0% used</text>
-        <text fg={theme.muted}>$0.00 spent</text>
-      </Section>
+      <scrollbox flexGrow={1} flexBasis={0} flexShrink={1} paddingLeft={1} paddingRight={1} scrollbarOptions={{ visible: false }}>
+        <box flexDirection="column" flexShrink={0}>
+          <Heading count={count} width={width - 2} flush>Workspaces</Heading>
+          {workspaces.length === 0 && (
+            <Row left={<span fg={theme.muted} attributes={TextAttributes.DIM}>none yet — a to create one</span>} />
+          )}
+          {workspaces.map((w, i) => {
+            const mine = w.owner === CURRENT_USER;
+            const on = mine && focus === i + 1;
+            const click = onFocus && mine ? () => onFocus(i + 1) : undefined;
 
-      </box>
+            if (w.parent) {
+              // last task of its workspace closes the branch
+              const last = !workspaces.some((o, j) => j > i && o.parent === w.parent);
+              // an ephemeral workspace: branch glyph, short name, and the
+              // same one state word its parent gets — these are running agents,
+              // so they must read as plainly as the workspace above them
+              const tag = running[i] ? "working" : "";
+              return (
+                <Row
+                  key={w.id}
+                  on={on}
+                  onMouseDown={click}
+                  left={
+                    <span>
+                      <span fg={theme.border}>{last ? "└ " : "├ "}</span>
+                      <span fg={on ? theme.accent : theme.fg}>
+                        {clip(w.name, inner - 3 - tag.length)}
+                      </span>
+                    </span>
+                  }
+                  right={
+                    <span
+                      fg={running[i] ? theme.accent : theme.muted}
+                      attributes={running[i] ? undefined : TextAttributes.DIM}
+                    >
+                      {tag}
+                    </span>
+                  }
+                />
+              );
+            }
+
+            // one word on the right, and only when it earns the space
+            const stateTag = running[i]
+              ? "working"
+              : w.status === "cloning"
+                ? w.progress ?? "cloning"
+                : !mine
+                  ? w.owner
+                  : "";
+            return (
+              <Row
+                key={w.id}
+                on={on}
+                onMouseDown={click}
+                left={
+                  <span>
+                    <span
+                      fg={on ? theme.accent : w.status === "stopped" ? theme.muted : theme.fg}
+                      attributes={on ? TextAttributes.BOLD : undefined}
+                    >
+                      {clip(w.name, inner - 1 - stateTag.length)}
+                    </span>
+                  </span>
+                }
+                right={
+                  <span
+                    fg={running[i] ? theme.accent : theme.muted}
+                    attributes={running[i] ? undefined : TextAttributes.DIM}
+                  >
+                    {stateTag}
+                  </span>
+                }
+              />
+            );
+          })}
+        </box>
       </scrollbox>
 
-      {/* pinned footer, opencode: flexShrink 0, gap 1, paddingTop 1 */}
-      <box flexDirection="column" flexShrink={0} gap={1} paddingTop={1}>
-      {ws && (
-        <box flexDirection="column">
-          <text fg={theme.accent}><b>{ws.name}</b></text>
-          <text fg={theme.muted} attributes={TextAttributes.DIM}>{ws.repo}</text>
-          <text fg={theme.muted}>⎇ {ws.branch}</text>
-          <text fg={theme.muted}>
-            {ws.ports.length > 0
-              ? `ports ${ws.ports.map((p) => `:${p}`).join(" ")}`
-              : "no exposed ports"}
-          </text>
+      {/* pinned: the one environment, and the services it runs */}
+      <box flexDirection="column" flexShrink={0} paddingBottom={1}>
+        <box flexDirection="column" paddingLeft={1} paddingRight={1}>
+        <Heading width={width - 2} flush>Environment</Heading>
+        <Row
+          left={
+            <span>
+              {envOwner ? <span fg={theme.muted}>{envOwner}/</span> : ""}
+              <span fg={theme.fg} attributes={TextAttributes.BOLD}>{envName}</span>
+            </span>
+          }
+        />
+
+        {services.map((svc) => (
+          <Row
+            key={svc.name}
+            left={
+              <span>
+                <span fg={theme.border}>{"  "}</span>
+                <span fg={svc.interceptedBy ? theme.accent : theme.fg}>{svc.name}</span>
+              </span>
+            }
+            right={
+              <span attributes={TextAttributes.DIM}>
+                {svc.interceptedBy ? (
+                  <span fg={theme.accent}>{"→ "}{svc.interceptedBy}{"  "}</span>
+                ) : ""}
+                <span fg={theme.muted}>{svc.proto ?? "tcp"}:{svc.port}</span>
+              </span>
+            }
+          />
+        ))}
+        {snapshot ? (
+          // last row of the block: labelled, because a bare name reads like a
+          // tag and would collide with a long env name up on the env row
+          <>
+            <box height={1} flexShrink={0} />
+            <Row
+              left={
+                <span>
+                  <span fg={theme.muted}>{"current snapshot: "}</span>
+                  <span fg={theme.fg}>{clip(snapshot, inner - 18)}</span>
+                </span>
+              }
+            />
+          </>
+        ) : null}
         </box>
-      )}
-      <text fg={theme.muted}>
-        <span fg={theme.accent}>•</span> kloud<b>lite</b>{" "}
-        <span attributes={TextAttributes.DIM}>v0.0.0</span>
-      </text>
       </box>
     </box>
   );

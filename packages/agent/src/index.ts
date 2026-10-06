@@ -34,7 +34,7 @@ export const models = runtime;
 
 export type ModelRef = { provider: string; id: string };
 
-type Settings = { defaultModel?: ModelRef; theme?: string; sidebar?: "show" | "hide"; thinking?: "show" | "hide" };
+type Settings = { defaultModel?: ModelRef; theme?: string; sidebar?: "show" | "hide"; sidebarWidth?: number; thinking?: "show" | "hide"; vim?: "on" | "off" };
 
 const SETTINGS_PATH = join(CONFIG_DIR, "settings.json");
 
@@ -133,8 +133,65 @@ export function loginProvider(
  * an archive/ subdir so `continueRecent` starts from scratch, without deleting
  * anything.
  */
+type SessionMeta = { key: string; name?: string; description?: string; updated: number };
+
+function sessionDir(key: string): string {
+  return join(CONFIG_DIR, "sessions", key.replace(/[^\w.-]/g, "_"));
+}
+
+function metaPath(key: string): string {
+  return join(sessionDir(key), "meta.json");
+}
+
+function readMeta(key: string): SessionMeta | undefined {
+  try {
+    return JSON.parse(readFileSync(metaPath(key), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeMeta(meta: SessionMeta): void {
+  mkdirSync(sessionDir(meta.key), { recursive: true });
+  writeFileSync(metaPath(meta.key), JSON.stringify(meta, null, 2));
+}
+
+/** Give a session a human name, so it can be found and continued later. */
+export function nameSession(key: string, name: string): void {
+  writeMeta({ ...(readMeta(key) ?? { key, updated: Date.now() }), key, name });
+}
+
+/** One line on what this session is for, shown under its title. */
+export function describeSession(key: string, description: string): void {
+  writeMeta({ ...(readMeta(key) ?? { key, updated: Date.now() }), key, description });
+}
+
+/**
+ * Persisted sessions, newest first. `key` is what `createSession` takes, so a
+ * listed session can be continued as-is; `prefix` narrows to one context
+ * (e.g. an environment's main sessions).
+ */
+export function listSessions(prefix = ""): SessionMeta[] {
+  let dirs: string[];
+  try {
+    dirs = readdirSync(join(CONFIG_DIR, "sessions"));
+  } catch {
+    return [];
+  }
+  return dirs
+    .map((d) => {
+      try {
+        return JSON.parse(readFileSync(join(CONFIG_DIR, "sessions", d, "meta.json"), "utf8")) as SessionMeta;
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((m): m is SessionMeta => !!m && m.key.startsWith(prefix))
+    .sort((a, b) => b.updated - a.updated);
+}
+
 export function clearSessionHistory(key: string): void {
-  const dir = join(CONFIG_DIR, "sessions", key.replace(/[^\w.-]/g, "_"));
+  const dir = sessionDir(key);
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -144,7 +201,7 @@ export function clearSessionHistory(key: string): void {
   const archive = join(dir, "archive");
   mkdirSync(archive, { recursive: true });
   for (const name of entries) {
-    if (name === "archive") continue;
+    if (name === "archive" || name === "meta.json") continue;
     try {
       renameSync(join(dir, name), join(archive, `${Date.now()}-${name}`));
     } catch {}
@@ -165,15 +222,17 @@ export async function createSession({
   /** Start a brand-new persisted session instead of continuing the last one (/clear). */
   fresh?: boolean;
 }): Promise<AgentSession> {
-  const sessionDir = join(CONFIG_DIR, "sessions", key.replace(/[^\w.-]/g, "_"));
+  const dir = sessionDir(key);
+  // meta.json makes a session findable later: its key, its name, last use
+  writeMeta({ ...(readMeta(key) ?? { key }), key, updated: Date.now() });
   const { session } = await createAgentSession({
     cwd,
     modelRuntime: runtime,
     model,
     // continue the most recent session in this key's dir (new file if none)
     sessionManager: fresh
-      ? SessionManager.create(cwd, sessionDir)
-      : SessionManager.continueRecent(cwd, sessionDir),
+      ? SessionManager.create(cwd, dir)
+      : SessionManager.continueRecent(cwd, dir),
     customTools: registry?.all().map((def) => ({
       name: def.name,
       label: def.name,

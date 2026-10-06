@@ -2,10 +2,12 @@ import type { Entry } from "./components/Transcript.tsx";
 import { DEFAULT_MODEL, type ModelRef } from "./models.ts";
 
 /**
- * Hierarchical sessions: each environment has a main session (orchestrator),
- * and every workspace runs its own session with its own agent loop. Turns
- * keep running in whichever session started them, regardless of what the
- * user is currently looking at.
+ * Hierarchical sessions: a working session has main sessions (orchestrators)
+ * and every workspace has its own — both can be named and kept side by side.
+ * Turns keep running in whichever session started them, regardless of what the
+ * user is currently looking at. The connected environment is a property of the
+ * session, not part of its address, so `/env` moves the whole session across
+ * without swapping any transcript.
  */
 export type Session = {
   entries: Entry[];
@@ -14,15 +16,39 @@ export type Session = {
   /** Prompts submitted in this session, oldest first (↑/↓ recall). */
   history: string[];
   model: ModelRef;
-  /** Steering / follow-up prompts queued while the agent streams. */
-  queued: number;
+  /**
+   * Steering / follow-up prompts queued while the agent streams, in delivery
+   * order. `kind` decides which SDK queue an edit re-queues them onto.
+   */
+  queued: QueuedMessage[];
 };
 
-const emptySession: Session = { entries: [], busy: false, tokens: 0, history: [], model: DEFAULT_MODEL, queued: 0 };
+export type QueuedMessage = { text: string; kind: "steer" | "followUp" };
 
-/** Session key for a context: environment main, or a workspace's own session. */
-export function sessionKey(envId: string, workspaceId?: string): string {
-  return workspaceId ?? `${envId}:main`;
+const emptySession: Session = { entries: [], busy: false, tokens: 0, history: [], model: DEFAULT_MODEL, queued: [] };
+
+/**
+ * Where a context's sessions live: the working session's main sessions, or one
+ * workspace's. `sessionKey` hangs a session id off it — "main" is the default,
+ * always-there session, other ids are the named ones.
+ */
+export function sessionBase(workspaceId?: string): string {
+  return workspaceId ?? "main";
+}
+
+export function sessionKey(workspaceId?: string, id = "main"): string {
+  const base = sessionBase(workspaceId);
+  return id === "main" ? base : `${base}:${id}`;
+}
+
+/** The session id inside a key, i.e. the inverse of `sessionKey`. */
+export function sessionIdOf(base: string, key: string): string {
+  return key === base ? "main" : key.slice(base.length + 1);
+}
+
+/** A fresh session id, used as the key suffix for a new named session. */
+export function newSessionId(): string {
+  return Date.now().toString(36);
 }
 
 export type SessionMap = Record<string, Session>;

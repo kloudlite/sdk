@@ -11,9 +11,11 @@ import {
   displayRoot,
   fileDiff,
   fullFile,
+  grep,
   isGitRepo,
   listDir,
   type Change,
+  type Match,
   type TreeNode,
 } from "../git.ts";
 
@@ -24,35 +26,38 @@ type Row =
   | { kind: "node"; node: TreeNode; depth: number };
 
 /**
- * Files view: review surface for a workspace. Left: CHANGES (git vs HEAD)
- * then the FILES tree. Right: diff (or full file) on the shared DiffView.
- * NORMAL-mode letter keys; esc returns to the transcript.
+ * Files view: one list holding both CHANGES (vs HEAD) and the FILES tree,
+ * with a reader pane on the right (diff, or the full file). `/` filters paths,
+ * `s` searches contents; esc backs out a layer at a time. `/` filters paths, `s` searches file
+ * contents; both work in either mode. NORMAL-mode letter keys; esc goes back.
  */
 export function Files({
   root,
   workspace,
   refreshKey,
   onClose,
+  onCycle,
 }: {
   root: string;
   workspace: string;
   /** bump to re-scan (agent finished an edit/write) */
   refreshKey: number;
   onClose: () => void;
+  /** `f` moves on to the next view, same as outside. */
+  onCycle: () => void;
 }) {
   const [changes, setChanges] = useState<Change[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Record<string, TreeNode[]>>({});
   const [sel, setSel] = useState(0);
-  // primary = "review": every change as one scrolling diff; "browse" = tree with inline diffs
-  const [layout, setLayout] = useState<"review" | "browse">("review");
   const [pane, setPane] = useState<"tree" | "diff">("tree");
   const [open, setOpen] = useState<{ path: string; status?: Change["status"] } | null>(null);
   const [view, setView] = useState<"diff" | "full">("diff");
-  // review mode: which file's diff is at the top / current file index
-  const [reviewIdx, setReviewIdx] = useState(0);
-  const reviewRef = useRef<ScrollBoxRenderable>(null);
-  const [filter, setFilter] = useState<string | null>(null); // null = not filtering
+  // one typing prompt for both "/" (filter paths) and "s" (search contents)
+  const [prompt, setPrompt] = useState<{ kind: "filter" | "search"; text: string } | null>(null);
+  const [filter, setFilter] = useState("");
+  const [search, setSearch] = useState<{ query: string; matches: Match[] } | null>(null);
+  const [matchIdx, setMatchIdx] = useState(0);
   const [flash, setFlash] = useState(false);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const git = useMemo(() => isGitRepo(root), [root]);
@@ -94,9 +99,9 @@ export function Files({
     out.push({ kind: "header", label: "FILES" });
     const walk = (rel: string, depth: number) => {
       for (const node of dir(rel)) {
-        if (filter !== null && filter !== "" && !node.dir && !node.path.toLowerCase().includes(filter.toLowerCase())) continue;
+        if (filter && !node.dir && !node.path.toLowerCase().includes(filter.toLowerCase())) continue;
         out.push({ kind: "node", node, depth });
-        if (node.dir && !node.ignored && (expanded.has(node.path) || (filter !== null && filter !== ""))) walk(node.path, depth + 1);
+        if (node.dir && !node.ignored && (expanded.has(node.path) || filter)) walk(node.path, depth + 1);
       }
     };
     walk("", 0);
@@ -120,19 +125,17 @@ export function Files({
           return n;
         });
       } else {
-        const st = changeStatus(row.node.path);
-        setOpen({ path: row.node.path, status: st });
-        setView(st ? "diff" : "full");
+        // browsing files shows the file; diffs belong to the CHANGES rows
+        setOpen({ path: row.node.path, status: changeStatus(row.node.path) });
+        setView("full");
       }
     }
   };
 
-  const allDiffs = useMemo(
-    () => changes.map((c) => ({ change: c, diff: fileDiff(root, c.path, c.status) })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [changes, refreshKey],
+  const shownChanges = useMemo(
+    () => changes.filter((c) => !filter || c.path.toLowerCase().includes(filter.toLowerCase())),
+    [changes, filter],
   );
-
   const diff: FileDiff | null = useMemo(() => {
     if (!open?.status) return null;
     return fileDiff(root, open.path, open.status);
@@ -141,7 +144,7 @@ export function Files({
   const body: FileDiff | null = useMemo(() => {
     if (!open) return null;
     if (view === "diff" && diff) return diff;
-    return { path: open.path, lines: fullFile(root, open.path, diff), added: diff?.added ?? 0, removed: diff?.removed ?? 0 };
+    return { path: open.path, lines: fullFile(root, open.path, open.status), added: diff?.added ?? 0, removed: diff?.removed ?? 0 };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view, diff, refreshKey]);
   // hunk starts: rows where a change run begins (in full view, tinted runs)
@@ -158,51 +161,77 @@ export function Files({
   const [hunk, setHunk] = useState(0);
   useEffect(() => setHunk(0), [open]);
 
+  /** Open a path in the reader pane, optionally scrolled to a line. */
+  function openPath(path: string, line?: number) {
+    setOpen({ path, status: changeStatus(path) });
+    setView(changeStatus(path) && line === undefined ? "diff" : "full");
+    setPane("diff");
+    setSearch(null);
+    if (line !== undefined) setTimeout(() => scrollRef.current?.scrollTo(Math.max(0, line - 3)), 30);
+  }
+
   useKeyboard((key) => {
     if (key.ctrl || key.meta || key.option) return;
-    // filter typing
-    if (filter !== null) {
-      if (key.name === "escape") return setFilter(null);
-      if (key.name === "return") return setFilter(filter === "" ? null : filter);
-      if (key.name === "backspace" || key.name === "delete") return setFilter((f) => (f ?? "").slice(0, -1));
+    // "/" filter and "s" search share one typing prompt
+    if (prompt) {
+      if (key.name === "escape") {
+        if (prompt.kind === "filter") setFilter("");
+        return setPrompt(null);
+      }
+      if (key.name === "return") {
+        setPrompt((p) => {
+          if (p?.kind === "search") {
+            const query = p.text.trim();
+            setSearch(query ? { query, matches: grep(root, query) } : null);
+            setMatchIdx(0);
+          }
+          return null;
+        });
+        return;
+      }
+      if (key.name === "backspace" || key.name === "delete") {
+        setPrompt((p) => {
+          if (!p) return p;
+          const text = p.text.slice(0, -1);
+          if (p.kind === "filter") setFilter(text);
+          return { ...p, text };
+        });
+        return;
+      }
       if (SPECIAL.has(key.name)) return;
       const t = key.sequence;
-      if (t && !t.startsWith("\x1b") && t >= " ") setFilter((f) => (f ?? "") + t);
+      if (t && !t.startsWith("\x1b") && t >= " ") {
+        setPrompt((p) => {
+          if (!p) return p;
+          const text = p.text + t;
+          if (p.kind === "filter") setFilter(text);
+          return { ...p, text };
+        });
+      }
       return;
     }
-    if (key.name === "escape") return onClose();
-    if (key.name === "t") return setLayout((l) => (l === "review" ? "browse" : "review"));
+    if (key.name === "escape") {
+      if (search) return setSearch(null);
+      if (filter) return setFilter("");
+      return onClose();
+    }
+    if (key.sequence === "/") return setPrompt({ kind: "filter", text: filter });
+    if (key.name === "s") return setPrompt({ kind: "search", text: search?.query ?? "" });
+    if (key.name === "f") return onCycle();
     if (key.name === "r") return rescan();
-    if (layout === "review") {
-      const sb = reviewRef.current;
-      const page = Math.max(1, (sb?.viewport.height ?? 20) - 2);
-      if (key.name === "j" || key.name === "down") sb?.scrollBy(1);
-      if (key.name === "k" || key.name === "up") sb?.scrollBy(-1);
-      if (key.name === "d") sb?.scrollBy(Math.ceil(page / 2));
-      if (key.name === "u") sb?.scrollBy(-Math.ceil(page / 2));
-      if (key.name === "n" || key.name === "N") {
-        if (!changes.length) return;
-        const next = key.shift ? (reviewIdx - 1 + changes.length) % changes.length : (reviewIdx + 1) % changes.length;
-        setReviewIdx(next);
-        // scroll to that file's block: rows before it = sum of previous blocks
-        let row = 0;
-        for (let i = 0; i < next; i++) row += 3 + (allDiffs[i]?.diff?.lines.length ?? 1);
-        sb?.scrollTo(row);
-      }
-      if (key.name === "l" || key.name === "return") {
-        // open this file in browse mode
-        const c = changes[reviewIdx];
-        if (c) {
-          setOpen({ path: c.path, status: c.status });
-          setView("diff");
-          setLayout("browse");
-          setPane("diff");
-        }
+    // search results own the keyboard while they're up
+    if (search) {
+      const n = search.matches.length;
+      if (!n) return;
+      if (key.name === "j" || key.name === "down") return setMatchIdx((i) => Math.min(n - 1, i + 1));
+      if (key.name === "k" || key.name === "up") return setMatchIdx((i) => Math.max(0, i - 1));
+      if (key.name === "return" || key.name === "l") {
+        const m = search.matches[matchIdx]!;
+        return openPath(m.path, m.line);
       }
       return;
     }
     if (key.name === "tab") return setPane((p) => (p === "tree" ? "diff" : "tree"));
-    if (key.sequence === "/") return setFilter("");
     if (pane === "tree") {
       const pos = Math.max(0, selectable.indexOf(cur));
       if (key.name === "j" || key.name === "down") return setSel(selectable[Math.min(selectable.length - 1, pos + 1)] ?? cur);
@@ -242,10 +271,10 @@ export function Files({
     const page = Math.max(1, (sb?.viewport.height ?? 20) - 2);
     if (key.name === "j" || key.name === "down") sb?.scrollBy(1);
     if (key.name === "k" || key.name === "up") sb?.scrollBy(-1);
-    if (key.name === "d" && key.shift === false && view === "full") setView("diff");
-    else if (key.name === "d") sb?.scrollBy(Math.ceil(page / 2));
+    if (key.name === "d") sb?.scrollBy(Math.ceil(page / 2));
     if (key.name === "u") sb?.scrollBy(-Math.ceil(page / 2));
-    if (key.name === "f") setView("full");
+    // v flips this file between its diff and its full contents
+    if (key.name === "v" && open?.status) setView((v) => (v === "diff" ? "full" : "diff"));
     if (key.name === "h") setPane("tree");
     if (key.name === "n" || (key.name === "N" && key.shift)) {
       if (!hunks.length) return;
@@ -255,9 +284,6 @@ export function Files({
     }
   });
 
-  // browse mode: the right pane is the "expanded" reader; when the tree has
-  // focus, the opened file's diff shows inline under its row instead
-  const showPane = pane === "diff";
 
   const statusColor = (s?: Change["status"]) =>
     s === "A" ? theme.diffAdded : s === "D" ? theme.diffRemoved : s === "M" ? theme.warning : theme.muted;
@@ -267,16 +293,27 @@ export function Files({
       {/* header */}
       <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
         <text>
-          <span fg={theme.accent}><b>{workspace}</b></span>
-          <span fg={theme.muted}> · {layout === "review" ? "changes" : "files"} · {displayRoot(root)}</span>
+          <span fg={theme.muted}>{displayRoot(root)}</span>
           {flash ? <span fg={theme.success}>  ● updated</span> : ""}
         </text>
         <text fg={theme.muted}>
-          {filter !== null ? (
+          {prompt ? (
+            <span>
+              <span fg={theme.accent}>{prompt.kind === "filter" ? "/" : "search "}</span>
+              <span fg={theme.fg}>{prompt.text}</span>
+              <span attributes={TextAttributes.INVERSE}> </span>
+            </span>
+          ) : search ? (
+            <span>
+              <span fg={theme.accent}>search </span>
+              <span fg={theme.fg}>{search.query}</span>
+              <span fg={theme.muted}> · {search.matches.length} matches</span>
+            </span>
+          ) : filter ? (
             <span>
               <span fg={theme.accent}>/</span>
               <span fg={theme.fg}>{filter}</span>
-              <span attributes={TextAttributes.INVERSE}> </span>
+              <span fg={theme.muted}> · {shownChanges.length}/{changes.length} changed</span>
             </span>
           ) : (
             `${changes.length} changed`
@@ -284,44 +321,53 @@ export function Files({
         </text>
       </box>
 
-      {layout === "review" ? (
-        <scrollbox ref={reviewRef} flexGrow={1} flexBasis={0} minHeight={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }}>
-          {allDiffs.length === 0 && (
+      {search ? (
+        <scrollbox flexGrow={1} flexBasis={0} minHeight={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }}>
+          <box flexDirection="column" flexShrink={0} width="100%">
+          {search.matches.length === 0 ? (
             <box paddingLeft={1} paddingTop={1}>
-              <text fg={theme.muted}>{git ? "no changes vs HEAD — t to browse files" : "not a git repo — t to browse files"}</text>
+              <text fg={theme.muted}>no matches for "{search.query}" — s searches again, esc clears</text>
             </box>
+          ) : (
+            search.matches.map((m, i) => {
+              const on = i === matchIdx;
+              return (
+                <box
+                  key={`${m.path}:${m.line}:${i}`}
+                  height={1}
+                  overflow="hidden"
+                  paddingLeft={1}
+                  backgroundColor={on ? theme.selection : undefined}
+                  onMouseDown={() => {
+                    setMatchIdx(i);
+                    openPath(m.path, m.line);
+                  }}
+                >
+                  <text>
+                    <span fg={on ? theme.bg : theme.fg}>{m.path}</span>
+                    <span fg={on ? theme.bg : theme.muted}>:{m.line}</span>
+                    <span fg={on ? theme.bg : theme.muted}>  {m.text}</span>
+                  </text>
+                </box>
+              );
+            })
           )}
-          {allDiffs.map(({ change: c, diff: d }, i) => (
-            <box key={c.path} flexDirection="column" marginBottom={1}>
-              <box flexDirection="row" paddingLeft={1} paddingRight={1} backgroundColor={i === reviewIdx ? theme.surfaceRaised : theme.surface}>
-                <text>
-                  <span fg={statusColor(c.status)}><b>{c.status}</b></span>
-                  <span fg={theme.fg}>  {c.path}</span>
-                  <span fg={theme.diffAdded}>  +{c.added}</span>
-                  <span fg={theme.diffRemoved}> −{c.removed}</span>
-                </text>
-              </box>
-              <box paddingLeft={1} paddingTop={1}>
-                {d ? <DiffView diff={d} maxLines={5000} /> : <text fg={theme.muted}>(no diff)</text>}
-              </box>
-            </box>
-          ))}
+          </box>
         </scrollbox>
       ) : (
       <box flexDirection="row" flexGrow={1} minHeight={0} marginTop={1}>
         {/* left: tree */}
-        <box flexDirection="column" width={open ? 44 : 60} flexShrink={0} paddingLeft={1}>
+        <box
+          flexDirection="column"
+          width={open ? "42%" : "100%"}
+          minWidth={24}
+          flexShrink={0}
+          paddingLeft={1}
+          onMouseDown={() => setPane("tree")}
+        >
           <scrollbox flexGrow={1} flexBasis={0} scrollbarOptions={{ visible: false }}>
             {rows.map((row, i) => {
               const active = i === cur && pane === "tree";
-              const rowPath = row.kind === "change" ? row.change.path : row.kind === "node" && !row.node.dir ? row.node.path : null;
-              // inline diff: a compact preview under the opened file when the pane is closed
-              const inline =
-                rowPath && open?.path === rowPath && !showPane && diff ? (
-                  <box key={`d${rowPath}`} flexDirection="column" paddingLeft={3} marginBottom={1}>
-                    <DiffView diff={diff} maxLines={12} />
-                  </box>
-                ) : null;
               if (row.kind === "header")
                 return (
                   <box key={`h${row.label}`} marginTop={i === 0 ? 0 : 1} flexDirection="row" justifyContent="space-between" paddingRight={1}>
@@ -332,11 +378,21 @@ export function Files({
               if (row.kind === "change")
                 return (
                   <box key={`c${row.change.path}`} flexDirection="column">
-                    <box flexDirection="row" height={1} overflow="hidden" backgroundColor={active ? theme.selection : undefined} paddingLeft={1}>
+                    <box
+                      flexDirection="row"
+                      height={1}
+                      overflow="hidden"
+                      backgroundColor={active ? theme.selection : undefined}
+                      paddingLeft={1}
+                      onMouseDown={() => {
+                        setSel(i);
+                        setPane("tree");
+                        openRow(row);
+                      }}
+                    >
                       <text fg={active ? theme.bg : statusColor(row.change.status)}>{row.change.status} </text>
                       <text fg={active ? theme.bg : theme.fg}>{row.change.path}</text>
                     </box>
-                    {inline}
                   </box>
                 );
               const n = row.node;
@@ -344,37 +400,66 @@ export function Files({
               const glyph = n.dir ? (n.ignored ? "  " : expanded.has(n.path) ? "▾ " : "▸ ") : "  ";
               return (
                 <box key={`n${n.path}`} flexDirection="column">
-                  <box flexDirection="row" height={1} overflow="hidden" backgroundColor={active ? theme.selection : undefined} paddingLeft={1 + row.depth * 2}>
+                  <box
+                    flexDirection="row"
+                    height={1}
+                    overflow="hidden"
+                    backgroundColor={active ? theme.selection : undefined}
+                    paddingLeft={1 + row.depth * 2}
+                    onMouseDown={() => {
+                      setSel(i);
+                      setPane("tree");
+                      openRow(row);
+                    }}
+                  >
                     <text fg={active ? theme.bg : n.ignored ? theme.placeholder : n.dir ? theme.fg : st ? theme.fg : theme.muted}>
                       {glyph}{n.name}{n.dir ? "/" : ""}
                     </text>
                     {st ? <text fg={active ? theme.bg : statusColor(st)}> {st}</text> : null}
-                    {n.ignored ? <text fg={theme.placeholder} attributes={TextAttributes.DIM}> ignored</text> : null}
                   </box>
-                  {inline}
                 </box>
               );
             })}
           </scrollbox>
         </box>
 
-        {/* right: full reader (tab to focus); tree shows a compact inline diff otherwise */}
-        <box flexDirection="column" flexGrow={1} minHeight={0} {...SplitBorder} border={["left"]} borderColor={pane === "diff" ? theme.accent : theme.border}>
+        {/* right: the reader — the one place a diff or file body is rendered */}
+        <box
+          flexDirection="column"
+          flexGrow={1}
+          minHeight={0}
+          {...SplitBorder}
+          border={["left"]}
+          borderColor={pane === "diff" ? theme.accent : theme.border}
+          onMouseDown={() => setPane("diff")}
+        >
           {!open || !body ? (
             <box paddingLeft={2} paddingTop={1}>
-              <text fg={theme.muted}>select a file — l/enter opens · tab switches panes · / filters</text>
+              <text fg={theme.muted}>select a file — l/enter opens · v diff/full · tab switches panes · / filters · s searches</text>
             </box>
           ) : (
             <>
               <box flexDirection="row" justifyContent="space-between" paddingLeft={2} paddingRight={2}>
                 <text>
+                  <span fg={theme.muted}>{view === "diff" ? "diff of " : ""}</span>
                   <span fg={theme.fg}>{open.path}</span>
-                  {open.status ? <span fg={statusColor(open.status)}>  {open.status}</span> : ""}
-                  <span fg={theme.diffAdded}>  +{body.added}</span>
-                  <span fg={theme.diffRemoved}> −{body.removed}</span>
+                  {open.status && view === "diff" ? (
+                    <span>
+                      <span fg={theme.diffAdded}>  +{body.added}</span>
+                      <span fg={theme.diffRemoved}> −{body.removed}</span>
+                    </span>
+                  ) : (
+                    ""
+                  )}
                 </text>
                 <text fg={theme.muted}>
-                  {view === "diff" ? "diff" : "full"} · {hunks.length ? `${hunk + 1}/${hunks.length} hunks` : "no changes"}
+                  {view === "diff"
+                    ? hunks.length > 1
+                      ? `hunk ${hunk + 1}/${hunks.length} · n next · v file`
+                      : "v shows the file"
+                    : open.status
+                      ? `${body.lines.length} lines · v shows the diff`
+                      : `${body.lines.length} lines`}
                 </text>
               </box>
               <scrollbox ref={scrollRef} flexGrow={1} flexBasis={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }}>
@@ -389,15 +474,16 @@ export function Files({
       {/* footer hints */}
       <box flexDirection="row" gap={2} paddingLeft={1} marginTop={1}>
         <text fg={theme.muted}>
-          {layout === "review" ? `changes › ${changes[reviewIdx]?.path ?? "—"}` : `files › ${open?.path ?? "—"}`}
+          {search
+            ? `search › ${search.matches[matchIdx]?.path ?? "—"}`
+            : `files › ${open?.path ?? "—"}`}
         </text>
         <box flexGrow={1} />
-        {layout === "review" ? (
+        {search ? (
           <>
-            <text fg={theme.fg}>j k u d <span fg={theme.muted}>scroll</span></text>
-            <text fg={theme.fg}>n N <span fg={theme.muted}>next/prev file</span></text>
-            <text fg={theme.fg}>l <span fg={theme.muted}>open in tree</span></text>
-            <text fg={theme.fg}>t <span fg={theme.muted}>tree</span></text>
+            <text fg={theme.fg}>j k <span fg={theme.muted}>match</span></text>
+            <text fg={theme.fg}>enter <span fg={theme.muted}>open at line</span></text>
+            <text fg={theme.fg}>s <span fg={theme.muted}>search again</span></text>
           </>
         ) : (
           <>
@@ -406,9 +492,9 @@ export function Files({
             <text fg={theme.fg}>h <span fg={theme.muted}>up</span></text>
             <text fg={theme.fg}>tab <span fg={theme.muted}>pane</span></text>
             <text fg={theme.fg}>n N <span fg={theme.muted}>hunks</span></text>
-            <text fg={theme.fg}>d f <span fg={theme.muted}>diff/full</span></text>
+            <text fg={theme.fg}>v <span fg={theme.muted}>diff/full</span></text>
             <text fg={theme.fg}>/ <span fg={theme.muted}>filter</span></text>
-            <text fg={theme.fg}>t <span fg={theme.muted}>changes</span></text>
+            <text fg={theme.fg}>s <span fg={theme.muted}>search</span></text>
           </>
         )}
         <text fg={theme.fg}>esc <span fg={theme.muted}>back</span></text>

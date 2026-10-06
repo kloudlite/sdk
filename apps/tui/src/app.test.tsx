@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { Registry } from "@kloudlite-tui/tools";
+import { writeSettings } from "@kloudlite-tui/agent";
 import { App } from "./app.tsx";
 
 const COLS = 200;
@@ -8,7 +9,15 @@ const ROWS = 32;
 
 const tick = () => new Promise((r) => setTimeout(r, 60));
 
-async function mount() {
+/**
+ * Most tests drive the vim key scheme (bare-letter commands), so they opt into
+ * it explicitly — `vim` defaults to "off", where typing always reaches the
+ * prompt and the commands live on ctrl+<letter>.
+ */
+async function mount(opts?: { vim?: "on" | "off" }) {
+  // width too: a resize test would otherwise leak its narrow sidebar into
+  // every later mount through the shared temp config
+  writeSettings({ vim: opts?.vim ?? "on", sidebarWidth: 42 });
   const setup = await testRender(<App registry={new Registry()} />, {
     width: COLS,
     height: ROWS,
@@ -23,17 +32,23 @@ async function mount() {
     return setup.captureCharFrame();
   };
   const insert = async () => {
-    setup.mockInput.pressKey("i"); // NORMAL → INSERT
+    // only vim's NORMAL mode needs to be left; otherwise the prompt is live
+    if ((opts?.vim ?? "on") === "on") setup.mockInput.pressKey("i");
     await tick();
     await setup.renderOnce();
   };
-  return { ...setup, frame, insert, done: () => setup.renderer.destroy() };
+  /** The hint bar's context path alone — the sidebar names workspaces too. */
+  const path = async () => {
+    const lines = (await frame()).split("\n").filter((l) => l.trim() !== "");
+    return lines[lines.length - 1]!.trim();
+  };
+  return { ...setup, frame, path, insert, done: () => setup.renderer.destroy() };
 }
 
 test("sidebar renders", async () => {
   const t = await mount();
   const f = await t.frame();
-  expect(f).toContain("main");
+  expect(f).toContain("Working Session");
   expect(f).toContain("api-gateway");
   expect(f).toContain("NORMAL"); // modal keyboard starts in NORMAL
   t.done();
@@ -77,22 +92,21 @@ test("card keeps its shape after submit", async () => {
 test("tab cycles focus, shift-tab cycles back", async () => {
   const t = await mount();
   t.mockInput.pressKey("\t"); // main → first workspace
-  expect(await t.frame()).toContain("main › api-gateway");
+  expect(await t.path()).toContain("api-gateway");
   t.mockInput.pressKey("[Z"); // shift-tab → back to main (in the ring)
-  expect(await t.frame()).not.toContain("main ›");
+  expect(await t.path()).not.toContain("api-gateway");
   t.mockInput.pressKey("[Z"); // again → wraps to the last workspace
-  expect(await t.frame()).toContain("main › infra-iac");
+  expect(await t.path()).toContain("infra-iac");
   t.done();
 });
 
 test("NORMAL j enters a workspace, 0 returns to main", async () => {
   const t = await mount();
   t.mockInput.pressKey("j");
-  expect(await t.frame()).toContain("main › api-gateway");
+  expect(await t.path()).toContain("api-gateway");
   t.mockInput.pressKey("0"); // back to main context
-  const f = await t.frame();
-  expect(f).not.toContain("main ›");
-  expect(f).not.toContain("Ask anything, or / for commandsk");
+  expect(await t.path()).not.toContain("api-gateway");
+  expect(await t.frame()).not.toContain("Ask anything, or / for commandsk");
   t.done();
 });
 
@@ -100,17 +114,15 @@ test("in INSERT, plain j and k type; in NORMAL they navigate", async () => {
   const t = await mount();
   await t.insert();
   await t.mockInput.typeText("jk");
-  const f = await t.frame();
-  expect(f).toContain("jk");
-  expect(f).not.toContain("main ›"); // typing, not navigating
+  expect(await t.frame()).toContain("jk");
+  expect(await t.path()).not.toContain("api-gateway"); // typing, not navigating
   t.done();
 });
 
 test("NORMAL mode: j enters a workspace without typing", async () => {
   const t = await mount();
   t.mockInput.pressKey("j");
-  const f = await t.frame();
-  expect(f).toContain("main › api-gateway");
+  expect(await t.path()).toContain("api-gateway");
   t.done();
 });
 
@@ -147,19 +159,6 @@ test("shift+enter inserts a newline instead of submitting", async () => {
   t.done();
 });
 
-test("ctrl+p palette jumps to an environment", async () => {
-  const t = await mount();
-  t.mockInput.pressKey("p");
-  expect(await t.frame()).toContain("Jump to");
-  await t.mockInput.typeText("stag");
-  await t.frame();
-  t.mockInput.pressKey("RETURN");
-  const f = await t.frame();
-  expect(f).toContain("staging"); // now open + active as a tab
-  expect(f).not.toContain("Jump to"); // palette closed
-  t.done();
-});
-
 test("input history is per session and recalled with arrows", async () => {
   const t = await mount();
   await t.insert();
@@ -183,27 +182,9 @@ test("input history is per session and recalled with arrows", async () => {
   await t.frame();
   t.mockInput.pressKey("ARROW_UP");
   const f = await t.frame();
-  expect(f).toContain("› api-gateway"); // in workspace
+  expect(await t.path()).toContain("api-gateway"); // in workspace
   // the prompt card shows no recalled text (transcript may still show the turn)
   expect(f).not.toContain("Agent · first prompt");
-  t.done();
-});
-
-test("ctrl+h / ctrl+l navigate environment tabs", async () => {
-  const t = await mount();
-  // open staging via palette (becomes active tab)
-  t.mockInput.pressKey("p");
-  await t.frame();
-  await t.mockInput.typeText("staging");
-  await t.frame();
-  t.mockInput.pressKey("RETURN");
-  expect(await t.frame()).not.toContain("infra-iac"); // staging has no infra-iac
-
-  t.mockInput.pressKey("h"); // ← production
-  expect(await t.frame()).toContain("infra-iac");
-
-  t.mockInput.pressKey("l"); // → staging again
-  expect(await t.frame()).not.toContain("infra-iac");
   t.done();
 });
 
@@ -219,5 +200,209 @@ test("selecting /login from the menu allows typing the sub-option filter", async
   const f = await t.frame();
   expect(f).toContain("login codex"); // overlay filter carries the picked prefix
   expect(f).toContain("openai-codex");
+  t.done();
+});
+
+test("sidebar docks when wide, hides when narrow", async () => {
+  const wide = await testRender(<App registry={new Registry()} />, { width: 160, height: 32 });
+  await tick();
+  await wide.renderOnce();
+  expect(wide.captureCharFrame()).toContain("api-gateway"); // sidebar docked
+  wide.renderer.destroy();
+
+  const narrow = await testRender(<App registry={new Registry()} />, { width: 100, height: 32 });
+  await tick();
+  await narrow.renderOnce();
+  expect(narrow.captureCharFrame()).not.toContain("api-gateway");
+  narrow.renderer.destroy();
+});
+
+test("f opens the files view: changes and tree in one list", async () => {
+  const t = await mount();
+  t.mockInput.pressKey("1"); // enter api-gateway
+  await t.frame();
+  t.mockInput.pressKey("f");
+  const f = await t.frame();
+  expect(f).toContain("CHANGES"); // the tree lists changes, then FILES below
+  expect(f).toContain("files ›"); // and the view's own footer
+  t.mockInput.pressKey("ESCAPE");
+  expect(await t.frame()).not.toContain("CHANGES");
+  t.done();
+});
+
+test("/session name names the session you are in", async () => {
+  const t = await mount();
+  await t.insert();
+  await t.mockInput.typeText("/session name rate limits");
+  await t.frame();
+  t.mockInput.pressKey("RETURN");
+  const f = await t.frame();
+  expect(f).toContain("rate limits"); // hint bar path: the main session alone
+  expect(f).toContain("rate limits"); // sidebar root row is the session
+  t.done();
+});
+
+test("workspaces carry their own named sessions", async () => {
+  const t = await mount();
+  t.mockInput.pressKey("1"); // into api-gateway
+  await t.frame();
+  await t.insert();
+  await t.mockInput.typeText("/session name probe run");
+  await t.frame();
+  t.mockInput.pressKey("RETURN");
+  const f = await t.frame();
+  expect(f).toContain("probe run"); // the title bar and that workspace's row
+  // the path stays the workspace alone — it does not repeat the session name
+  expect(await t.path()).not.toContain("probe run");
+  t.done();
+});
+
+test("s searches file contents from the files view", async () => {
+  const t = await mount();
+  t.mockInput.pressKey("1"); // enter a workspace
+  await t.frame();
+  t.mockInput.pressKey("f"); // files view
+  expect(await t.frame()).toContain("CHANGES");
+
+  t.mockInput.pressKey("s");
+  await t.frame();
+  await t.mockInput.typeText("sessionKey");
+  await t.frame();
+  t.mockInput.pressKey("RETURN");
+  const f = await t.frame();
+  expect(f).toContain("search sessionKey");
+  expect(f).toContain("src/sessions.ts:"); // a hit, with its line number
+
+  t.mockInput.pressKey("ESCAPE"); // clears the search, stays in the view
+  expect(await t.frame()).not.toContain("search sessionKey");
+  t.done();
+});
+
+test("mouse: clicking a sidebar workspace and a hint", async () => {
+  const t = await mount();
+  const frame = await t.frame();
+  const lines = frame.split("\n");
+  const row = lines.findIndex((l) => l.includes("billing-svc"));
+  const col = lines[row]!.indexOf("billing-svc");
+  await t.mockMouse.click(col + 1, row);
+  expect(await t.frame()).toContain("billing-svc "); // hint bar path follows
+
+  // the hint bar's "f view" switches the column view on click
+  const hints = (await t.frame()).split("\n");
+  const hrow = hints.findIndex((l) => l.includes("f view"));
+  const hcol = hints[hrow]!.indexOf("f view");
+  await t.mockMouse.click(hcol + 1, hrow);
+  expect(await t.frame()).toContain("CHANGES");
+  t.done();
+});
+
+test("processes view lists what the workspace runs, with its logs", async () => {
+  const t = await mount();
+  t.mockInput.pressKey("1"); // api-gateway
+  await t.frame();
+  t.mockInput.pressKey("f"); // files
+  await t.frame();
+  t.mockInput.pressKey("f"); // processes
+  const f = await t.frame();
+  expect(f).toContain("2/3 running");
+  expect(f).toContain("server:8080");
+  expect(f).toContain("crashed (1)");
+  expect(f).toContain("listening on :8080"); // selected process's log
+
+  t.mockInput.pressKey("j"); // metrics
+  await t.frame();
+  t.mockInput.pressKey("j"); // tests (crashed)
+  expect(await t.frame()).toContain("--- FAIL: TestRateLimit");
+  t.done();
+});
+
+
+
+test("sidebar: session header, workspaces with their ephemerals, environment with its services", async () => {
+  const t = await mount();
+  const f = await t.frame();
+  expect(f).toContain("✦ "); // session header (title depends on earlier prompts)
+  expect(f).toContain("Workspaces");
+  expect(f).toContain("api-gateway");
+  expect(f).toMatch(/├ rate-limits-probe/); // ephemeral workspaces branch off it
+  expect(f).toMatch(/└ load-test/); // short names, not their task text
+  expect(f).not.toContain("Review bc5a5062"); // the task prompt never reaches a row
+  expect(f).not.toContain("IMPL"); // no phase tags
+  expect(f).not.toContain("●"); // no dot indicators
+  expect(f).toContain("Environment"); // the env heads its own block
+  expect(f).toContain("production");
+  expect(f).toContain("current snapshot: pre-rate-limits"); // labelled, on its own line
+  expect(f).toContain("→ api-gateway"); // interception, in the right-hand column
+  expect(f).toContain("http:8080"); // ports stay in their own column
+  t.done();
+});
+
+test("clicking an ephemeral row enters that workspace", async () => {
+  const t = await mount();
+  const lines = (await t.frame()).split("\n");
+  const row = lines.findIndex((l) => l.includes("└ load-test"));
+  await t.mockMouse.click(lines[row]!.indexOf("load-test") + 1, row);
+  expect(await t.frame()).toContain("api-gateway › load-test");
+  t.done();
+});
+
+test("session title bar: the title is inherited, never derived from a prompt", async () => {
+  const t = await mount();
+  // the main context is the working session
+  expect((await t.frame()).split("\n")[1]).toContain("Working Session");
+  t.mockInput.pressKey("1"); // api-gateway — the workspace names its session
+  expect((await t.frame()).split("\n")[1]).toContain("api-gateway");
+  t.mockInput.pressKey("2"); // its ephemeral agent names its own
+  expect((await t.frame()).split("\n")[1]).toContain("rate-limits-probe");
+  // asking something does not rename the title bar
+  await t.insert();
+  t.mockInput.typeText("why is the rate limiter dropping requests");
+  await t.frame();
+  t.mockInput.pressKey("\r");
+  const f = await t.frame();
+  expect(f.split("\n")[1]).toContain("rate-limits-probe");
+  expect(f).not.toMatch(/· \d+ changed/); // no derived subtitle either
+  t.done();
+});
+
+test("with vim off, typing reaches the prompt and ^f opens the files view", async () => {
+  const t = await mount({ vim: "off" });
+  await t.mockInput.typeText("hello there");
+  expect(await t.frame()).toContain("hello there"); // no `i` needed
+  t.mockInput.pressKey("k", { ctrl: true }); // into the first workspace
+  await t.frame();
+  t.mockInput.pressKey("f", { ctrl: true }); // cycle to the files view
+  expect(await t.frame()).toContain("CHANGES");
+  t.done();
+});
+
+test("with vim off, / on an empty prompt opens the commands overlay", async () => {
+  const t = await mount({ vim: "off" });
+  await t.mockInput.typeText("/");
+  expect(await t.frame()).toContain("Commands");
+  t.done();
+});
+
+test("a / inside a prompt is just text", async () => {
+  const t = await mount({ vim: "off" });
+  await t.mockInput.typeText("look at src/app.tsx");
+  const f = await t.frame();
+  expect(f).toContain("src/app.tsx");
+  expect(f).not.toContain("Commands");
+  t.done();
+});
+
+test("the sidebar resizes with [ and ] and clamps at its limits", async () => {
+  const t = await mount();
+  const cols = (f: string) => f.split("\n")[3]!.length - f.split("\n")[3]!.indexOf("Workspaces");
+  const before = cols(await t.frame());
+  t.mockInput.pressKey("]"); // wider
+  const wider = cols(await t.frame());
+  expect(wider).toBeGreaterThan(before);
+  for (let i = 0; i < 12; i++) t.mockInput.pressKey("["); // past the minimum
+  const narrow = cols(await t.frame());
+  expect(narrow).toBeLessThan(before);
+  for (let i = 0; i < 3; i++) t.mockInput.pressKey("["); // clamped, no further change
+  expect(cols(await t.frame())).toBe(narrow);
   t.done();
 });

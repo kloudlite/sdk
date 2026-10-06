@@ -56,11 +56,13 @@ export function changes(root: string): Change[] {
 function parseUnified(text: string): DiffLine[] {
   const lines: DiffLine[] = [];
   let oldNo = 0;
+  let newNo = 0;
   let first = true;
   for (const raw of text.split("\n")) {
     if (raw.startsWith("@@")) {
-      const m = /@@ -(\d+)/.exec(raw);
+      const m = /@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(raw);
       oldNo = m ? Number(m[1]) : 0;
+      newNo = m ? Number(m[2]) : 0;
       if (!first) lines.push({ no: "", sign: " ", text: "⋯" });
       first = false;
       continue;
@@ -70,9 +72,15 @@ function parseUnified(text: string): DiffLine[] {
     if (raw === "" && lines.length === 0) continue;
     const sign = raw[0];
     const body = raw.slice(1);
-    if (sign === "+") lines.push({ no: oldNo, sign: "+", text: body });
+    // numbers follow the file each line belongs to: additions and context use
+    // the new file, removals the old one — so a diff reads like the result
+    if (sign === "+") lines.push({ no: newNo++, sign: "+", text: body });
     else if (sign === "-") lines.push({ no: oldNo++, sign: "-", text: body });
-    else if (sign === " ") lines.push({ no: oldNo++, sign: " ", text: body });
+    else if (sign === " ") {
+      lines.push({ no: newNo, sign: " ", text: body });
+      oldNo++;
+      newNo++;
+    }
   }
   return lines;
 }
@@ -100,21 +108,59 @@ export function fileDiff(root: string, path: string, status: ChangeStatus): File
   };
 }
 
-/** Full file as context-only DiffLines; changed lines tinted when a diff exists. */
-export function fullFile(root: string, path: string, diff: FileDiff | null): DiffLine[] {
+/**
+ * Which lines of the working copy are new since HEAD, and where lines were
+ * deleted. Uses a zero-context diff so the ranges are exact.
+ */
+function marks(root: string, path: string, status?: ChangeStatus): {
+  added: Set<number>;
+  all: boolean;
+  deletedAbove: Map<number, number>;
+} {
+  const added = new Set<number>();
+  const deletedAbove = new Map<number, number>();
+  if (!status || !isGitRepo(root)) return { added, all: false, deletedAbove };
+  if (status === "A") return { added, all: true, deletedAbove };
+  const out = run(root, ["diff", "-U0", "--relative", "HEAD", "--", path]);
+  let newNo = 0;
+  for (const raw of out.split("\n")) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))?/.exec(raw);
+    if (hunk) {
+      const start = Number(hunk[1]);
+      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      // a pure deletion is reported as "+N,0": N is the line it follows, so
+      // the removed lines sit before N+1
+      newNo = count === 0 ? start + 1 : start;
+      continue;
+    }
+    if (raw.startsWith("+++") || raw.startsWith("---")) continue;
+    if (raw.startsWith("+")) added.add(newNo++);
+    else if (raw.startsWith("-")) deletedAbove.set(newNo, (deletedAbove.get(newNo) ?? 0) + 1);
+  }
+  return { added, all: false, deletedAbove };
+}
+
+/** Full file, numbered, with new lines and deletion points marked. */
+export function fullFile(root: string, path: string, status?: ChangeStatus): DiffLine[] {
   let content = "";
   try {
     content = readFileSync(join(root, path), "utf8");
   } catch {
     return [{ no: "", sign: " ", text: "(binary or unreadable)" }];
   }
-  const added = new Set<string>();
-  if (diff) for (const l of diff.lines) if (l.sign === "+") added.add(l.text);
-  return content.split("\n").map((text, i) => ({
-    no: i + 1,
-    sign: added.has(text) ? "+" : " ",
-    text,
-  }));
+  const { added, all, deletedAbove } = marks(root, path, status);
+  const out: DiffLine[] = [];
+  content.split("\n").forEach((text, i) => {
+    const no = i + 1;
+    // lines removed here show as one marker row, so the file itself stays intact
+    const gone = deletedAbove.get(no);
+    if (gone) out.push({ no: "", sign: " ", text: "", mark: "deleted-gap", count: gone });
+    out.push({ no, sign: " ", text, mark: all || added.has(no) ? "added" : undefined });
+  });
+  // deletions at the very end of the file
+  const tail = deletedAbove.get(content.split("\n").length + 1);
+  if (tail) out.push({ no: "", sign: " ", text: "", mark: "deleted-gap", count: tail });
+  return out;
 }
 
 /** One directory level of the tree, dirs first, ignored ones marked. */
@@ -134,6 +180,34 @@ export function listDir(root: string, rel: string): TreeNode[] {
     return { name, path, dir, ignored: IGNORED.has(name) };
   });
   return nodes.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
+}
+
+export type Match = { path: string; line: number; text: string };
+
+/**
+ * Content search across the working tree (tracked + untracked, binaries
+ * skipped). Falls back to nothing outside a git repo — good enough while the
+ * files view is git-backed anyway.
+ */
+export function grep(root: string, query: string, limit = 300): Match[] {
+  if (!query.trim() || !isGitRepo(root)) return [];
+  const out = run(root, [
+    "grep", "-n", "-I", "--untracked", "--no-color",
+    "--fixed-strings", "--ignore-case", "-e", query,
+  ]);
+  const matches: Match[] = [];
+  for (const raw of out.split("\n")) {
+    if (!raw) continue;
+    // path:line:text — paths can contain ':' only rarely; split on the first two
+    const first = raw.indexOf(":");
+    const second = raw.indexOf(":", first + 1);
+    if (first < 0 || second < 0) continue;
+    const line = Number(raw.slice(first + 1, second));
+    if (!line) continue;
+    matches.push({ path: raw.slice(0, first), line, text: raw.slice(second + 1).trim() });
+    if (matches.length >= limit) break;
+  }
+  return matches;
 }
 
 export function displayRoot(root: string): string {

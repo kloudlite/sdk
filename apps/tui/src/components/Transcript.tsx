@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import { theme } from "../theme.ts";
@@ -25,14 +25,29 @@ export type Entry =
   | { kind: "info"; text: string }
   | { kind: "error"; text: string };
 
-const OUTPUT_MAX = 10;
+/** Rows kept when a block is collapsed (Claude Code shows a short head). */
+const COLLAPSE_MAX = 10;
 
-function clipOutput(output?: string): string {
-  if (!output) return "";
-  const lines = output.trim().split("\n");
-  const shown = lines.slice(-OUTPUT_MAX);
-  const hidden = lines.length - shown.length;
-  return (hidden > 0 ? [`… +${hidden} lines`, ...shown] : shown).join("\n");
+/**
+ * Collapse a block to its last `COLLAPSE_MAX` rows. Returns the kept text and
+ * how many rows it hid, so the caller can offer the expander.
+ */
+function collapse(text: string | undefined, open: boolean): { text: string; hidden: number } {
+  if (!text) return { text: "", hidden: 0 };
+  const lines = text.trim().split("\n");
+  if (open || lines.length <= COLLAPSE_MAX) return { text: lines.join("\n"), hidden: 0 };
+  return { text: lines.slice(-COLLAPSE_MAX).join("\n"), hidden: lines.length - COLLAPSE_MAX };
+}
+
+/** The "… +N lines" row: click it, or press ctrl+o, to see the whole block. */
+function More({ hidden, onOpen }: { hidden: number; onOpen?: () => void }) {
+  return (
+    <box height={1} onMouseDown={onOpen}>
+      <text fg={theme.muted} attributes={TextAttributes.DIM}>
+        … +{hidden} lines <span fg={theme.accent}>ctrl+o</span>
+      </text>
+    </box>
+  );
 }
 
 /** Minimal inline markdown: **bold** and `code`. */
@@ -75,7 +90,16 @@ function isInlineTool(entry: Entry): boolean {
 /** Cap on rendered entries; older ones fall out of the scrollback. */
 const SCROLLBACK = 200;
 
-function Row({ entry }: { entry: Entry }) {
+function Row({
+  entry,
+  open,
+  onOpen,
+}: {
+  entry: Entry;
+  /** this entry is expanded — render every line */
+  open: boolean;
+  onOpen?: () => void;
+}) {
   switch (entry.kind) {
     case "user":
       // opencode UserMessage: native left border ┃ on the panel background
@@ -90,13 +114,16 @@ function Row({ entry }: { entry: Entry }) {
           </box>
         </box>
       );
-    case "agent":
+    case "agent": {
       // opencode TextPart: markdown, paddingLeft 3
+      const body = collapse(entry.text, open);
       return (
-        <box paddingLeft={3}>
-          <Md text={entry.text} />
+        <box flexDirection="column" paddingLeft={3}>
+          {body.hidden > 0 && <More hidden={body.hidden} onOpen={onOpen} />}
+          <Md text={body.text} />
         </box>
       );
+    }
     case "thinking": {
       // opencode ReasoningPart (hide mode): one dim summary line
       const summary = entry.text.trim().split("\n")[0] ?? "";
@@ -114,7 +141,7 @@ function Row({ entry }: { entry: Entry }) {
 
       if (entry.name === "bash") {
         // opencode Shell via BlockTool: panel bg block, $ command, output tail
-        const out = clipOutput(entry.output);
+        const out = collapse(entry.output, open);
         return (
           <box
             flexDirection="column"
@@ -127,7 +154,8 @@ function Row({ entry }: { entry: Entry }) {
               {running ? "⚙ " : "$ "}
               {entry.summary}
             </text>
-            {out !== "" && <text fg={theme.muted}>{out}</text>}
+            {out.hidden > 0 && <More hidden={out.hidden} onOpen={onOpen} />}
+            {out.text !== "" && <text fg={theme.muted}>{out.text}</text>}
             {entry.error && <text fg={theme.error}>{entry.error}</text>}
           </box>
         );
@@ -226,6 +254,31 @@ export function Transcript({
   keys?: "off" | "page" | "normal";
 }) {
   const scrollRef = useRef<ScrollBoxRenderable>(null);
+  // scrolled up far enough that new output lands off screen — shows the
+  // jump-to-bottom affordance, which `stickyScroll` otherwise hides
+  const [away, setAway] = useState(false);
+  // keys of entries the user expanded; ctrl+o (o in vim NORMAL) expands all
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const [openAll, setOpenAll] = useState(false);
+
+  // ponytail: opentui's scrollbox has no onScroll, so "am I at the bottom?"
+  // is sampled on a timer — cheap, and the only hook the wheel also trips
+  useEffect(() => {
+    const id = setInterval(() => {
+      const sb = scrollRef.current;
+      if (sb) setAway(!atBottom(sb));
+    }, 200);
+    return () => clearInterval(id);
+  }, []);
+
+  const atBottom = (sb: ScrollBoxRenderable) =>
+    sb.scrollTop >= sb.scrollHeight - sb.viewport.height - 1;
+  const toBottom = () => {
+    const sb = scrollRef.current;
+    if (!sb) return;
+    sb.scrollTop = sb.scrollHeight;
+    setAway(false);
+  };
 
   useKeyboard((key) => {
     if (keys === "off") return;
@@ -234,17 +287,20 @@ export function Transcript({
     const page = Math.max(1, sb.viewport.height - 2);
     if (key.name === "pageup") sb.scrollBy(-page);
     if (key.name === "pagedown") sb.scrollBy(page);
+    if (key.name === "end" || (keys === "normal" && key.sequence === "G")) toBottom();
+    if (key.name === "o" && (key.ctrl || keys === "normal")) setOpenAll((v) => !v);
     if (keys === "normal" && !key.ctrl && !key.meta) {
       if (key.name === "u") sb.scrollBy(-Math.ceil(page / 2));
       if (key.name === "d") sb.scrollBy(Math.ceil(page / 2));
     }
+    setAway(!atBottom(sb));
   });
 
   const visible = entries.slice(-SCROLLBACK);
 
   if (visible.length === 0) {
     return (
-      <box flexGrow={1} flexDirection="column" paddingTop={1} paddingLeft={1} gap={1}>
+      <box flexGrow={1} flexDirection="column" paddingLeft={1} gap={1}>
         {/* opencode-style home: block wordmark, tagline, quiet shortcut table */}
         <box flexDirection="row">
           <ascii-font font="tiny" text="kloud" color={theme.muted} />
@@ -255,17 +311,14 @@ export function Transcript({
           {(
             [
               ["/", "commands"],
-              ["^a", "actions for this workspace or environment"],
               ["^p", "jump to an environment or workspace"],
               ["^1-9", "jump to workspace · ^0 main"],
               ["^j ^k", "cycle workspaces"],
-              ["^h ^l", "switch environment"],
-              ["^m", "move workspace to another environment"],
+              ["^f", "files, then processes & their logs"],
               ["^b", "back to the main context"],
-              ["!", "shell mode inside a workspace"],
             ] as const
           ).map(([key, label]) => (
-            <box key={key} flexDirection="row">
+            <box key={key} flexDirection="row" height={1} flexShrink={0} overflow="hidden">
               <box width={7} flexShrink={0}>
                 <text fg={theme.fg}>{key}</text>
               </box>
@@ -278,6 +331,7 @@ export function Transcript({
   }
 
   return (
+    <box flexGrow={1} flexBasis={0} flexShrink={1} flexDirection="column">
     <scrollbox
       ref={scrollRef}
       // basis 0 + shrink: yoga's flex-basis auto would size the scrollbox to its
@@ -291,9 +345,11 @@ export function Transcript({
     >
       {/* opencode: one blank row above the first message */}
       <box height={1} />
-      {visible.map((entry, i) => (
+      {visible.map((entry, i) => {
+        const key = "id" in entry && entry.id ? entry.id : `e${i}`;
+        return (
         <box
-          key={"id" in entry && entry.id ? entry.id : `e${i}`}
+          key={key}
           flexDirection="column"
           // opencode sibling margins: consecutive inline tool rows stack
           // tight; everything else separates by one blank line
@@ -301,9 +357,22 @@ export function Transcript({
             i === 0 ? 0 : isInlineTool(entry) && isInlineTool(visible[i - 1]!) ? 0 : 1
           }
         >
-          <Row entry={entry} />
+          <Row
+            entry={entry}
+            open={openAll || open.has(key)}
+            onOpen={() => setOpen((prev) => new Set(prev).add(key))}
+          />
         </box>
-      ))}
+        );
+      })}
     </scrollbox>
+      {away && (
+        <box height={1} justifyContent="center" onMouseDown={toBottom}>
+          <text fg={theme.accent}>
+            ↓ jump to bottom <span fg={theme.muted}>end</span>
+          </text>
+        </box>
+      )}
+    </box>
   );
 }

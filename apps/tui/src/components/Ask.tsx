@@ -133,6 +133,7 @@ export function AskPanel({ ask }: { ask: Ask }) {
                     paddingLeft={1}
                     paddingRight={1}
                     backgroundColor={active ? theme.selection : undefined}
+                    onMouseDown={() => ask.resolve(opt.id)}
                   >
                     <text fg={active ? theme.bg : theme.fg}>{opt.label}</text>
                     <text fg={active ? theme.bg : theme.muted}>{opt.hint ?? ""}</text>
@@ -172,6 +173,7 @@ export function AskPanel({ ask }: { ask: Ask }) {
                   paddingLeft={1}
                   paddingRight={1}
                   backgroundColor={active ? theme.warning : undefined}
+                  onMouseDown={() => ask.resolve(opt.id)}
                 >
                   <text fg={active ? theme.bg : theme.muted}>{opt.label}</text>
                 </box>

@@ -13,14 +13,29 @@ export function DiffView({ diff, maxLines = MAX_LINES }: { diff: FileDiff; maxLi
   return (
     <box flexDirection="column">
       {shown.map((line, i) => {
+        if (line.mark === "deleted-gap") {
+          // a thin rule where lines were removed — readable, and it says how many
+          return (
+            <box key={i} flexDirection="row">
+              <box width={6} flexShrink={0} />
+              <text fg={theme.diffRemoved}>
+                {"─".repeat(2)} {line.count} deleted {"─".repeat(2)}
+              </text>
+            </box>
+          );
+        }
         const fg =
           line.sign === "+" ? theme.diffAdded : line.sign === "-" ? theme.diffRemoved : theme.fg;
         const bg =
           line.sign === "+" ? theme.diffAddedBg : line.sign === "-" ? theme.diffRemovedBg : undefined;
+        // full-file view: the gutter carries the change — the number goes
+        // green for a new line, and a red tick marks where lines were deleted
+        const gutter =
+          line.mark === "added" ? theme.diffAdded : line.sign === " " ? theme.muted : fg;
         return (
           <box key={i} flexDirection="row" backgroundColor={bg}>
             <box width={6} flexShrink={0}>
-              <text fg={line.sign === " " ? theme.muted : fg}>{String(line.no).padStart(4)}</text>
+              <text fg={gutter}>{String(line.no).padStart(4)}</text>
             </box>
             <box width={2} flexShrink={0}>
               <text fg={fg}>{line.sign === " " ? "" : line.sign}</text>

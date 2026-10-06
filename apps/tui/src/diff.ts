@@ -6,6 +6,13 @@ export type DiffLine = {
   no: number | "";
   sign: " " | "+" | "-";
   text: string;
+  /**
+   * Full-file view only: "added" = new since HEAD (green line number);
+   * "deleted-gap" = a marker row standing in for lines removed here.
+   */
+  mark?: "added" | "deleted-gap";
+  /** deleted-gap: how many lines were removed. */
+  count?: number;
 };
 
 export type FileDiff = {

@@ -14,7 +14,6 @@ export function Prompt({
   onChange,
   onSubmit,
   placeholder,
-  mode,
   model,
   provider,
   workspace,
@@ -27,7 +26,6 @@ export function Prompt({
   onChange: (v: string) => void;
   onSubmit: (v: string) => void;
   placeholder: string;
-  mode: "agent" | "shell";
   model: string;
   provider: string;
   workspace?: string;
@@ -40,7 +38,7 @@ export function Prompt({
   const matches = menu;
   const [sel, setSel] = useState(0);
   const normal = overlay === "normal";
-  const bar = normal ? theme.border : mode === "shell" ? theme.warning : theme.accent;
+  const bar = normal ? theme.border : theme.accent;
 
   // Clamp selection when the filter narrows.
   useEffect(() => {
@@ -82,6 +80,7 @@ export function Prompt({
                     backgroundColor={active ? theme.selection : undefined}
                     paddingLeft={1}
                     paddingRight={1}
+                    onMouseDown={onPick ? () => onPick(c.insert) : () => onSubmit(c.insert)}
                   >
                     <text fg={active ? theme.bg : theme.fg}>{c.label.padEnd(10)}</text>
                     <text fg={active ? theme.bg : theme.muted}> {c.hint}</text>
@@ -119,7 +118,7 @@ export function Prompt({
           <text> </text>
           <text>
             <span fg={normal ? theme.muted : bar}>
-              <b>{normal ? "NORMAL" : overlay === "command" ? "Commands" : overlay === "jump" ? "Jump" : mode === "shell" ? "Shell" : workspace ? "Agent" : "Orchestrator"}</b>
+              <b>{normal ? "NORMAL" : overlay === "command" ? "Commands" : overlay === "jump" ? "Jump" : workspace ? "Agent" : "Orchestrator"}</b>
             </span>
             {normal ? (
               <span fg={theme.muted}> · i to type · ? for help</span>
