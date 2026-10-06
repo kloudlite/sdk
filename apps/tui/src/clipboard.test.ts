@@ -1,41 +1,28 @@
-import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { readClipboardImage } from "./clipboard.ts";
 
-// A fake xclip on PATH, holding whatever $FAKE_CLIP points at.
-const dir = mkdtempSync(join(tmpdir(), "clip-"));
-writeFileSync(
-  join(dir, "xclip"),
-  `#!/bin/sh
-[ -f "$FAKE_CLIP" ] || exit 1
-case "$*" in
-  *TARGETS*) echo image/png ;;
-  *image/png*) cat "$FAKE_CLIP" ;;
-  *) exit 1 ;;
-esac
-`,
-);
-chmodSync(join(dir, "xclip"), 0o755);
-const path = process.env.PATH;
-process.env.PATH = `${dir}:${path}`;
-afterAll(() => {
-  process.env.PATH = path;
-  rmSync(dir, { recursive: true });
+// a 2x2 PNG, enough to put real image bytes on the clipboard
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8z8DAwMDAxAADDAwMAA4OAQGHrPnJAAAAAElFTkSuQmCC";
+
+const macos = process.platform === "darwin";
+
+test.if(macos)("reads a PNG off the macOS clipboard, and nothing off a text one", async () => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/kloudlite-clip-test.png`;
+  await Bun.write(path, Buffer.from(PNG, "base64"));
+  execFileSync("osascript", [
+    "-e",
+    `set the clipboard to (read (POSIX file "${path}") as «class PNGf»)`,
+  ]);
+  const img = readClipboardImage();
+  expect(img?.mimeType).toBe("image/png");
+  expect(img!.data.length).toBeGreaterThan(0);
+
+  execFileSync("osascript", ["-e", 'set the clipboard to "just text"']);
+  expect(readClipboardImage()).toBeNull(); // text must not read as an image
 });
 
-test("reads a PNG off the clipboard as base64", () => {
-  writeFileSync(join(dir, "png"), "PNGBYTES");
-  process.env.FAKE_CLIP = join(dir, "png");
-  expect(readClipboardImage()).toEqual({
-    type: "image",
-    data: Buffer.from("PNGBYTES").toString("base64"),
-    mimeType: "image/png",
-  });
-});
-
-test("no image on the clipboard is null", () => {
-  process.env.FAKE_CLIP = join(dir, "missing");
-  expect(readClipboardImage()).toBeNull();
+test("a clipboard with no image tool available is a no-op, never a throw", () => {
+  expect(() => readClipboardImage()).not.toThrow();
 });

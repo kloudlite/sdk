@@ -34,7 +34,7 @@ test("a long block collapses to its head and ctrl+o toggles it both ways", async
   const long: Entry[] = [
     { id: "a", kind: "agent", text: Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join("\n") },
   ];
-  const t = await testRender(<Transcript entries={long} keys="page" width={60} />, {
+  const t = await testRender(<Transcript entries={long} keys="page" />, {
     width: 70,
     height: 24,
     kittyKeyboard: true,
