@@ -48,7 +48,7 @@ export function Prompt({
   // pasted attachment: a highlighted badge, in paste order around the text
   const badges = (from: number, to: number) =>
     Array.from({ length: Math.max(0, to - from) }, (_, i) => (
-      <box key={from + i} flexDirection="row" height={1} marginRight={1}>
+      <box key={from + i} flexDirection="row" height={1} marginRight={1} flexShrink={0}>
         <box backgroundColor={theme.warning}>
           <text fg={theme.bg} attributes={TextAttributes.BOLD}>{`[Image ${from + i + 1}]`}</text>
         </box>
@@ -124,6 +124,7 @@ export function Prompt({
         >
           <box minHeight={1} flexDirection="row">
             {badges(0, imagesLead)}
+            <box flexShrink={1}>
             <Input
               value={value}
               onChange={onChange}
@@ -132,7 +133,9 @@ export function Prompt({
               showCursor={inputActive}
               active={inputActive}
             />
+            </box>
             {badges(imagesLead, images)}
+            <box flexGrow={1} flexShrink={1} />
           </box>
           <text> </text>
           <text>
