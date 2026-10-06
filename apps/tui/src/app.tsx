@@ -104,6 +104,16 @@ export function App({
   function pasteImage(): string | null {
     const img = readClipboardImage();
     if (!img) return null;
+    // a text-only model drops attachments without a word — say so here, while
+    // the user can still switch models instead of after the answer comes back
+    const model = resolveModel(getSession(sessions, activeKey).model);
+    if (model && !model.input.includes("image")) {
+      append(activeKey, {
+        kind: "error",
+        text: `${model.id} does not accept images — switch models with /model to send one.`,
+      });
+      return null;
+    }
     // counted off a ref: a burst of keys in one stdin chunk runs every
     // handler against the same render, so `images.length` is stale here
     const n = ++pasted.current;
@@ -987,16 +997,16 @@ export function App({
     const sent = images;
     setImages([]);
     pasted.current = 0;
-    // the transcript keeps the tokens where they were typed; the model gets
-    // the prose, with the attachments passed alongside it
+    // the tokens go to the model too: they are how it tells one attachment
+    // from another, and a message that is only an image would otherwise be
+    // empty text with the images silently dropped alongside it
     append(key, { kind: "user", text: trimmed, images: sent.length });
-    const prose = trimmed.replace(/\[Image \d+\]/g, "").replace(/\s+/g, " ").trim();
     setSessions((map) =>
       patchSession(map, key, (s) => ({ history: [...s.history, trimmed] })),
     );
     setHistIdx(null);
     ensureAgent(key)
-      .then((agent) => agent.prompt(prose, sent.length ? { images: sent } : undefined))
+      .then((agent) => agent.prompt(trimmed, sent.length ? { images: sent } : undefined))
       .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }));
   }
 
