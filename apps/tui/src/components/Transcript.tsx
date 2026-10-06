@@ -29,22 +29,29 @@ export type Entry =
 const COLLAPSE_MAX = 10;
 
 /**
- * Collapse a block to its last `COLLAPSE_MAX` rows. Returns the kept text and
- * how many rows it hid, so the caller can offer the expander.
+ * Collapse a block to its first `COLLAPSE_MAX` rows — Claude Code keeps the
+ * head, not the tail, so a long block still reads from its beginning. Returns
+ * the kept text and how many rows it hid, so the caller can offer the expander.
  */
 function collapse(text: string | undefined, open: boolean): { text: string; hidden: number } {
   if (!text) return { text: "", hidden: 0 };
   const lines = text.trim().split("\n");
   if (open || lines.length <= COLLAPSE_MAX) return { text: lines.join("\n"), hidden: 0 };
-  return { text: lines.slice(-COLLAPSE_MAX).join("\n"), hidden: lines.length - COLLAPSE_MAX };
+  return { text: lines.slice(0, COLLAPSE_MAX).join("\n"), hidden: lines.length - COLLAPSE_MAX };
 }
 
-/** The "… +N lines" row: click it, or press ctrl+o, to see the whole block. */
-function More({ hidden, onOpen }: { hidden: number; onOpen?: () => void }) {
+/**
+ * Claude Code's expander, under the block it belongs to: "… +N lines (ctrl+o
+ * to expand)", and once open the same row offers to collapse it again. Click
+ * it or press ctrl+o.
+ */
+function More({ hidden, open, onToggle }: { hidden: number; open: boolean; onToggle?: () => void }) {
   return (
-    <box height={1} onMouseDown={onOpen}>
+    <box height={1} onMouseDown={onToggle}>
       <text fg={theme.muted} attributes={TextAttributes.DIM}>
-        … +{hidden} lines <span fg={theme.accent}>ctrl+o</span>
+        {open ? "… " : `… +${hidden} lines `}
+        <span fg={theme.accent}>ctrl+o</span>
+        {open ? " to collapse" : " to expand"}
       </text>
     </box>
   );
@@ -117,10 +124,12 @@ function Row({
     case "agent": {
       // opencode TextPart: markdown, paddingLeft 3
       const body = collapse(entry.text, open);
+      // the expander stays visible once open, so the block can be re-collapsed
+      const long = (entry.text ?? "").trim().split("\n").length > COLLAPSE_MAX;
       return (
         <box flexDirection="column" paddingLeft={3}>
-          {body.hidden > 0 && <More hidden={body.hidden} onOpen={onOpen} />}
           <Md text={body.text} />
+          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} />}
         </box>
       );
     }
@@ -154,8 +163,10 @@ function Row({
               {running ? "⚙ " : "$ "}
               {entry.summary}
             </text>
-            {out.hidden > 0 && <More hidden={out.hidden} onOpen={onOpen} />}
             {out.text !== "" && <text fg={theme.muted}>{out.text}</text>}
+            {(entry.output ?? "").trim().split("\n").length > COLLAPSE_MAX && (
+              <More hidden={out.hidden} open={open} onToggle={onOpen} />
+            )}
             {entry.error && <text fg={theme.error}>{entry.error}</text>}
           </box>
         );
@@ -288,7 +299,12 @@ export function Transcript({
     if (key.name === "pageup") sb.scrollBy(-page);
     if (key.name === "pagedown") sb.scrollBy(page);
     if (key.name === "end" || (keys === "normal" && key.sequence === "G")) toBottom();
-    if (key.name === "o" && (key.ctrl || keys === "normal")) setOpenAll((v) => !v);
+    if (key.name === "o" && (key.ctrl || keys === "normal")) {
+      // ctrl+o is the master switch: flipping it drops the per-block overrides,
+      // so every block really does open (or close) together
+      setOpenAll((v) => !v);
+      setOpen(new Set());
+    }
     if (keys === "normal" && !key.ctrl && !key.meta) {
       if (key.name === "u") sb.scrollBy(-Math.ceil(page / 2));
       if (key.name === "d") sb.scrollBy(Math.ceil(page / 2));
@@ -311,11 +327,12 @@ export function Transcript({
           {(
             [
               ["/", "commands"],
-              ["^p", "jump to an environment or workspace"],
+              ["^p", "jump to a workspace"],
               ["^1-9", "jump to workspace · ^0 main"],
               ["^j ^k", "cycle workspaces"],
               ["^f", "files, then processes & their logs"],
               ["^b", "back to the main context"],
+              ["^o", "expand or collapse long output"],
             ] as const
           ).map(([key, label]) => (
             <box key={key} flexDirection="row" height={1} flexShrink={0} overflow="hidden">
@@ -359,8 +376,14 @@ export function Transcript({
         >
           <Row
             entry={entry}
-            open={openAll || open.has(key)}
-            onOpen={() => setOpen((prev) => new Set(prev).add(key))}
+            open={openAll !== open.has(key)}
+            onOpen={() =>
+              setOpen((prev) => {
+                const next = new Set(prev);
+                if (!next.delete(key)) next.add(key);
+                return next;
+              })
+            }
           />
         </box>
         );
