@@ -124,7 +124,7 @@ function Row({
                 <text> </text>
                 <box flexDirection="row" height={1}>
                   <box backgroundColor={theme.accent} paddingLeft={1} paddingRight={1}>
-                    <text fg={theme.bg}>File</text>
+                    <text fg={theme.bg}>{entry.images === 1 ? "File" : `${entry.images} Files`}</text>
                   </box>
                   <box backgroundColor={theme.surfaceRaised} paddingLeft={1} paddingRight={1}>
                     <text fg={theme.muted}>clipboard</text>
