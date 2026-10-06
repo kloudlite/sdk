@@ -1223,14 +1223,9 @@ export function App({
             <AskPanel ask={asks[0]!} />
           ) : (
           <>
-            {images.length > 0 && (
-              <text>
-                <span fg={theme.accent}>{images.map((_, i) => `[image ${i + 1}]`).join(" ")}</span>
-                <span fg={theme.muted}> · backspace removes</span>
-              </text>
-            )}
             <Prompt
               value={input}
+              images={images.length}
               onChange={changeInput}
               onSubmit={
                 cmdMode

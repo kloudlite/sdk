@@ -18,6 +18,7 @@ export function Prompt({
   provider,
   workspace,
   inputActive = true,
+  images = 0,
   menu,
   overlay,
   onPick,
@@ -30,6 +31,8 @@ export function Prompt({
   provider: string;
   workspace?: string;
   inputActive?: boolean;
+  /** Pasted clipboard images waiting to be sent with this prompt. */
+  images?: number;
   menu: MenuItem[];
   /** "jump"/"command": filter overlays (Enter runs via onPick). "normal": dimmed card. */
   overlay?: "jump" | "command" | "normal";
@@ -105,7 +108,12 @@ export function Prompt({
           paddingTop={1}
           backgroundColor={theme.surfaceRaised}
         >
-          <box minHeight={1}>
+          <box minHeight={1} flexDirection="row">
+            {images > 0 && (
+              <text fg={theme.muted}>
+                {Array.from({ length: images }, (_, i) => `[Image ${i + 1}]`).join(" ")}{" "}
+              </text>
+            )}
             <Input
               value={value}
               onChange={onChange}
@@ -116,6 +124,17 @@ export function Prompt({
             />
           </box>
           <text> </text>
+          {images > 0 && (
+            // the source of what is attached, as a label/value badge pair
+            <box flexDirection="row" height={1} marginBottom={1}>
+              <box backgroundColor={theme.accent} paddingLeft={1} paddingRight={1}>
+                <text fg={theme.bg}>File</text>
+              </box>
+              <box backgroundColor={theme.surface} paddingLeft={1} paddingRight={1}>
+                <text fg={theme.muted}>clipboard</text>
+              </box>
+            </box>
+          )}
           <text>
             <span fg={normal ? theme.muted : bar}>
               <b>{normal ? "NORMAL" : overlay === "command" ? "Commands" : overlay === "jump" ? "Jump" : workspace ? "Agent" : "Orchestrator"}</b>
