@@ -31,6 +31,7 @@ import {
 import { Login } from "./components/Login.tsx";
 import { AskPanel, type Ask } from "./components/Ask.tsx";
 import { toolDiff } from "./diff.ts";
+import { readClipboardImage, type ClipImage } from "./clipboard.ts";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
@@ -91,6 +92,8 @@ export function App({
   const { width: columns, height: rows } = useTerminalDimensions();
   const [sessions, setSessions] = useState<SessionMap>({});
   const [input, setInput] = useState("");
+  // images pasted with ctrl+v, sent with the next prompt
+  const [images, setImages] = useState<ClipImage[]>([]);
   // vim-style modal keyboard: NORMAL (default) = letter commands, INSERT = typing
   // vim keys are a setting; without them the prompt is always live and the
   // letter commands move to ctrl+<letter> (what the splash already advertises)
@@ -221,6 +224,18 @@ export function App({
       return;
     }
     const menuOpen = palette || cmdMode;
+    if (inputLive && !menuOpen) {
+      if (key.ctrl && key.name === "v") {
+        const img = readClipboardImage();
+        if (img) setImages((i) => [...i, img]);
+        return;
+      }
+      // backspace on an empty prompt drops the last pasted image
+      if (key.name === "backspace" && input === "" && images.length > 0) {
+        setImages((i) => i.slice(0, -1));
+        return;
+      }
+    }
     const n = workspaces.length;
     // only your own workspaces can be entered; others are visible but attached
     // to their owner's session
@@ -840,7 +855,7 @@ export function App({
       return;
     }
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && images.length === 0) return;
     setInput("");
 
     if (trimmed === "/exit") return exit();
@@ -963,13 +978,16 @@ export function App({
       nameSession(key, title);
       setSessionNames((n) => ({ ...n, [key]: title }));
     }
-    append(key, { kind: "user", text: trimmed });
+    const sent = images;
+    setImages([]);
+    const chips = sent.map((_, i) => `[image ${i + 1}]`).join(" ");
+    append(key, { kind: "user", text: [trimmed, chips].filter(Boolean).join(" ") });
     setSessions((map) =>
       patchSession(map, key, (s) => ({ history: [...s.history, trimmed] })),
     );
     setHistIdx(null);
     ensureAgent(key)
-      .then((agent) => agent.prompt(trimmed))
+      .then((agent) => agent.prompt(trimmed, sent.length ? { images: sent } : undefined))
       .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }));
   }
 
@@ -1205,6 +1223,12 @@ export function App({
             <AskPanel ask={asks[0]!} />
           ) : (
           <>
+            {images.length > 0 && (
+              <text>
+                <span fg={theme.accent}>{images.map((_, i) => `[image ${i + 1}]`).join(" ")}</span>
+                <span fg={theme.muted}> · backspace removes</span>
+              </text>
+            )}
             <Prompt
               value={input}
               onChange={changeInput}
