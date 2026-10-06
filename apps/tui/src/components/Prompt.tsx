@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { Input } from "./Input.tsx";
 import { theme } from "../theme.ts";
@@ -109,11 +110,14 @@ export function Prompt({
           backgroundColor={theme.surfaceRaised}
         >
           <box minHeight={1} flexDirection="row">
-            {images > 0 && (
-              <text fg={theme.muted}>
-                {Array.from({ length: images }, (_, i) => `[Image ${i + 1}]`).join(" ")}{" "}
-              </text>
-            )}
+            {Array.from({ length: images }, (_, i) => (
+              // pasted attachment: a highlighted badge ahead of the cursor
+              <box key={i} flexDirection="row" height={1} marginRight={1}>
+                <box backgroundColor={theme.warning}>
+                  <text fg={theme.bg} attributes={TextAttributes.BOLD}>{`[Image ${i + 1}]`}</text>
+                </box>
+              </box>
+            ))}
             <Input
               value={value}
               onChange={onChange}
@@ -124,17 +128,6 @@ export function Prompt({
             />
           </box>
           <text> </text>
-          {images > 0 && (
-            // the source of what is attached, as a label/value badge pair
-            <box flexDirection="row" height={1} marginBottom={1}>
-              <box backgroundColor={theme.accent} paddingLeft={1} paddingRight={1}>
-                <text fg={theme.bg}>File</text>
-              </box>
-              <box backgroundColor={theme.surface} paddingLeft={1} paddingRight={1}>
-                <text fg={theme.muted}>clipboard</text>
-              </box>
-            </box>
-          )}
           <text>
             <span fg={normal ? theme.muted : bar}>
               <b>{normal ? "NORMAL" : overlay === "command" ? "Commands" : overlay === "jump" ? "Jump" : workspace ? "Agent" : "Orchestrator"}</b>

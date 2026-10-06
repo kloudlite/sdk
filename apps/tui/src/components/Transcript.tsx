@@ -7,7 +7,7 @@ import { DiffView } from "./Diff.tsx";
 import type { FileDiff } from "../diff.ts";
 
 export type Entry =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; images?: number }
   | { kind: "agent"; id?: string; text: string }
   | { kind: "thinking"; id?: string; text: string }
   | {
@@ -116,8 +116,22 @@ function Row({
           customBorderChars={SplitBorder.customBorderChars}
           borderColor={theme.accent}
         >
-          <box paddingLeft={2} paddingTop={1} paddingBottom={1} backgroundColor={theme.surface}>
+          <box flexDirection="column" paddingLeft={2} paddingTop={1} paddingBottom={1} backgroundColor={theme.surface}>
             <text fg={theme.fg}>{entry.text}</text>
+            {entry.images ? (
+              // where the attachments came from, as a label/value badge pair
+              <>
+                <text> </text>
+                <box flexDirection="row" height={1}>
+                  <box backgroundColor={theme.accent} paddingLeft={1} paddingRight={1}>
+                    <text fg={theme.bg}>File</text>
+                  </box>
+                  <box backgroundColor={theme.surfaceRaised} paddingLeft={1} paddingRight={1}>
+                    <text fg={theme.muted}>clipboard</text>
+                  </box>
+                </box>
+              </>
+            ) : null}
           </box>
         </box>
       );

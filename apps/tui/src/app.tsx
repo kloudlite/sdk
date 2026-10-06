@@ -980,8 +980,12 @@ export function App({
     }
     const sent = images;
     setImages([]);
-    const chips = sent.map((_, i) => `[image ${i + 1}]`).join(" ");
-    append(key, { kind: "user", text: [trimmed, chips].filter(Boolean).join(" ") });
+    const chips = sent.map((_, i) => `[Image ${i + 1}]`).join(" ");
+    append(key, {
+      kind: "user",
+      text: [chips, trimmed].filter(Boolean).join(" "),
+      images: sent.length,
+    });
     setSessions((map) =>
       patchSession(map, key, (s) => ({ history: [...s.history, trimmed] })),
     );
