@@ -24,6 +24,7 @@ export function Input({
   showCursor,
   active = true,
   mask = false,
+  onPasteImage,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -33,6 +34,12 @@ export function Input({
   active?: boolean;
   /** Render bullets instead of the value (secrets). */
   mask?: boolean;
+  /**
+   * ctrl+v: hand back a placeholder to insert at the caret, or null when the
+   * clipboard holds no image. Like opencode, the attachment is a token in the
+   * value, so the cursor lands after it and later text goes where it is typed.
+   */
+  onPasteImage?: () => string | null;
 }) {
   const [cursor, setCursor] = useState(value.length);
   // Distinguish our own edits from external value changes (menu insert,
@@ -70,6 +77,11 @@ export function Input({
 
   useKeyboard((key) => {
     if (!active) return;
+    if (key.ctrl && key.name === "v") {
+      const token = onPasteImage?.();
+      if (token) insert(token);
+      return;
+    }
     // Live refs, not render props: a burst of keys in one stdin chunk runs
     // every callback against the same stale render.
     const v = expected.current;
@@ -115,6 +127,19 @@ export function Input({
     );
   }
 
+  // An attachment token in the value renders as a highlighted badge, so the
+  // text keeps the attachment's place and the cursor moves across it normally.
+  const badged = (text: string, key: string) =>
+    text.split(/(\[Image \d+\])/).map((part, i) =>
+      /^\[Image \d+\]$/.test(part) ? (
+        <span key={`${key}-${i}`} bg={theme.warning} fg={theme.bg} attributes={TextAttributes.BOLD}>
+          {part}
+        </span>
+      ) : (
+        <span key={`${key}-${i}`}>{part}</span>
+      ),
+    );
+
   // Render lines with the cursor on the right one.
   const display = mask ? "•".repeat(value.length) : value;
   const lines = display.split("\n");
@@ -131,12 +156,12 @@ export function Input({
           <text key={i} fg={theme.fg}>
             {cursorHere ? (
               <>
-                <span>{line.slice(0, col)}</span>
+                {badged(line.slice(0, col), `${i}a`)}
                 <span attributes={TextAttributes.INVERSE}>{line[col] ?? " "}</span>
-                <span>{line.slice(col + 1)}</span>
+                {badged(line.slice(col + 1), `${i}b`)}
               </>
             ) : (
-              line || " "
+              badged(line || " ", `${i}`)
             )}
           </text>
         );

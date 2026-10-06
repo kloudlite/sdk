@@ -94,9 +94,22 @@ export function App({
   const [input, setInput] = useState("");
   // images pasted with ctrl+v, sent with the next prompt
   const [images, setImages] = useState<ClipImage[]>([]);
-  // how many of them were pasted into an empty prompt — those badges lead the
-  // line, the rest follow the text in paste order
-  const [imagesLead, setImagesLead] = useState(0);
+  const pasted = useRef(0);
+
+  /**
+   * ctrl+v in the prompt: keep the image and hand back the token that stands
+   * in for it in the text, so it sits where the caret was (opencode's model —
+   * an attachment is a part of the value, not a chip beside it).
+   */
+  function pasteImage(): string | null {
+    const img = readClipboardImage();
+    if (!img) return null;
+    // counted off a ref: a burst of keys in one stdin chunk runs every
+    // handler against the same render, so `images.length` is stale here
+    const n = ++pasted.current;
+    setImages((i) => [...i, img]);
+    return `[Image ${n}] `;
+  }
   // vim-style modal keyboard: NORMAL (default) = letter commands, INSERT = typing
   // vim keys are a setting; without them the prompt is always live and the
   // letter commands move to ctrl+<letter> (what the splash already advertises)
@@ -228,20 +241,6 @@ export function App({
     }
     const menuOpen = palette || cmdMode;
     if (inputLive && !menuOpen) {
-      if (key.ctrl && key.name === "v") {
-        const img = readClipboardImage();
-        if (img) {
-          setImages((i) => [...i, img]);
-          if (input === "") setImagesLead((n) => n + 1);
-        }
-        return;
-      }
-      // backspace on an empty prompt drops the last pasted image
-      if (key.name === "backspace" && input === "" && images.length > 0) {
-        setImages((i) => i.slice(0, -1));
-        setImagesLead((n) => Math.min(n, images.length - 1));
-        return;
-      }
     }
     const n = workspaces.length;
     // only your own workspaces can be entered; others are visible but attached
@@ -987,21 +986,17 @@ export function App({
     }
     const sent = images;
     setImages([]);
-    setImagesLead(0);
-    const chip = (_: unknown, i: number) => `[Image ${i + 1}]`;
-    const lead = sent.slice(0, imagesLead).map(chip).join(" ");
-    const tail = sent.slice(imagesLead).map((_, i) => chip(_, i + imagesLead)).join(" ");
-    append(key, {
-      kind: "user",
-      text: [lead, trimmed, tail].filter(Boolean).join(" "),
-      images: sent.length,
-    });
+    pasted.current = 0;
+    // the transcript keeps the tokens where they were typed; the model gets
+    // the prose, with the attachments passed alongside it
+    append(key, { kind: "user", text: trimmed, images: sent.length });
+    const prose = trimmed.replace(/\[Image \d+\]/g, "").replace(/\s+/g, " ").trim();
     setSessions((map) =>
       patchSession(map, key, (s) => ({ history: [...s.history, trimmed] })),
     );
     setHistIdx(null);
     ensureAgent(key)
-      .then((agent) => agent.prompt(trimmed, sent.length ? { images: sent } : undefined))
+      .then((agent) => agent.prompt(prose, sent.length ? { images: sent } : undefined))
       .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }));
   }
 
@@ -1239,8 +1234,7 @@ export function App({
           <>
             <Prompt
               value={input}
-              images={images.length}
-              imagesLead={imagesLead}
+              onPasteImage={pasteImage}
               onChange={changeInput}
               onSubmit={
                 cmdMode

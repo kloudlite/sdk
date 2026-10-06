@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { Input } from "./Input.tsx";
 import { theme } from "../theme.ts";
@@ -19,8 +18,7 @@ export function Prompt({
   provider,
   workspace,
   inputActive = true,
-  images = 0,
-  imagesLead = images,
+  onPasteImage,
   menu,
   overlay,
   onPick,
@@ -33,10 +31,8 @@ export function Prompt({
   provider: string;
   workspace?: string;
   inputActive?: boolean;
-  /** Pasted clipboard images waiting to be sent with this prompt. */
-  images?: number;
-  /** How many of them were pasted before any text — the rest follow it. */
-  imagesLead?: number;
+  /** ctrl+v: the placeholder token to insert at the caret, or null. */
+  onPasteImage?: () => string | null;
   menu: MenuItem[];
   /** "jump"/"command": filter overlays (Enter runs via onPick). "normal": dimmed card. */
   overlay?: "jump" | "command" | "normal";
@@ -45,16 +41,6 @@ export function Prompt({
   const matches = menu;
   const [sel, setSel] = useState(0);
   const normal = overlay === "normal";
-  // pasted attachment: a highlighted badge, in paste order around the text
-  const badges = (from: number, to: number) =>
-    Array.from({ length: Math.max(0, to - from) }, (_, i) => (
-      <box key={from + i} flexDirection="row" height={1} marginRight={1} flexShrink={0}>
-        <box backgroundColor={theme.warning}>
-          <text fg={theme.bg} attributes={TextAttributes.BOLD}>{`[Image ${from + i + 1}]`}</text>
-        </box>
-      </box>
-    ));
-
   const bar = normal ? theme.border : theme.accent;
 
   // Clamp selection when the filter narrows.
@@ -122,9 +108,7 @@ export function Prompt({
           paddingTop={1}
           backgroundColor={theme.surfaceRaised}
         >
-          <box minHeight={1} flexDirection="row">
-            {badges(0, imagesLead)}
-            <box flexShrink={1}>
+          <box minHeight={1}>
             <Input
               value={value}
               onChange={onChange}
@@ -132,10 +116,8 @@ export function Prompt({
               placeholder={placeholder}
               showCursor={inputActive}
               active={inputActive}
+              onPasteImage={onPasteImage}
             />
-            </box>
-            {badges(imagesLead, images)}
-            <box flexGrow={1} flexShrink={1} />
           </box>
           <text> </text>
           <text>
