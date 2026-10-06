@@ -94,6 +94,9 @@ export function App({
   const [input, setInput] = useState("");
   // images pasted with ctrl+v, sent with the next prompt
   const [images, setImages] = useState<ClipImage[]>([]);
+  // how many of them were pasted into an empty prompt — those badges lead the
+  // line, the rest follow the text in paste order
+  const [imagesLead, setImagesLead] = useState(0);
   // vim-style modal keyboard: NORMAL (default) = letter commands, INSERT = typing
   // vim keys are a setting; without them the prompt is always live and the
   // letter commands move to ctrl+<letter> (what the splash already advertises)
@@ -227,12 +230,16 @@ export function App({
     if (inputLive && !menuOpen) {
       if (key.ctrl && key.name === "v") {
         const img = readClipboardImage();
-        if (img) setImages((i) => [...i, img]);
+        if (img) {
+          setImages((i) => [...i, img]);
+          if (input === "") setImagesLead((n) => n + 1);
+        }
         return;
       }
       // backspace on an empty prompt drops the last pasted image
       if (key.name === "backspace" && input === "" && images.length > 0) {
         setImages((i) => i.slice(0, -1));
+        setImagesLead((n) => Math.min(n, images.length - 1));
         return;
       }
     }
@@ -980,10 +987,13 @@ export function App({
     }
     const sent = images;
     setImages([]);
-    const chips = sent.map((_, i) => `[Image ${i + 1}]`).join(" ");
+    setImagesLead(0);
+    const chip = (_: unknown, i: number) => `[Image ${i + 1}]`;
+    const lead = sent.slice(0, imagesLead).map(chip).join(" ");
+    const tail = sent.slice(imagesLead).map((_, i) => chip(_, i + imagesLead)).join(" ");
     append(key, {
       kind: "user",
-      text: [chips, trimmed].filter(Boolean).join(" "),
+      text: [lead, trimmed, tail].filter(Boolean).join(" "),
       images: sent.length,
     });
     setSessions((map) =>
@@ -1230,6 +1240,7 @@ export function App({
             <Prompt
               value={input}
               images={images.length}
+              imagesLead={imagesLead}
               onChange={changeInput}
               onSubmit={
                 cmdMode

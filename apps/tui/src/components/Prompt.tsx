@@ -20,6 +20,7 @@ export function Prompt({
   workspace,
   inputActive = true,
   images = 0,
+  imagesLead = images,
   menu,
   overlay,
   onPick,
@@ -34,6 +35,8 @@ export function Prompt({
   inputActive?: boolean;
   /** Pasted clipboard images waiting to be sent with this prompt. */
   images?: number;
+  /** How many of them were pasted before any text — the rest follow it. */
+  imagesLead?: number;
   menu: MenuItem[];
   /** "jump"/"command": filter overlays (Enter runs via onPick). "normal": dimmed card. */
   overlay?: "jump" | "command" | "normal";
@@ -42,6 +45,16 @@ export function Prompt({
   const matches = menu;
   const [sel, setSel] = useState(0);
   const normal = overlay === "normal";
+  // pasted attachment: a highlighted badge, in paste order around the text
+  const badges = (from: number, to: number) =>
+    Array.from({ length: Math.max(0, to - from) }, (_, i) => (
+      <box key={from + i} flexDirection="row" height={1} marginRight={1}>
+        <box backgroundColor={theme.warning}>
+          <text fg={theme.bg} attributes={TextAttributes.BOLD}>{`[Image ${from + i + 1}]`}</text>
+        </box>
+      </box>
+    ));
+
   const bar = normal ? theme.border : theme.accent;
 
   // Clamp selection when the filter narrows.
@@ -110,14 +123,7 @@ export function Prompt({
           backgroundColor={theme.surfaceRaised}
         >
           <box minHeight={1} flexDirection="row">
-            {Array.from({ length: images }, (_, i) => (
-              // pasted attachment: a highlighted badge ahead of the cursor
-              <box key={i} flexDirection="row" height={1} marginRight={1}>
-                <box backgroundColor={theme.warning}>
-                  <text fg={theme.bg} attributes={TextAttributes.BOLD}>{`[Image ${i + 1}]`}</text>
-                </box>
-              </box>
-            ))}
+            {badges(0, imagesLead)}
             <Input
               value={value}
               onChange={onChange}
@@ -126,6 +132,7 @@ export function Prompt({
               showCursor={inputActive}
               active={inputActive}
             />
+            {badges(imagesLead, images)}
           </box>
           <text> </text>
           <text>
