@@ -118,7 +118,7 @@ function More({
   hover?: boolean;
 }) {
   return (
-    <box height={1} onMouseDown={onToggle}>
+    <box height={1} width="100%" onMouseDown={onToggle}>
       <text fg={hover ? theme.fg : theme.muted} selectable={false}>
         {open ? "… " : `… +${hidden} lines `}
         <span fg={theme.accent}>{hover ? "click" : "ctrl+o"}</span>
