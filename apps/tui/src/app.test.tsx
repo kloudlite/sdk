@@ -467,15 +467,32 @@ test("backspacing the slash closes the command overlay", async () => {
 // pi's prompt() refuses while a turn streams rather than queueing, so
 // submitting mid-turn has to call steer() instead — otherwise the user gets
 // "Agent is already processing" where they expected their message queued.
-test("prompting while a turn streams steers instead of erroring", async () => {
+test("prompting while a turn streams queues instead of erroring", async () => {
   const t = await mount({ vim: "off" });
   await t.mockInput.typeText("first");
-  await t.mockInput.pressKey("ENTER");
+  await t.mockInput.pressEnter();
   await tick();
   await t.mockInput.typeText("second");
-  await t.mockInput.pressKey("ENTER");
+  await t.mockInput.pressEnter();
   await tick();
   await t.renderOnce();
-  expect(t.captureCharFrame()).not.toContain("already processing");
+  const frame = t.captureCharFrame();
+  expect(frame).not.toContain("already processing");
+  // both reached the transcript, and the prompt was cleared each time
+  expect(frame).toContain("first");
+  expect(frame).toContain("second");
+  t.done();
+});
+
+// ctrl+enter cannot be told from a bare enter unless the terminal speaks the
+// kitty protocol, so ctrl+s is the binding that has to keep working.
+test("ctrl+s submits the prompt without clearing it twice", async () => {
+  const t = await mount({ vim: "off" });
+  await t.mockInput.typeText("steered");
+  await t.mockInput.pressKey("s", { ctrl: true });
+  await tick();
+  await t.renderOnce();
+  // not busy, so ctrl+s is inert and the text stays put to be sent with enter
+  expect(t.captureCharFrame()).toContain("steered");
   t.done();
 });

@@ -384,6 +384,15 @@ export function App({
       return false;
     };
 
+    // ctrl+s steers the live prompt into a running turn. ctrl+enter means the
+    // same thing, but only terminals speaking the kitty protocol report the
+    // modifier on return — with it off ctrl+enter is an indistinguishable \r,
+    // so this is the binding that works everywhere.
+    if (key.ctrl && key.name === "s" && !menuOpen && session.busy && input.trim()) {
+      submit(input, true);
+      return;
+    }
+
     // ---- vim off: ctrl+<letter> commands, everything else types ----
     if (prefs.vim === "off" && key.ctrl && !key.meta && !menuOpen) {
       if (command(key.name)) return;
@@ -1130,7 +1139,8 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
     },
   };
 
-  function submit(text: string) {
+  /** `steer` interrupts the running turn; otherwise a mid-turn prompt queues. */
+  function submit(text: string, steer = false) {
     if (palette) {
       setPalette(false);
       setInput("");
@@ -1292,7 +1302,11 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
     ensureAgent(key)
       .then((agent) =>
         streaming
-          ? void agent.steer(trimmed)
+          ? // mid-turn: plain enter queues behind the turn, ctrl+enter (or ^s)
+            // cuts in. Both carry the images; dropping them loses the paste.
+            void (steer
+              ? agent.steer(trimmed, sent.length ? sent : undefined)
+              : agent.followUp(trimmed, sent.length ? sent : undefined))
           : agent.prompt(trimmed, sent.length ? { images: sent } : undefined),
       )
       .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }));

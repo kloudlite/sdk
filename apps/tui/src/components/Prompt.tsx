@@ -25,7 +25,7 @@ export function Prompt({
 }: {
   value: string;
   onChange: (v: string) => void;
-  onSubmit: (v: string) => void;
+  onSubmit: (v: string, steer?: boolean) => void;
   placeholder: string;
   model: string;
   provider: string;
@@ -55,10 +55,10 @@ export function Prompt({
     if (key.name === "tab") onChange(matches[sel]!.insert);
   });
 
-  function handleSubmit(text: string) {
+  function handleSubmit(text: string, steer?: boolean) {
     // Menu open → run the highlighted entry, not the partial text.
     if (matches.length > 0 && onPick) return onPick(matches[sel]!.insert);
-    onSubmit(matches.length > 0 ? matches[sel]!.insert : text);
+    onSubmit(matches.length > 0 ? matches[sel]!.insert : text, steer);
   }
 
   return (

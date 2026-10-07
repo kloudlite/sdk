@@ -40,7 +40,8 @@ export function Input({
 }: {
   value: string;
   onChange: (v: string) => void;
-  onSubmit: (v: string) => void;
+  /** `steer` is true when the submit asked to interrupt (ctrl+enter). */
+  onSubmit: (v: string, steer?: boolean) => void;
   placeholder: string;
   showCursor: boolean;
   active?: boolean;
@@ -107,7 +108,10 @@ export function Input({
         moveCursor(v.length);
         return;
       }
-      onSubmit(v);
+      // ctrl+enter steers (interrupt) rather than queueing. Only terminals
+      // running the kitty protocol report the modifier — without it ctrl+enter
+      // arrives as a bare \r, which is why ^s steers too.
+      onSubmit(v, key.ctrl === true);
       // reset the live refs without onChange: the submit handler owns the
       // next value (may immediately set e.g. "/login "), and the external-
       // change effect re-syncs when that lands.
