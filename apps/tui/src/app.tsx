@@ -1279,6 +1279,7 @@ export function App({
               onOpen={() => openCmd("session ")}
             />
             <Transcript
+              width={contentWidth}
               keys={
                 modalOpen
                   ? "off"

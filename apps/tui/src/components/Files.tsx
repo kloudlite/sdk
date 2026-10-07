@@ -343,7 +343,7 @@ export function Files({
                     openPath(m.path, m.line);
                   }}
                 >
-                  <text>
+                  <text selectable={false}>
                     <span fg={on ? theme.bg : theme.fg}>{m.path}</span>
                     <span fg={on ? theme.bg : theme.muted}>:{m.line}</span>
                     <span fg={on ? theme.bg : theme.muted}>  {m.text}</span>
@@ -390,8 +390,8 @@ export function Files({
                         openRow(row);
                       }}
                     >
-                      <text fg={active ? theme.bg : statusColor(row.change.status)}>{row.change.status} </text>
-                      <text fg={active ? theme.bg : theme.fg}>{row.change.path}</text>
+                      <text selectable={false} fg={active ? theme.bg : statusColor(row.change.status)}>{row.change.status} </text>
+                      <text selectable={false} fg={active ? theme.bg : theme.fg}>{row.change.path}</text>
                     </box>
                   </box>
                 );
@@ -412,7 +412,7 @@ export function Files({
                       openRow(row);
                     }}
                   >
-                    <text fg={active ? theme.bg : n.ignored ? theme.placeholder : n.dir ? theme.fg : st ? theme.fg : theme.muted}>
+                    <text selectable={false} fg={active ? theme.bg : n.ignored ? theme.placeholder : n.dir ? theme.fg : st ? theme.fg : theme.muted}>
                       {glyph}{n.name}{n.dir ? "/" : ""}
                     </text>
                     {st ? <text fg={active ? theme.bg : statusColor(st)}> {st}</text> : null}

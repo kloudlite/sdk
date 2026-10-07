@@ -85,8 +85,8 @@ export function Prompt({
                     paddingRight={1}
                     onMouseDown={onPick ? () => onPick(c.insert) : () => onSubmit(c.insert)}
                   >
-                    <text fg={active ? theme.bg : theme.fg}>{c.label.padEnd(10)}</text>
-                    <text fg={active ? theme.bg : theme.muted}> {c.hint}</text>
+                    <text selectable={false} fg={active ? theme.bg : theme.fg}>{c.label.padEnd(10)}</text>
+                    <text selectable={false} fg={active ? theme.bg : theme.muted}> {c.hint}</text>
                     <box flexGrow={1} />
                   </box>
                 );

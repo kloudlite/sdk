@@ -29,19 +29,19 @@ export function SessionTitle({
     // separator here, so cancel that gap and let the transcript start right under it
     <box flexDirection="column" flexShrink={0} paddingTop={1} marginBottom={-1} onMouseDown={onOpen}>
       <box flexDirection="row" justifyContent="space-between" height={1} overflow="hidden">
-        <text>
+        <text selectable={false}>
           <span fg={theme.fg} attributes={TextAttributes.BOLD}>
             {clip(title, width - 10)}
           </span>
         </text>
         {busy && (
-          <text>
+          <text selectable={false}>
             <span fg={theme.accent}>working</span>
           </text>
         )}
       </box>
       {description ? (
-        <text attributes={TextAttributes.DIM}>
+        <text selectable={false} attributes={TextAttributes.DIM}>
           <span fg={theme.muted}>{clip(description, width)}</span>
         </text>
       ) : null}

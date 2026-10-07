@@ -91,12 +91,12 @@ export function AskPanel({ ask }: { ask: Ask }) {
       >
         <box flexDirection="column">
           <box flexDirection="row" gap={1} paddingLeft={1}>
-            <text fg={theme.warning}>△</text>
-            <text fg={theme.fg}>{ask.title}</text>
+            <text selectable={false} fg={theme.warning}>△</text>
+            <text selectable={false} fg={theme.fg}>{ask.title}</text>
           </box>
           {ask.subtitle && (
             <box flexDirection="row" gap={1} paddingLeft={2}>
-              <text fg={theme.muted}># {ask.subtitle}</text>
+              <text selectable={false} fg={theme.muted}># {ask.subtitle}</text>
             </box>
           )}
         </box>
@@ -107,18 +107,18 @@ export function AskPanel({ ask }: { ask: Ask }) {
         )}
         {ask.body && (
           <box paddingLeft={1}>
-            <text fg={theme.fg}>{ask.body}</text>
+            <text selectable={false} fg={theme.fg}>{ask.body}</text>
           </box>
         )}
         {list && (
           <box flexDirection="column" paddingLeft={1}>
-            <text>
+            <text selectable={false}>
               <span fg={theme.accent}>› </span>
               <span fg={theme.fg}>{query}</span>
               <span attributes={TextAttributes.INVERSE}> </span>
               {query === "" && <span fg={theme.placeholder}>type to search…</span>}
             </text>
-            {n === 0 && <text fg={theme.muted}>No matches</text>}
+            {n === 0 && <text selectable={false} fg={theme.muted}>No matches</text>}
             {(() => {
               // scroll window that follows the selection
               const start = Math.min(Math.max(0, cur - LIST_MAX + 1), Math.max(0, n - LIST_MAX));
@@ -135,15 +135,15 @@ export function AskPanel({ ask }: { ask: Ask }) {
                     backgroundColor={active ? theme.selection : undefined}
                     onMouseDown={() => ask.resolve(opt.id)}
                   >
-                    <text fg={active ? theme.bg : theme.fg}>{opt.label}</text>
-                    <text fg={active ? theme.bg : theme.muted}>{opt.hint ?? ""}</text>
+                    <text selectable={false} fg={active ? theme.bg : theme.fg}>{opt.label}</text>
+                    <text selectable={false} fg={active ? theme.bg : theme.muted}>{opt.hint ?? ""}</text>
                   </box>
                 );
               });
             })()}
             {n > LIST_MAX && (
               <box paddingLeft={1}>
-                <text fg={theme.muted}>{cur + 1}/{n}</text>
+                <text selectable={false} fg={theme.muted}>{cur + 1}/{n}</text>
               </box>
             )}
           </box>
@@ -175,19 +175,19 @@ export function AskPanel({ ask }: { ask: Ask }) {
                   backgroundColor={active ? theme.warning : undefined}
                   onMouseDown={() => ask.resolve(opt.id)}
                 >
-                  <text fg={active ? theme.bg : theme.muted}>{opt.label}</text>
+                  <text selectable={false} fg={active ? theme.bg : theme.muted}>{opt.label}</text>
                 </box>
               );
             })}
         </box>
         <box flexDirection="row" gap={2} flexShrink={0}>
-          <text fg={theme.fg}>
+          <text selectable={false} fg={theme.fg}>
             {list ? "↑↓" : "⇆"} <span fg={theme.muted}>select</span>
           </text>
-          <text fg={theme.fg}>
+          <text selectable={false} fg={theme.fg}>
             enter <span fg={theme.muted}>confirm</span>
           </text>
-          <text fg={theme.fg}>
+          <text selectable={false} fg={theme.fg}>
             esc <span fg={theme.muted}>cancel</span>
           </text>
         </box>

@@ -28,7 +28,7 @@ export function Queue({
   return (
     <box flexDirection="column" flexShrink={0} marginBottom={1}>
       <box flexDirection="row" justifyContent="space-between" height={1} paddingLeft={1} paddingRight={1}>
-        <text>
+        <text selectable={false}>
           <span fg={theme.warning} attributes={TextAttributes.BOLD}>
             QUEUED
           </span>
@@ -38,7 +38,7 @@ export function Queue({
           </span>
         </text>
         {selected !== null && (
-          <text fg={theme.muted}>
+          <text selectable={false} fg={theme.muted}>
             enter edit · d drop · esc done
           </text>
         )}
@@ -56,7 +56,7 @@ export function Queue({
             backgroundColor={on ? theme.surfaceRaised : undefined}
             onMouseDown={onSelect ? () => onSelect(i) : undefined}
           >
-            <text>
+            <text selectable={false}>
               <span fg={on ? theme.accent : theme.border}>{on ? "› " : "  "}</span>
               <span fg={theme.muted}>
                 {m.kind === "steer" ? "steer " : "after "}

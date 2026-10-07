@@ -33,16 +33,16 @@ export function HintBar({
   return (
     <box flexDirection="row" flexShrink={0} justifyContent="space-between" overflow="hidden">
       <box flexDirection="row" gap={2} marginLeft={1}>
-        <text fg={theme.muted}>{active}</text>
+        <text selectable={false} fg={theme.muted}>{active}</text>
         {queued > 0 && (
           <box onMouseDown={click("queue")}>
-            <text fg={theme.warning}>
+            <text selectable={false} fg={theme.warning}>
               {queued} queued <span attributes={TextAttributes.DIM}>q edit</span>
             </text>
           </box>
         )}
         {busy && (
-          <text fg={theme.fg}>
+          <text selectable={false} fg={theme.fg}>
             <Spinner fg={theme.accent} />{" "}
             <span fg={theme.muted}>
               <b>esc</b> <span attributes={TextAttributes.DIM}>interrupt</span>
@@ -51,27 +51,27 @@ export function HintBar({
         )}
       </box>
       <box flexDirection="row" gap={2} flexShrink={1} overflow="hidden">
-        <text fg={theme.muted}>{tokens.toLocaleString()} tok</text>
+        <text selectable={false} fg={theme.muted}>{tokens.toLocaleString()} tok</text>
         {normal ? (
           <>
-            <box onMouseDown={click("type")}><text fg={theme.fg}>i <span fg={theme.muted}>type</span></text></box>
-            {!compact && <text fg={theme.fg}>j k <span fg={theme.muted}>workspaces</span></text>}
-            {!compact && <box onMouseDown={click("jump")}><text fg={theme.fg}>p <span fg={theme.muted}>jump</span></text></box>}
-            {inWorkspace && <box onMouseDown={click("files")}><text fg={theme.fg}>f <span fg={theme.muted}>view</span></text></box>}
-            <box onMouseDown={click("commands")}><text fg={theme.fg}>/ <span fg={theme.muted}>commands</span></text></box>
-            <box onMouseDown={click("help")}><text fg={theme.fg}>? <span fg={theme.muted}>help</span></text></box>
+            <box onMouseDown={click("type")}><text selectable={false} fg={theme.fg}>i <span fg={theme.muted}>type</span></text></box>
+            {!compact && <text selectable={false} fg={theme.fg}>j k <span fg={theme.muted}>workspaces</span></text>}
+            {!compact && <box onMouseDown={click("jump")}><text selectable={false} fg={theme.fg}>p <span fg={theme.muted}>jump</span></text></box>}
+            {inWorkspace && <box onMouseDown={click("files")}><text selectable={false} fg={theme.fg}>f <span fg={theme.muted}>view</span></text></box>}
+            <box onMouseDown={click("commands")}><text selectable={false} fg={theme.fg}>/ <span fg={theme.muted}>commands</span></text></box>
+            <box onMouseDown={click("help")}><text selectable={false} fg={theme.fg}>? <span fg={theme.muted}>help</span></text></box>
           </>
         ) : vim ? (
           <>
-            <text fg={theme.fg}>enter <span fg={theme.muted}>send</span></text>
-            <text fg={theme.fg}>esc <span fg={theme.muted}>normal mode</span></text>
+            <text selectable={false} fg={theme.fg}>enter <span fg={theme.muted}>send</span></text>
+            <text selectable={false} fg={theme.fg}>esc <span fg={theme.muted}>normal mode</span></text>
           </>
         ) : (
           <>
-            <text fg={theme.fg}>enter <span fg={theme.muted}>send</span></text>
-            {!compact && <box onMouseDown={click("jump")}><text fg={theme.fg}>^p <span fg={theme.muted}>jump</span></text></box>}
-            {inWorkspace && <box onMouseDown={click("files")}><text fg={theme.fg}>^f <span fg={theme.muted}>view</span></text></box>}
-            <box onMouseDown={click("commands")}><text fg={theme.fg}>/ <span fg={theme.muted}>commands</span></text></box>
+            <text selectable={false} fg={theme.fg}>enter <span fg={theme.muted}>send</span></text>
+            {!compact && <box onMouseDown={click("jump")}><text selectable={false} fg={theme.fg}>^p <span fg={theme.muted}>jump</span></text></box>}
+            {inWorkspace && <box onMouseDown={click("files")}><text selectable={false} fg={theme.fg}>^f <span fg={theme.muted}>view</span></text></box>}
+            <box onMouseDown={click("commands")}><text selectable={false} fg={theme.fg}>/ <span fg={theme.muted}>commands</span></text></box>
           </>
         )}
       </box>

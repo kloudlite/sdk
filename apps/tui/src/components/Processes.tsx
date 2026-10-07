@@ -102,7 +102,7 @@ export function Processes({
                   }}
                 >
                   <box height={1} overflow="hidden" paddingLeft={1} backgroundColor={on ? theme.selection : undefined}>
-                    <text>
+                    <text selectable={false}>
                       <span fg={on ? theme.bg : color(p.status)}>•</span>{" "}
                       <span fg={on ? theme.bg : theme.fg}>{p.name}</span>
                       {p.port ? <span fg={on ? theme.bg : theme.muted}>:{p.port}</span> : ""}

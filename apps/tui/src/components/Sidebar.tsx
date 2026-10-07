@@ -16,7 +16,7 @@ function Heading({ children, count, width, flush }: { children: string; count?: 
   const label = count === undefined ? children : `${children}  ${count}`;
   return (
     <box paddingLeft={1} paddingRight={1} height={1} marginTop={flush ? 0 : 1}>
-      <text>
+      <text selectable={false}>
         <span fg={theme.muted} attributes={TextAttributes.BOLD}>{children}</span>
         {count !== undefined && (
           <span fg={theme.border}>{"  "}{String(count)}</span>
@@ -50,8 +50,8 @@ function Row({
       backgroundColor={on ? theme.surfaceRaised : undefined}
       onMouseDown={onMouseDown}
     >
-      <text>{left}</text>
-      <text>
+      <text selectable={false}>{left}</text>
+      <text selectable={false}>
         {right}
       </text>
     </box>
@@ -103,7 +103,7 @@ export function Sidebar({
         backgroundColor={focus === 0 ? theme.surfaceRaised : theme.surface}
         onMouseDown={onFocus ? () => onFocus(0) : undefined}
       >
-        <text>
+        <text selectable={false}>
           <span fg={theme.accent}>✦ </span>
           <span fg={theme.fg} attributes={TextAttributes.BOLD}>Working</span>
           <span fg={theme.muted}> Session</span>

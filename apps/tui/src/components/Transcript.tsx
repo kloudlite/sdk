@@ -35,15 +35,51 @@ export type Entry =
 const COLLAPSE_MAX = 10;
 
 /**
+ * Soft-wrap one source line to `width`, the way the terminal will draw it, so
+ * a row count means rows on screen. Reasoning and bash output arrive as long
+ * unbroken paragraphs: counting "\n" said 3 lines where the terminal drew 9,
+ * and the block was then sized for 3 — the expander landed on top of the text.
+ */
+function wrap(line: string, width: number): string[] {
+  if (line.length <= width) return [line];
+  const rows: string[] = [];
+  let rest = line;
+  while (rest.length > width) {
+    // break on the last space that fits; a word longer than the width is cut
+    const cut = rest.lastIndexOf(" ", width);
+    const at = cut > 0 ? cut : width;
+    rows.push(rest.slice(0, at));
+    rest = rest.slice(cut > 0 ? at + 1 : at);
+  }
+  if (rest) rows.push(rest);
+  return rows;
+}
+
+/**
  * Collapse a block to its first `COLLAPSE_MAX` rows — Claude Code keeps the
  * head, not the tail, so a long block still reads from its beginning. Returns
  * the kept text and how many rows it hid, so the caller can offer the expander.
+ * `width` is the column count the block is drawn into; rows are counted after
+ * wrapping to it, since that is what the user actually sees.
  */
-function collapse(text: string | undefined, open: boolean): { text: string; hidden: number } {
+function collapse(
+  text: string | undefined,
+  open: boolean,
+  width = Infinity,
+): { text: string; hidden: number } {
   if (!text) return { text: "", hidden: 0 };
-  const lines = text.trim().split("\n");
-  if (open || lines.length <= COLLAPSE_MAX) return { text: lines.join("\n"), hidden: 0 };
-  return { text: lines.slice(0, COLLAPSE_MAX).join("\n"), hidden: lines.length - COLLAPSE_MAX };
+  const rows = text
+    .trim()
+    .split("\n")
+    .flatMap((line) => wrap(line, width));
+  if (open || rows.length <= COLLAPSE_MAX) return { text: rows.join("\n"), hidden: 0 };
+  return { text: rows.slice(0, COLLAPSE_MAX).join("\n"), hidden: rows.length - COLLAPSE_MAX };
+}
+
+/** Rows a block will occupy once wrapped — decides if it needs an expander. */
+function rowCount(text: string | undefined, width: number): number {
+  if (!text) return 0;
+  return text.trim().split("\n").flatMap((line) => wrap(line, width)).length;
 }
 
 /**
@@ -54,7 +90,7 @@ function collapse(text: string | undefined, open: boolean): { text: string; hidd
 function More({ hidden, open, onToggle }: { hidden: number; open: boolean; onToggle?: () => void }) {
   return (
     <box height={1} onMouseDown={onToggle}>
-      <text fg={theme.muted}>
+      <text fg={theme.muted} selectable={false}>
         {open ? "… " : `… +${hidden} lines `}
         <span fg={theme.accent}>ctrl+o</span>
         {open ? " to collapse" : " to expand"}
@@ -107,11 +143,14 @@ function Row({
   entry,
   open,
   onOpen,
+  width,
 }: {
   entry: Entry;
   /** this entry is expanded — render every line */
   open: boolean;
   onOpen?: () => void;
+  /** columns the row is drawn into — collapse counts wrapped rows at it */
+  width: number;
 }) {
   switch (entry.kind) {
     case "user":
@@ -143,9 +182,9 @@ function Row({
       );
     case "agent": {
       // opencode TextPart: markdown, paddingLeft 3
-      const body = collapse(entry.text, open);
+      const body = collapse(entry.text, open, width - 3);
       // the expander stays visible once open, so the block can be re-collapsed
-      const long = (entry.text ?? "").trim().split("\n").length > COLLAPSE_MAX;
+      const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
         <box flexDirection="column" paddingLeft={3}>
           <Md text={body.text} />
@@ -167,8 +206,8 @@ function Row({
       }
       // finished: the same collapsing block an agent message gets, so a long
       // reasoning budget is actually readable instead of clipped to one line
-      const body = collapse(entry.text, open);
-      const long = entry.text.trim().split("\n").length > COLLAPSE_MAX;
+      const body = collapse(entry.text, open, width - 3);
+      const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
         <box flexDirection="column" paddingLeft={3}>
           <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
@@ -185,7 +224,7 @@ function Row({
 
       if (entry.name === "bash") {
         // opencode Shell via BlockTool: panel bg block, $ command, output tail
-        const out = collapse(entry.output, open);
+        const out = collapse(entry.output, open, width - 2);
         return (
           <box
             flexDirection="column"
@@ -199,7 +238,7 @@ function Row({
               {entry.summary}
             </text>
             {out.text !== "" && <text fg={theme.muted}>{out.text}</text>}
-            {(entry.output ?? "").trim().split("\n").length > COLLAPSE_MAX && (
+            {rowCount(entry.output, width - 2) > COLLAPSE_MAX && (
               <More hidden={out.hidden} open={open} onToggle={onOpen} />
             )}
             {entry.error && <text fg={theme.error}>{entry.error}</text>}
@@ -294,8 +333,11 @@ function Row({
 export function Transcript({
   entries,
   keys = "page",
+  width = 80,
 }: {
   entries: Entry[];
+  /** content columns available — long blocks wrap, so row counts need it */
+  width?: number;
   /** "off" while a modal owns keys; "page" = pgup/pgdn; "normal" adds u/d. */
   keys?: "off" | "page" | "normal";
 }) {
@@ -410,6 +452,7 @@ export function Transcript({
           }
         >
           <Row
+            width={width}
             entry={entry}
             open={openAll !== open.has(key)}
             onOpen={() =>
@@ -426,7 +469,7 @@ export function Transcript({
     </scrollbox>
       {away && (
         <box height={1} justifyContent="center" onMouseDown={toBottom}>
-          <text fg={theme.accent}>
+          <text selectable={false} fg={theme.accent}>
             ↓ jump to bottom <span fg={theme.muted}>end</span>
           </text>
         </box>
