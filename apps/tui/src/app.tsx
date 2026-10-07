@@ -797,6 +797,8 @@ export function App({
         }
       } else if (m.role === "assistant") {
         for (const b of m.content ?? []) {
+          if (b.type === "thinking" && b.thinking.trim())
+            entries.push({ kind: "thinking", text: b.thinking, done: true });
           if (b.type === "text" && b.text.trim())
             entries.push({ kind: "agent", text: b.text });
           if (b.type === "toolCall")
