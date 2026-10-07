@@ -284,23 +284,28 @@ export async function createSession({
   // meta.json makes a session findable later: its key, its name, last use
   writeMeta({ ...(readMeta(key) ?? { key }), key, updated: Date.now() });
   // pi's codemode ships as an extension and is registered *inactive*, so both
-  // halves are needed: the factory on a resource loader, and the tool named in
-  // `tools` to turn it on. Omitting `tools` would drop the built-ins with it,
-  // so the default four are listed back explicitly.
+  // halves are needed: the factory on a resource loader, and the tool activated
+  // by name. Passing `tools` up front would replace pi's whole default
+  // allowlist, so the session is built with its defaults and `codemode` is
+  // added to whatever `getActiveToolNames()` reports — hardcoding the four
+  // built-ins silently cost `grep`, `find` and `ls`.
   let resourceLoader: DefaultResourceLoader | undefined;
   if (codemode) {
     resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: getAgentDir(),
-      extensionFactories: [{ name: "codemode", factory: createCodemodeExtension() }],
+      // `mode: "only"` is what actually makes the model use it. Under pi's
+      // default `"on"` the built-ins stay directly declared and codemode's own
+      // description lists only the tools that have no direct exposure — so the
+      // model keeps reaching for `bash` and codemode never fires. `"only"`
+      // drops the direct declarations, leaving scripts as the way to call them.
+      extensionFactories: [{ name: "codemode", factory: createCodemodeExtension({ mode: "only" }) }],
     });
     await resourceLoader.reload();
   }
   const { session } = await createAgentSession({
     cwd,
-    ...(resourceLoader
-      ? { resourceLoader, tools: ["read", "bash", "edit", "write", "codemode"] }
-      : {}),
+    ...(resourceLoader ? { resourceLoader } : {}),
     modelRuntime: runtime,
     model,
     ...(thinkingLevel ? { thinkingLevel } : {}),
@@ -310,6 +315,8 @@ export async function createSession({
       : SessionManager.continueRecent(cwd, dir),
     customTools: registry ? (adaptTools(registry) as never) : undefined,
   });
+  // add codemode to pi's defaults rather than replacing them
+  if (codemode) session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
   if (autoCompact !== undefined) session.setAutoCompactionEnabled(autoCompact);
   return session;
 }
