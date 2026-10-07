@@ -681,7 +681,10 @@ export function App({
       return agent;
     });
     agents.current.set(key, created);
-    created.catch(() => agents.current.delete(key));
+    created.catch(() => {
+      agents.current.delete(key);
+      setSessions((map) => patchSession(map, key, { restored: true }));
+    });
     return created;
   }
 
@@ -912,7 +915,9 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
   /** Rebuild the transcript + prompt history from a restored session. */
   function restoreTranscript(key: string, agent: AgentSession) {
     const messages = agent.messages;
-    if (messages.length === 0) return;
+    const markRestored = () =>
+      setSessions((map) => patchSession(map, key, { restored: true }));
+    if (messages.length === 0) return markRestored();
     const entries: Entry[] = [];
     const history: string[] = [];
     for (const m of messages as any[]) {
@@ -944,7 +949,7 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
     }
     setSessions((map) =>
       patchSession(map, key, (s) =>
-        s.entries.length === 0 ? { entries, history } : {},
+        s.entries.length === 0 ? { entries, history, restored: true } : { restored: true },
       ),
     );
   }
@@ -1529,6 +1534,7 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
                   ? session.entries.filter((e) => e.kind !== "thinking")
                   : session.entries
               }
+              ready={session.restored === true}
             />
             </>
           )}

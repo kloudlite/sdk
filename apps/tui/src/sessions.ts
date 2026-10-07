@@ -11,6 +11,12 @@ import { DEFAULT_MODEL, type ModelRef } from "./models.ts";
  */
 export type Session = {
   entries: Entry[];
+  /**
+   * The persisted transcript has been read off disk. Until then an empty
+   * `entries` means "not loaded yet", not "nothing to show" — rendering the
+   * welcome screen on that guess flashed it over every reloaded session.
+   */
+  restored?: boolean;
   busy: boolean;
   tokens: number;
   /** Prompts submitted in this session, oldest first (↑/↓ recall). */

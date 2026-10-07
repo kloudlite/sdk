@@ -488,8 +488,11 @@ export function Transcript({
   entries,
   keys = "page",
   width = 80,
+  ready = true,
 }: {
   entries: Entry[];
+  /** false until the persisted transcript has been read — see `Session.restored` */
+  ready?: boolean;
   /** content columns available — long blocks wrap, so row counts need it */
   width?: number;
   /** "off" while a modal owns keys; "page" = pgup/pgdn; "normal" adds u/d. */
@@ -546,6 +549,11 @@ export function Transcript({
   });
 
   const visible = entries.slice(-SCROLLBACK);
+
+  // An unrestored session has nothing to say yet: the welcome screen means
+  // "this session is empty", and showing it before the transcript is read
+  // flashed it over every reloaded session.
+  if (visible.length === 0 && !ready) return <box flexGrow={1} />;
 
   if (visible.length === 0) {
     return (

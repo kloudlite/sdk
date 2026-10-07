@@ -164,3 +164,27 @@ test("a long bash command counts toward the block's rows", async () => {
   expect(t.captureCharFrame()).toContain("to expand");
   t.renderer.destroy();
 }, 15000);
+
+// A reloaded session's transcript arrives from disk after the first paint, so
+// an empty `entries` has two meanings — the welcome screen is only one of them.
+test("the welcome screen waits for the transcript to be read", async () => {
+  const t = await testRender(<Transcript entries={[]} ready={false} />, {
+    width: 80,
+    height: 20,
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).not.toContain("Orchestrate agents");
+  t.renderer.destroy();
+}, 15000);
+
+test("an empty session that has been read shows the welcome screen", async () => {
+  const t = await testRender(<Transcript entries={[]} ready />, {
+    width: 80,
+    height: 20,
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("Orchestrate agents");
+  t.renderer.destroy();
+}, 15000);
