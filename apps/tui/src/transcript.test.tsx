@@ -87,3 +87,37 @@ test("thinking tickers while streaming and opens up when done", async () => {
   expect(frame).toContain("+8 lines");
   expect(frame).not.toContain("reasoning line 11");
 }, 20000);
+
+// Reaching the "… +N lines" row meant scrolling past the whole block first,
+// so the block itself is the toggle — but a drag over it still selects text.
+test("clicking a long block toggles it, dragging over it does not", async () => {
+  const para =
+    "Long unbroken reasoning paragraph that the terminal soft wraps across many visual rows and therefore collapses to a ten row head. ";
+  const t = await testRender(
+    <Transcript
+      width={100}
+      entries={[{ kind: "agent", id: "a1", text: Array(6).fill(para).join("\n") }]}
+    />,
+    { width: 100, height: 20 },
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("ctrl+o to expand");
+
+  // hovering says the cell is clickable
+  await t.mockMouse.moveTo(10, 5);
+  await new Promise((r) => setTimeout(r, 80));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("click to expand");
+
+  await t.mockMouse.click(10, 5);
+  await new Promise((r) => setTimeout(r, 80));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("click to collapse");
+
+  // a drag is a selection, not a toggle
+  await t.mockMouse.drag(10, 5, 60, 6);
+  await new Promise((r) => setTimeout(r, 80));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("click to collapse");
+}, 15000);

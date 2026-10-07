@@ -76,6 +76,20 @@ function collapse(
   return { text: rows.slice(0, COLLAPSE_MAX).join("\n"), hidden: rows.length - COLLAPSE_MAX };
 }
 
+/**
+ * Whether this entry has a block long enough to collapse — the wrapper needs
+ * to know before rendering the Row, so the whole cell can be the toggle and
+ * only entries that actually collapse react to a click.
+ */
+function collapsible(entry: Entry, width: number): boolean {
+  if (entry.kind === "agent") return rowCount(entry.text, width - 3) > COLLAPSE_MAX;
+  if (entry.kind === "thinking")
+    return !!entry.done && rowCount(entry.text, width - 3) > COLLAPSE_MAX;
+  if (entry.kind === "tool" && entry.name === "bash")
+    return rowCount(entry.output, width - 2) > COLLAPSE_MAX;
+  return false;
+}
+
 /** Rows a block will occupy once wrapped — decides if it needs an expander. */
 function rowCount(text: string | undefined, width: number): number {
   if (!text) return 0;
@@ -87,12 +101,23 @@ function rowCount(text: string | undefined, width: number): number {
  * to expand)", and once open the same row offers to collapse it again. Click
  * it or press ctrl+o.
  */
-function More({ hidden, open, onToggle }: { hidden: number; open: boolean; onToggle?: () => void }) {
+function More({
+  hidden,
+  open,
+  onToggle,
+  hover,
+}: {
+  hidden: number;
+  open: boolean;
+  onToggle?: () => void;
+  /** the pointer is over this entry — the row brightens to say it is clickable */
+  hover?: boolean;
+}) {
   return (
     <box height={1} onMouseDown={onToggle}>
-      <text fg={theme.muted} selectable={false}>
+      <text fg={hover ? theme.fg : theme.muted} selectable={false}>
         {open ? "… " : `… +${hidden} lines `}
-        <span fg={theme.accent}>ctrl+o</span>
+        <span fg={theme.accent}>{hover ? "click" : "ctrl+o"}</span>
         {open ? " to collapse" : " to expand"}
       </text>
     </box>
@@ -144,6 +169,7 @@ function Row({
   open,
   onOpen,
   width,
+  hover,
 }: {
   entry: Entry;
   /** this entry is expanded — render every line */
@@ -151,6 +177,8 @@ function Row({
   onOpen?: () => void;
   /** columns the row is drawn into — collapse counts wrapped rows at it */
   width: number;
+  /** the pointer is over this entry and it can collapse */
+  hover?: boolean;
 }) {
   switch (entry.kind) {
     case "user":
@@ -186,9 +214,11 @@ function Row({
       // the expander stays visible once open, so the block can be re-collapsed
       const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
-        <box flexDirection="column" paddingLeft={3}>
+        // hovering a collapsible block tints it, the way a desktop list row
+        // lights up under the pointer — subtle, one step off the background
+        <box flexDirection="column" paddingLeft={3} backgroundColor={hover ? theme.surface : undefined}>
           <Md text={body.text} />
-          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} />}
+          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} hover={hover} />}
         </box>
       );
     }
@@ -209,12 +239,12 @@ function Row({
       const body = collapse(entry.text, open, width - 3);
       const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
-        <box flexDirection="column" paddingLeft={3}>
+        <box flexDirection="column" paddingLeft={3} backgroundColor={hover ? theme.surface : undefined}>
           <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
             Thinking
           </text>
           <Md text={body.text} fg={theme.muted} />
-          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} />}
+          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} hover={hover} />}
         </box>
       );
     }
@@ -231,7 +261,7 @@ function Row({
             paddingLeft={2}
             paddingTop={1}
             paddingBottom={1}
-            backgroundColor={theme.surface}
+            backgroundColor={hover ? theme.surfaceRaised : theme.surface}
           >
             <text fg={running ? theme.fg : theme.muted}>
               {running ? "⚙ " : "$ "}
@@ -239,7 +269,7 @@ function Row({
             </text>
             {out.text !== "" && <text fg={theme.muted}>{out.text}</text>}
             {rowCount(entry.output, width - 2) > COLLAPSE_MAX && (
-              <More hidden={out.hidden} open={open} onToggle={onOpen} />
+              <More hidden={out.hidden} open={open} onToggle={onOpen} hover={hover} />
             )}
             {entry.error && <text fg={theme.error}>{entry.error}</text>}
           </box>
@@ -348,6 +378,13 @@ export function Transcript({
   // keys of entries the user expanded; ctrl+o (o in vim NORMAL) expands all
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [openAll, setOpenAll] = useState(false);
+  // the entry the pointer is over, so its expander can light up
+  const [hover, setHover] = useState<string | null>(null);
+  // where the button went down, so an up in the same cell is a click and an
+  // up somewhere else is the end of a text selection. opentui marks every up
+  // isDragging once a mousedown over selectable text has started a selection,
+  // so that flag alone cannot tell the two apart.
+  const downAt = useRef<{ x: number; y: number } | null>(null);
 
   // ponytail: opentui's scrollbox has no onScroll, so "am I at the bottom?"
   // is sampled on a timer — cheap, and the only hook the wheel also trips
@@ -441,6 +478,15 @@ export function Transcript({
       <box height={1} />
       {visible.map((entry, i) => {
         const key = "id" in entry && entry.id ? entry.id : `e${i}`;
+        // the whole cell is the expander, so a long block does not have to be
+        // scrolled past to reach its "… +N lines" row
+        const canCollapse = collapsible(entry, width);
+        const toggle = () =>
+          setOpen((prev) => {
+            const next = new Set(prev);
+            if (!next.delete(key)) next.add(key);
+            return next;
+          });
         return (
         <box
           key={key}
@@ -450,18 +496,26 @@ export function Transcript({
           marginTop={
             i === 0 ? 0 : isInlineTool(entry) && isInlineTool(visible[i - 1]!) ? 0 : 1
           }
+          // mouseup, not mousedown: a mousedown on the body starts a text
+          // selection, so toggling there would make a block impossible to
+          // select from. A click is an up within a cell of where it went down.
+          onMouseDown={canCollapse ? (e: { x: number; y: number }) => {
+            downAt.current = { x: e.x, y: e.y };
+          } : undefined}
+          onMouseUp={canCollapse ? (e: { x: number; y: number }) => {
+            const from = downAt.current;
+            downAt.current = null;
+            if (from && Math.abs(from.x - e.x) < 2 && from.y === e.y) toggle();
+          } : undefined}
+          onMouseOver={canCollapse ? () => setHover(key) : undefined}
+          onMouseOut={canCollapse ? () => setHover((h) => (h === key ? null : h)) : undefined}
         >
           <Row
             width={width}
             entry={entry}
+            hover={canCollapse && hover === key}
             open={openAll !== open.has(key)}
-            onOpen={() =>
-              setOpen((prev) => {
-                const next = new Set(prev);
-                if (!next.delete(key)) next.add(key);
-                return next;
-              })
-            }
+            onOpen={toggle}
           />
         </box>
         );
