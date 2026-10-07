@@ -34,6 +34,8 @@ export type Entry =
 
 /** Rows kept when a block is collapsed (Claude Code shows a short head). */
 const COLLAPSE_MAX = 10;
+/** Columns a thinking block loses to its left rail: the border plus its padding. */
+const RAIL = 3;
 
 /**
  * Soft-wrap one source line to `width`, the way the terminal will draw it, so
@@ -117,7 +119,7 @@ function collapseMd(
 function collapsible(entry: Entry, width: number): boolean {
   if (entry.kind === "agent") return rowCount(entry.text, width - 3) > COLLAPSE_MAX;
   if (entry.kind === "thinking")
-    return !!entry.done && rowCount(entry.text, width - 3) > COLLAPSE_MAX;
+    return !!entry.done && rowCount(entry.text, width - RAIL) > COLLAPSE_MAX;
   if (entry.kind === "tool" && (entry.name === "bash" || entry.name === "codemode"))
     // codemode shows its script above its output, so both count toward the head
     return (
@@ -325,8 +327,11 @@ function Row({
       // behind a left rail — never through <markdown>, whose own heading and
       // bold colours override `fg` and made a thinking block indistinguishable
       // from an agent message.
-      const body = collapse(entry.text, open, width - 4);
-      const long = rowCount(entry.text, width - 4) > COLLAPSE_MAX;
+      // the rail (1 col) plus its padding (2) — the same width `collapsible`
+      // measures with, or the two disagree by a row and the expander is drawn
+      // into a box that was never sized for it
+      const body = collapse(entry.text, open, width - RAIL);
+      const long = rowCount(entry.text, width - RAIL) > COLLAPSE_MAX;
       return (
         <box
           flexDirection="column"
