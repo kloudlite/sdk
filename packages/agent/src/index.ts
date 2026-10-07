@@ -69,10 +69,34 @@ export type ProviderAuth = {
   envKeys: string[];
 };
 
-// ponytail: convention-derived (pi-ai's real mapping isn't exported); covers the common providers
-function envKeyFor(provider: string): string {
-  if (provider === "google") return "GEMINI_API_KEY";
-  return `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+/**
+ * The env vars a provider actually reads, asked of pi rather than guessed.
+ * pi exports no mapping, but every provider resolves its credentials through
+ * `ctx.env(name)` — so a no-op context records the names on the way past.
+ * Guessing `${ID}_API_KEY` was wrong for 13 of 40 providers, and wrong in
+ * ways that strand a user: Bedrock wants AWS credentials, Hugging Face wants
+ * HF_TOKEN, github-copilot wants COPILOT_GITHUB_TOKEN.
+ */
+async function envKeysFor(provider: {
+  auth?: { apiKey?: { resolve?: Function; check?: Function } };
+}): Promise<string[]> {
+  const asked: string[] = [];
+  const ctx = {
+    env: async (name: string) => {
+      asked.push(name);
+      return undefined;
+    },
+    fileExists: async () => false,
+  };
+  const input = { ctx, credential: undefined, signal: new AbortController().signal };
+  for (const probe of [provider.auth?.apiKey?.resolve, provider.auth?.apiKey?.check]) {
+    // a provider may resolve ambient credentials any way it likes; a throw
+    // here just means it had nothing to ask for
+    try {
+      await probe?.(input);
+    } catch {}
+  }
+  return [...new Set(asked)];
 }
 
 /** Auth status for every provider (env keys, stored credentials, ambient). */
@@ -84,7 +108,7 @@ export async function providerAuth(): Promise<ProviderAuth[]> {
         .checkAuth(p.id)
         .then((c) => c !== undefined)
         .catch(() => false),
-      envKeys: [envKeyFor(p.id)],
+      envKeys: await envKeysFor(p as never),
     })),
   );
 }
