@@ -145,3 +145,22 @@ test("a codemode call renders its script above its output", async () => {
   expect(frame).toContain("return f.length;");
   expect(frame).toContain("Script completed");
 }, 15000);
+
+// A bash command is text in the block and wraps like any other text, so it has
+// to be counted: a `grep` over a lockfile is one very long line, and leaving it
+// out of the row count sized the box short and let the output spill past it.
+test("a long bash command counts toward the block's rows", async () => {
+  // ~12 wrapped rows at width 98, with no output to speak of
+  const cmd = `grep -n '"@opentui/react"' bun.lock | ${"echo some-fairly-long-argument ".repeat(40)}done`;
+  const t = await testRender(
+    <Transcript
+      width={100}
+      entries={[{ kind: "tool", id: "b1", name: "bash", status: "ok", summary: cmd, output: "ok" }]}
+    />,
+    { width: 100, height: 24 },
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("to expand");
+  t.renderer.destroy();
+}, 15000);
