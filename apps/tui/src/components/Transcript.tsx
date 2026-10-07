@@ -306,23 +306,40 @@ function Row({
       if (!entry.done) {
         const lines = entry.text.trim().split("\n");
         return (
-          <box paddingLeft={3} height={1} overflow="hidden">
+          <box
+            border={["left"]}
+            borderColor={theme.border}
+            paddingLeft={2}
+            height={1}
+            overflow="hidden"
+          >
             <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
               {lines[lines.length - 1] ?? ""}
             </text>
           </box>
         );
       }
-      // finished: the same collapsing block an agent message gets, so a long
-      // reasoning budget is actually readable instead of clipped to one line
-      const body = collapseMd(entry.text, open, width - 3);
-      const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
+      // finished: readable, but it must not look like the answer. Reasoning is
+      // prose the model wrote to itself, so it renders as dim italic text
+      // behind a left rail — never through <markdown>, whose own heading and
+      // bold colours override `fg` and made a thinking block indistinguishable
+      // from an agent message.
+      const body = collapse(entry.text, open, width - 4);
+      const long = rowCount(entry.text, width - 4) > COLLAPSE_MAX;
       return (
-        <box flexDirection="column" paddingLeft={3} backgroundColor={hover ? theme.surface : undefined}>
-          <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
+        <box
+          flexDirection="column"
+          border={["left"]}
+          borderColor={theme.border}
+          paddingLeft={2}
+          backgroundColor={hover ? theme.surface : undefined}
+        >
+          <text fg={theme.muted} attributes={TextAttributes.ITALIC | TextAttributes.BOLD}>
             Thinking
           </text>
-          <Md text={body.text} fg={theme.muted} />
+          <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
+            {body.text}
+          </text>
           {long && <More hidden={body.hidden} open={open} onToggle={onOpen} hover={hover} />}
         </box>
       );
