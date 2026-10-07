@@ -133,9 +133,9 @@ function rowCount(text: string | undefined, width: number): number {
 }
 
 /**
- * Claude Code's expander, under the block it belongs to: "… +N lines (ctrl+o
- * to expand)", and once open the same row offers to collapse it again. Click
- * it or press ctrl+o.
+ * opencode's expander, under the block it belongs to: "… +N lines  Click to
+ * expand", and once open the same row offers to collapse it again. Click only
+ * — opencode has no expand key and neither do we.
  */
 function More({
   hidden,
@@ -152,9 +152,8 @@ function More({
   return (
     <box height={1} width="100%" onMouseDown={onToggle}>
       <text fg={hover ? theme.fg : theme.muted} selectable={false}>
-        {open ? "… " : `… +${hidden} lines `}
-        <span fg={theme.accent}>{hover ? "click" : "ctrl+o"}</span>
-        {open ? " to collapse" : " to expand"}
+        {open ? "" : `… +${hidden} lines  `}
+        {open ? "Click to collapse" : "Click to expand"}
       </text>
     </box>
   );
@@ -471,9 +470,9 @@ export function Transcript({
   // scrolled up far enough that new output lands off screen — shows the
   // jump-to-bottom affordance, which `stickyScroll` otherwise hides
   const [away, setAway] = useState(false);
-  // keys of entries the user expanded; ctrl+o (o in vim NORMAL) expands all
+  // keys of entries the user expanded, one click at a time — opencode has no
+  // expand-everything key, so neither do we
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const [openAll, setOpenAll] = useState(false);
   // the entry the pointer is over, so its expander can light up
   const [hover, setHover] = useState<string | null>(null);
   // where the button went down, so an up in the same cell is a click and an
@@ -509,12 +508,6 @@ export function Transcript({
     if (key.name === "pageup") sb.scrollBy(-page);
     if (key.name === "pagedown") sb.scrollBy(page);
     if (key.name === "end" || (keys === "normal" && key.sequence === "G")) toBottom();
-    if (key.name === "o" && (key.ctrl || keys === "normal")) {
-      // ctrl+o is the master switch: flipping it drops the per-block overrides,
-      // so every block really does open (or close) together
-      setOpenAll((v) => !v);
-      setOpen(new Set());
-    }
     if (keys === "normal" && !key.ctrl && !key.meta) {
       if (key.name === "u") sb.scrollBy(-Math.ceil(page / 2));
       if (key.name === "d") sb.scrollBy(Math.ceil(page / 2));
@@ -542,7 +535,6 @@ export function Transcript({
               ["^j ^k", "cycle workspaces"],
               ["^f", "files, then processes & their logs"],
               ["^b", "back to the main context"],
-              ["^o", "expand or collapse long output"],
             ] as const
           ).map(([key, label]) => (
             <box key={key} flexDirection="row" height={1} flexShrink={0} overflow="hidden">
@@ -613,7 +605,7 @@ export function Transcript({
             // only the final entry can still be mid-token; settling the
             // earlier ones lets their trailing markdown parse as final
             streaming={i === visible.length - 1}
-            open={openAll !== open.has(key)}
+            open={open.has(key)}
             onOpen={toggle}
           />
         </box>

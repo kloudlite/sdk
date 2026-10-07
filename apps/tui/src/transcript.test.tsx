@@ -30,7 +30,7 @@ test("scrolling up offers a jump back to the bottom, end takes it", async () => 
   t.renderer.destroy();
 });
 
-test("a long block collapses to its head and ctrl+o toggles it both ways", async () => {
+test("a long block collapses to its head and a click toggles it both ways", async () => {
   const long: Entry[] = [
     { id: "a", kind: "agent", text: Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join("\n") },
   ];
@@ -51,12 +51,13 @@ test("a long block collapses to its head and ctrl+o toggles it both ways", async
   expect(first).toContain("+15 lines");
   expect(first).toContain("to expand");
 
-  t.mockInput.pressKey("o", { ctrl: true });
+  // click only — opencode has no expand key, so neither do we
+  await t.mockMouse.click(10, 3);
   const open = await frame();
   expect(open).toContain("line 25");
-  expect(open).toContain("to collapse"); // the row stays, offering the way back
+  expect(open).toContain("Click to collapse"); // the row stays, offering the way back
 
-  t.mockInput.pressKey("o", { ctrl: true }); // and it really collapses again
+  await t.mockMouse.click(10, 3); // and it really collapses again
   expect(await frame()).not.toContain("line 25");
   t.renderer.destroy();
 });
@@ -102,24 +103,19 @@ test("clicking a long block toggles it, dragging over it does not", async () => 
   );
   await new Promise((r) => setTimeout(r, 200));
   await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("ctrl+o to expand");
+  expect(t.captureCharFrame()).toContain("Click to expand");
 
-  // hovering says the cell is clickable
-  await t.mockMouse.moveTo(10, 5);
-  await new Promise((r) => setTimeout(r, 80));
-  await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("click to expand");
 
   await t.mockMouse.click(10, 5);
   await new Promise((r) => setTimeout(r, 80));
   await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("click to collapse");
+  expect(t.captureCharFrame()).toContain("Click to collapse");
 
   // a drag is a selection, not a toggle
   await t.mockMouse.drag(10, 5, 60, 6);
   await new Promise((r) => setTimeout(r, 80));
   await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("click to collapse");
+  expect(t.captureCharFrame()).toContain("Click to collapse");
 }, 15000);
 
 // codemode's argument is a whole script, not a one-line command, so it gets
