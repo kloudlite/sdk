@@ -19,6 +19,7 @@ export function Prompt({
   session,
   inputActive = true,
   onPasteImage,
+  onHistory,
   menu,
   overlay,
   onPick,
@@ -34,6 +35,8 @@ export function Prompt({
   inputActive?: boolean;
   /** ctrl+v: the placeholder token to insert at the caret, or null. */
   onPasteImage?: () => string | null;
+  /** ↑/↓ at the first/last line of the value: recall prompt history. */
+  onHistory?: (dir: -1 | 1) => boolean;
   menu: MenuItem[];
   /** "jump"/"command": filter overlays (Enter runs via onPick). "normal": dimmed card. */
   overlay?: "jump" | "command" | "normal";
@@ -118,6 +121,7 @@ export function Prompt({
               showCursor={inputActive}
               active={inputActive}
               onPasteImage={onPasteImage}
+              onHistory={onHistory}
             />
           </box>
           <text> </text>

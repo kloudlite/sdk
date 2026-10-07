@@ -283,6 +283,27 @@ export function App({
     return () => clearInterval(id);
   }, []);
 
+  /**
+   * ↑/↓ recall, called by the prompt only when the caret has nowhere left to go
+   * inside a multiline value — moving between lines comes first.
+   */
+  const recall = (dir: -1 | 1) => {
+    if (palette || cmdMode) return false;
+    const h = session.history;
+    if (h.length === 0) return false;
+    if (dir === -1) {
+      const idx = histIdx === null ? h.length - 1 : Math.max(0, histIdx - 1);
+      setHistIdx(idx);
+      setInput(h[idx]!);
+      return true;
+    }
+    if (histIdx === null) return false;
+    const idx = histIdx + 1;
+    setHistIdx(idx >= h.length ? null : idx);
+    setInput(idx >= h.length ? "" : h[idx]!);
+    return true;
+  };
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") return exit();
     // a full-column view owns the keyboard while it is up
@@ -403,26 +424,6 @@ export function App({
     if (key.name === "tab" && key.shift && !menuOpen)
       return setPermMode((m) => PERM_MODES[(PERM_MODES.indexOf(m) + 1) % PERM_MODES.length]!);
     if (key.name === "tab" && !menuOpen && keyMode === "normal") return cycle(1);
-    // ↑/↓ recall this session's prompt history (menu closed only)
-    if (keyMode === "insert" && !menuOpen && (key.name === "up" || key.name === "down")) {
-      const h = session.history;
-      if (h.length === 0) return;
-      if (key.name === "up") {
-        const idx = histIdx === null ? h.length - 1 : Math.max(0, histIdx - 1);
-        setHistIdx(idx);
-        setInput(h[idx]!);
-      } else if (histIdx !== null) {
-        const idx = histIdx + 1;
-        if (idx >= h.length) {
-          setHistIdx(null);
-          setInput("");
-        } else {
-          setHistIdx(idx);
-          setInput(h[idx]!);
-        }
-      }
-      return;
-    }
     // enter in the queue pulls the picked message back into the prompt
     if (key.name === "return" && queuePick !== null && !menuOpen) {
       const picked = session.queued[queuePick];
@@ -1567,6 +1568,7 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
             <Prompt
               value={input}
               onPasteImage={pasteImage}
+              onHistory={recall}
               onChange={changeInput}
               onSubmit={
                 cmdMode

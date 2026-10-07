@@ -37,6 +37,7 @@ export function Input({
   active = true,
   mask = false,
   onPasteImage,
+  onHistory,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -53,6 +54,12 @@ export function Input({
    * value, so the cursor lands after it and later text goes where it is typed.
    */
   onPasteImage?: () => string | null;
+  /**
+   * ↑/↓ at the top/bottom line: the caret has nowhere to go inside the value,
+   * so the recall belongs to whoever owns the history. Returns true when it
+   * took the key.
+   */
+  onHistory?: (dir: -1 | 1) => boolean;
 }) {
   const [cursor, setCursor] = useState(value.length);
   // Distinguish our own edits from external value changes (menu insert,
@@ -120,6 +127,22 @@ export function Input({
       return;
     }
     if (key.ctrl || key.meta || key.option) return;
+    if (key.name === "up" || key.name === "down") {
+      // move within a multiline value first; only the edge falls through to
+      // history, the way every editor-shaped prompt behaves
+      const dir = key.name === "up" ? -1 : 1;
+      const bol = v.lastIndexOf("\n", p - 1) + 1;
+      const col = p - bol;
+      if (dir === -1) {
+        if (bol === 0) return void onHistory?.(-1);
+        const prev = v.lastIndexOf("\n", bol - 2) + 1;
+        return moveCursor(Math.min(prev + col, bol - 1));
+      }
+      const eol = v.indexOf("\n", p);
+      if (eol === -1) return void onHistory?.(1);
+      const nextEnd = v.indexOf("\n", eol + 1);
+      return moveCursor(Math.min(eol + 1 + col, nextEnd === -1 ? v.length : nextEnd));
+    }
     if (key.name === "left") return moveCursor(tokenStart(v, p));
     if (key.name === "right") return moveCursor(tokenEnd(v, p));
     if (key.name === "backspace" || key.name === "delete") {
@@ -170,8 +193,16 @@ export function Input({
         offset = end + 1; // account for the newline
         const cursorHere = showCursor && pos >= start && pos <= end;
         const col = pos - start;
+        const lineStart = start;
         return (
-          <text key={i} fg={theme.fg}>
+          <text
+            key={i}
+            fg={theme.fg}
+            // e.x is absolute; the renderable's own x makes it a column
+            onMouseDown={(e: { x: number; target: { x: number } | null }) =>
+              moveCursor(Math.min(lineStart + Math.max(0, e.x - (e.target?.x ?? 0)), end))
+            }
+          >
             {cursorHere ? (
               <>
                 {badged(line.slice(0, col), `${i}a`)}
