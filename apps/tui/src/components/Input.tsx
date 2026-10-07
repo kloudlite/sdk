@@ -16,6 +16,18 @@ export const SPECIAL = new Set([
  * Newlines: Shift+Enter or Alt/Option+Enter inserts one; a trailing "\" +
  * Enter continues on the next line; plain Enter submits.
  */
+/** Start of the `[Image N]` token ending at `p`, else one char back. */
+function tokenStart(value: string, p: number): number {
+  const m = /\[Image \d+\] ?$/.exec(value.slice(0, p));
+  return m ? p - m[0].length : Math.max(0, p - 1);
+}
+
+/** End of the `[Image N]` token starting at `p`, else one char on. */
+function tokenEnd(value: string, p: number): number {
+  const m = /^\[Image \d+\] ?/.exec(value.slice(p));
+  return m ? p + m[0].length : Math.min(value.length, p + 1);
+}
+
 export function Input({
   value,
   onChange,
@@ -104,12 +116,14 @@ export function Input({
       return;
     }
     if (key.ctrl || key.meta || key.option) return;
-    if (key.name === "left") return moveCursor(Math.max(0, p - 1));
-    if (key.name === "right") return moveCursor(Math.min(v.length, p + 1));
+    if (key.name === "left") return moveCursor(tokenStart(v, p));
+    if (key.name === "right") return moveCursor(tokenEnd(v, p));
     if (key.name === "backspace" || key.name === "delete") {
       if (p > 0) {
-        change(v.slice(0, p - 1) + v.slice(p));
-        moveCursor(p - 1);
+        // an [Image N] badge is one thing on screen, so it deletes as one
+        const from = tokenStart(v, p);
+        change(v.slice(0, from) + v.slice(p));
+        moveCursor(from);
       }
       return;
     }

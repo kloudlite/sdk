@@ -37,3 +37,32 @@ test("pasted images keep their place in the prompt", async () => {
   await t.renderOnce();
   expect(t.captureCharFrame()).toContain("[Image 1] hello [Image 2] world");
 });
+
+// the badge is one thing on screen, so backspace takes all of it
+test("backspace deletes a whole image token", async () => {
+  writeSettings({ vim: "off", sidebarWidth: 42 });
+  const t = await testRender(<App registry={new Registry()} />, {
+    width: 160,
+    height: 34,
+    kittyKeyboard: true,
+  });
+  const tick = async () => {
+    await new Promise((r) => setTimeout(r, 60));
+    await t.renderOnce();
+  };
+  await new Promise((r) => setTimeout(r, 400));
+  await t.renderOnce();
+  t.mockInput.pressKey("v", { ctrl: true });
+  await tick();
+  t.mockInput.typeText("hi ");
+  await tick();
+  t.mockInput.pressKey("v", { ctrl: true });
+  await tick();
+  expect(t.captureCharFrame()).toContain("[Image 1] hi [Image 2]");
+
+  t.mockInput.pressKey("BACKSPACE");
+  await tick();
+  const frame = t.captureCharFrame();
+  expect(frame).toContain("[Image 1] hi");
+  expect(frame).not.toContain("[Image 2");
+});
