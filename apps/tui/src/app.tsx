@@ -1609,7 +1609,7 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
               placeholder={palette ? "Jump to…" : cmdMode ? "Type a command…" : session.entries.length === 0 ? placeholders[hint]! : ""}
               model={modelLabel(session.model)}
               provider={session.model.provider}
-              workspace={focus === 0 ? undefined : workspaces[focus - 1]!.name}
+              session={contextPath}
               inputActive={inputLive}
               menu={menu}
             />
@@ -1620,7 +1620,7 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
             busy={busy}
             tokens={session.tokens}
             queued={session.queued.length}
-            active={contextPath}
+            active={environment.name}
             inWorkspace={focus > 0}
             compact={!wide}
             onHint={(id) => {

@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import { theme } from "../theme.ts";
 
-/** Bottom bar: context path (+ spinner while busy) left; tokens, hints right. */
+/** Bottom bar: connected environment left; tokens, hints right. */
 export function HintBar({
   busy,
   tokens,
@@ -19,7 +19,7 @@ export function HintBar({
   queued: number;
   /** Permission mode; only shown when it is not "default". */
   permMode?: string;
-  /** Context path: "main" or "main › <workspace>" */
+  /** The connected environment. The session you are in is on the prompt card. */
   active: string;
   inWorkspace: boolean;
   normal: boolean;

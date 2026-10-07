@@ -16,7 +16,7 @@ export function Prompt({
   placeholder,
   model,
   provider,
-  workspace,
+  session,
   inputActive = true,
   onPasteImage,
   menu,
@@ -29,7 +29,8 @@ export function Prompt({
   placeholder: string;
   model: string;
   provider: string;
-  workspace?: string;
+  /** the session being typed into — its inherited title, never an agent name */
+  session: string;
   inputActive?: boolean;
   /** ctrl+v: the placeholder token to insert at the caret, or null. */
   onPasteImage?: () => string | null;
@@ -122,10 +123,13 @@ export function Prompt({
           <text> </text>
           <text>
             <span fg={normal ? theme.muted : bar}>
-              <b>{normal ? "NORMAL" : overlay === "command" ? "Commands" : overlay === "jump" ? "Jump" : workspace ? "Agent" : "Orchestrator"}</b>
+              {/* every session is an agent, so naming the agent said nothing
+                  twice — this is the session you are typing into, and it stays
+                  put in NORMAL too; the mode goes in the hint that follows */}
+              <b>{overlay === "command" ? "Commands" : overlay === "jump" ? "Jump" : session}</b>
             </span>
             {normal ? (
-              <span fg={theme.muted}> · i to type · ? for help</span>
+              <span fg={theme.muted}> · NORMAL · i to type · ? for help</span>
             ) : (
               // the model is which model answers, so it stays on screen while
               // an overlay is open — the overlay's hint is appended, not swapped in

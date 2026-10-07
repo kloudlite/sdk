@@ -37,10 +37,11 @@ async function mount(opts?: { vim?: "on" | "off" }) {
     await tick();
     await setup.renderOnce();
   };
-  /** The hint bar's context path alone — the sidebar names workspaces too. */
+  /** The prompt card's session row alone — the sidebar names workspaces too. */
   const path = async () => {
     const lines = (await frame()).split("\n").filter((l) => l.trim() !== "");
-    return lines[lines.length - 1]!.trim();
+    // the row under the input: "<session> · <model> <provider>"
+    return lines.filter((l) => l.includes(" \u00b7 ")).pop()?.trim() ?? "";
   };
   return { ...setup, frame, path, insert, done: () => setup.renderer.destroy() };
 }
@@ -84,7 +85,7 @@ test("card keeps its shape after submit", async () => {
   t.mockInput.pressKey("RETURN");
   const f = await t.frame();
   expect(f.trimEnd().split("\n").length).toBeLessThanOrEqual(ROWS);
-  expect(f).toContain("Orchestrator"); // context row still in place
+  expect(f).toContain("Working Session"); // session row still in place
   expect(f).toContain("hi"); // user turn in the transcript
   t.done();
 });
