@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { Server, type ServerChannel } from "ssh2";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
-import { Registry } from "@kloudlite-tui/tools";
+import { Registry, webFetch, webSearch } from "@kloudlite-tui/tools";
 import { App } from "./app.tsx";
 
 const PORT = Number(process.env.KLOUDLITE_SSH_PORT ?? 2222);
@@ -112,7 +112,7 @@ const server = new Server({ hostKeys: [hostKey()] }, (client) => {
         } catch {}
       }, 200);
 
-      createRoot(renderer).render(<App registry={new Registry()} onExit={close} />);
+      createRoot(renderer).render(<App registry={new Registry().add(webFetch, webSearch)} onExit={close} />);
     });
   });
 });

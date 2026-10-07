@@ -43,3 +43,4 @@ export class Registry {
     return def;
   }
 }
+export { webFetch, webSearch, searchProvider } from "./web.ts";

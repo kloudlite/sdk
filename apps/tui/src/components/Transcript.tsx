@@ -150,6 +150,8 @@ const inlineIcon: Record<string, string> = {
   grep: "→",
   write: "←",
   edit: "←",
+  web_fetch: "↓",
+  web_search: "⌕",
 };
 
 const inlineVerb: Record<string, string> = {
@@ -158,11 +160,13 @@ const inlineVerb: Record<string, string> = {
   grep: "Grep",
   write: "Write",
   edit: "Edit",
+  web_fetch: "Fetch",
+  web_search: "Search",
 };
 
 /** Is this entry a one-line inline tool row (stacks tight, opencode-style)? */
 function isInlineTool(entry: Entry): boolean {
-  return entry.kind === "tool" && entry.name !== "bash";
+  return entry.kind === "tool" && entry.name !== "bash" && entry.name !== "codemode";
 }
 
 /** Cap on rendered entries; older ones fall out of the scrollback. */

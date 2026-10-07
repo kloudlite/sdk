@@ -747,7 +747,9 @@ export function App({
   }
 
   /** Tools that require permission before running. */
-  const GATED = new Set(["bash", "write", "edit"]);
+  // web_fetch leaves the machine, and the URL can come from text the model
+  // just read, so the user sees it before it goes out
+  const GATED = new Set(["bash", "write", "edit", "web_fetch"]);
 
   /** Chain a permission gate ahead of pi's installed beforeToolCall hook. */
   function installPermissionGate(key: string, agent: AgentSession) {
@@ -762,8 +764,17 @@ export function App({
           subtitle:
             name === "bash"
               ? "Shell command"
-              : `${name === "write" ? "Write" : "Edit"} ${ctx.args?.path ?? "file"}`,
-          body: name === "bash" ? `$ ${ctx.args?.command ?? ""}` : diff ? undefined : toolSummary(name, ctx.args),
+              : name === "web_fetch"
+                ? "Fetch a URL"
+                : `${name === "write" ? "Write" : "Edit"} ${ctx.args?.path ?? "file"}`,
+          body:
+            name === "bash"
+              ? `$ ${ctx.args?.command ?? ""}`
+              : name === "web_fetch"
+                ? String(ctx.args?.url ?? "")
+                : diff
+                  ? undefined
+                  : toolSummary(name, ctx.args),
           diff,
           options: [
             { id: "once", label: "Allow once" },

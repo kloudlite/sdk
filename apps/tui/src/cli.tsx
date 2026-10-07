@@ -2,11 +2,11 @@
 import { writeSync } from "node:fs";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
-import { Registry } from "@kloudlite-tui/tools";
+import { Registry, webFetch, webSearch } from "@kloudlite-tui/tools";
 import { App } from "./app.tsx";
 
-// No built-in tools. Register your own set here.
-const registry = new Registry();
+// pi ships files and shell only, so the web tools are registered here.
+const registry = new Registry().add(webFetch, webSearch);
 
 // xterm modifyOtherKeys: terminals without kitty-protocol support enabled
 // (WezTerm default config) otherwise send ctrl+h as a bare backspace byte,
