@@ -46,3 +46,34 @@ test("the login fallback filters", () => {
     "/login deepseek api_key",
   ]);
 });
+
+// Every key/value pair at once ran to 20-odd rows and buried everything that
+// was not thinkingLevel, so /settings lists its keys and drills into one.
+const settingsCtx = {
+  ...ctx,
+  settings: [
+    { key: "thinking", value: "show", hint: "current" },
+    { key: "thinking", value: "hide", hint: "" },
+    { key: "thinkingLevel", value: "off", hint: "no reasoning" },
+    { key: "thinkingLevel", value: "high", hint: "current · ~32k tokens" },
+  ],
+};
+
+test("/settings lists its keys, with the current value as the hint", () => {
+  expect(menuItems("/settings ", settingsCtx)).toEqual([
+    { insert: "/settings thinking ", label: "thinking", hint: "show" },
+    { insert: "/settings thinkingLevel ", label: "thinkingLevel", hint: "high" },
+  ]);
+});
+
+// "thinking" is a prefix of "thinkingLevel"; the trailing space separates them
+test("naming a setting lists only its values", () => {
+  expect(menuItems("/settings thinkingLevel ", settingsCtx).map((i) => i.insert)).toEqual([
+    "/settings thinkingLevel off",
+    "/settings thinkingLevel high",
+  ]);
+  expect(menuItems("/settings thinking ", settingsCtx).map((i) => i.insert)).toEqual([
+    "/settings thinking show",
+    "/settings thinking hide",
+  ]);
+});

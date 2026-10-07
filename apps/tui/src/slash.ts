@@ -103,14 +103,35 @@ export function menuItems(input: string, ctx: MenuContext): MenuItem[] {
       })),
     ].filter((o) => filter(o.label));
   }
-  if (cmd === "/settings")
+  if (cmd === "/settings") {
+    const rest = input.slice(space + 1);
+    // Two levels: one row per setting until a setting is named, then its
+    // values. Listing every key/value pair at once ran to 20-odd rows and
+    // buried the settings that are not thinkingLevel.
+    const named = ctx.settings.find((o) => rest.startsWith(`${o.key} `));
+    if (named)
+      return ctx.settings
+        .filter((o) => o.key === named.key && filter(`${o.key} ${o.value}`))
+        .map((o) => ({
+          insert: `/settings ${o.key} ${o.value}`,
+          label: `${o.key} ${o.value}`,
+          hint: o.hint,
+        }));
+    const seen = new Set<string>();
     return ctx.settings
-      .filter((o) => filter(`${o.key} ${o.value}`))
-      .map((o) => ({
-        insert: `/settings ${o.key} ${o.value}`,
-        label: `${o.key} ${o.value}`,
-        hint: o.hint,
-      }));
+      .filter((o) => !seen.has(o.key) && seen.add(o.key) && filter(o.key))
+      .map((o) => {
+        const current = ctx.settings.find(
+          (s) => s.key === o.key && s.hint.split(" · ")[0] === "current",
+        );
+        return {
+          // trailing space so picking the key reopens the menu at its values
+          insert: `/settings ${o.key} `,
+          label: o.key,
+          hint: current ? current.value : "",
+        };
+      });
+  }
   return [];
 }
 
