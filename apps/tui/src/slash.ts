@@ -55,7 +55,19 @@ export function menuItems(input: string, ctx: MenuContext): MenuItem[] {
   const q = input.slice(space + 1).toLowerCase();
   const filter = (label: string) => label.toLowerCase().includes(q);
 
-  if (cmd === "/model")
+  if (cmd === "/model") {
+    // Nothing is connected, so there is nothing to pick — offer the logins
+    // here rather than an empty menu. Filtering models to connected providers
+    // otherwise dead-ends a first run: no models to choose and no sign that
+    // /login is what's missing.
+    if (ctx.models.length === 0)
+      return ctx.logins
+        .filter((l) => filter(`${l.provider} ${l.label}`))
+        .map((l) => ({
+          insert: `/login ${l.provider} ${l.type}`,
+          label: `${l.provider} · ${l.label}`,
+          hint: l.type === "oauth" ? "connect · oauth" : "connect · api key",
+        }));
     return ctx.models
       .filter((m) => filter(`${m.provider}/${m.id}`))
       .map((m) => ({
@@ -63,6 +75,7 @@ export function menuItems(input: string, ctx: MenuContext): MenuItem[] {
         label: `${m.provider}/${m.id}`,
         hint: m.hint,
       }));
+  }
   if (cmd === "/theme")
     return ctx.themes.filter(filter).map((name) => ({
       insert: `/theme ${name}`,

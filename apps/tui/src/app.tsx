@@ -227,8 +227,23 @@ export function App({
   }, [activeKey]);
 
   useEffect(() => {
-    loadProviderAuth().then(setAuth).catch(() => {});
+    loadProviderAuth()
+      .then((a) => {
+        setAuth(a);
+        // First run: no credentials anywhere, so there is no model to send to
+        // and an empty /model menu would be the only clue. Say so on arrival —
+        // typing /login is not discoverable, and the models list is filtered
+        // to connected providers, so this is the way in.
+        if (![...a.values()].some((p) => p.ok))
+          append(activeKey, {
+            kind: "info",
+            text: "No AI provider connected yet — run /login to connect one.",
+          });
+      })
+      .catch(() => {});
     refreshCatalog().then(setModels).catch(() => {});
+    // mount only: the notice belongs on the session the user arrived in
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1037,19 +1052,16 @@ export function App({
   // the full model catalog on every key press is feelable input latency.
   const menuCtx = useMemo(
     () => ({
+      // Only models you can actually run: a provider with no credentials
+      // contributes nothing to pick from, and the catalog is 1300+ models, so
+      // the unreachable ones are pure noise. /login is how a provider appears.
+      // Grouped by provider and sorted within it, so a provider's models sit
+      // together in the menu's scrolling window. The label is already
+      // `provider/id`, so the hint carries the model's display name.
       models: [...models]
-        .sort(
-          (a, b) =>
-            Number(auth.get(b.provider)?.ok ?? 0) - Number(auth.get(a.provider)?.ok ?? 0),
-        )
-        .map((m) => {
-          const a = auth.get(m.provider);
-          return {
-            provider: m.provider,
-            id: m.id,
-            hint: a?.ok ? "ready" : a?.envKey ? `set ${a.envKey}` : "",
-          };
-        }),
+        .filter((m) => auth.get(m.provider)?.ok)
+        .sort((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id))
+        .map((m) => ({ provider: m.provider, id: m.id, hint: m.name })),
       themes: themeNames,
       logins: loginOptions(),
       // this environment's main sessions, newest first
