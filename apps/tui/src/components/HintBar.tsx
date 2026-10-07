@@ -1,6 +1,5 @@
 import { TextAttributes } from "@opentui/core";
 import { theme } from "../theme.ts";
-import { Spinner } from "./Spinner.tsx";
 
 /** Bottom bar: context path (+ spinner while busy) left; tokens, hints right. */
 export function HintBar({
@@ -50,11 +49,10 @@ export function HintBar({
           </box>
         )}
         {busy && (
-          <text selectable={false} fg={theme.fg}>
-            <Spinner fg={theme.accent} />{" "}
-            <span fg={theme.muted}>
-              <b>esc</b> <span attributes={TextAttributes.DIM}>interrupt</span>
-            </span>
+          // no spinner here — the transcript's own "working…" row is the one
+          // that says a turn is live; two of them read as two things running
+          <text selectable={false} fg={theme.muted}>
+            <b>esc</b> <span attributes={TextAttributes.DIM}>interrupt</span>
           </text>
         )}
       </box>
