@@ -463,3 +463,19 @@ test("backspacing the slash closes the command overlay", async () => {
   expect(t.captureCharFrame()).not.toContain("Commands");
   t.done();
 });
+
+// pi's prompt() refuses while a turn streams rather than queueing, so
+// submitting mid-turn has to call steer() instead — otherwise the user gets
+// "Agent is already processing" where they expected their message queued.
+test("prompting while a turn streams steers instead of erroring", async () => {
+  const t = await mount({ vim: "off" });
+  await t.mockInput.typeText("first");
+  await t.mockInput.pressKey("ENTER");
+  await tick();
+  await t.mockInput.typeText("second");
+  await t.mockInput.pressKey("ENTER");
+  await tick();
+  await t.renderOnce();
+  expect(t.captureCharFrame()).not.toContain("already processing");
+  t.done();
+});

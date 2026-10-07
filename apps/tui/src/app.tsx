@@ -1265,9 +1265,13 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
       return;
     }
 
-    // The turn belongs to the session it started in; prompting while the
-    // agent streams queues it as steering (pi handles the queue).
+    // The turn belongs to the session it started in. pi's prompt() *refuses*
+    // while a turn streams ("Agent is already processing") rather than
+    // queueing — steer() is the explicit verb for that, so pick it here from
+    // the target session's own busy flag, not the visible one's: the user may
+    // be looking at a different session than the one they are prompting.
     const key = activeKey;
+    const streaming = getSession(sessions, key).busy;
     // an unnamed session takes its title from the first thing asked of it
     if (!sessionNames[key]) {
       const title = trimmed.replace(/\s+/g, " ").slice(0, 40);
@@ -1286,7 +1290,11 @@ const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
     );
     setHistIdx(null);
     ensureAgent(key)
-      .then((agent) => agent.prompt(trimmed, sent.length ? { images: sent } : undefined))
+      .then((agent) =>
+        streaming
+          ? void agent.steer(trimmed)
+          : agent.prompt(trimmed, sent.length ? { images: sent } : undefined),
+      )
       .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }));
   }
 

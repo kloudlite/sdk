@@ -63,6 +63,25 @@ export function listModels(): { provider: string; id: string; name: string }[] {
     .map((m) => ({ provider: m.provider, id: m.id, name: m.name ?? m.id }));
 }
 
+/**
+ * Registry tools as pi custom tools. pi 1.0's signature is
+ * `execute(toolCallId, params, …)` — params is the **second** argument.
+ * Reading the first handed every tool its call id, so every declared parameter
+ * arrived `undefined`. pi's tool type is cast through at the call site, so the
+ * typechecker cannot catch a regression here; `tool-args.test.ts` is the guard.
+ */
+export function adaptTools(registry: Registry) {
+  return registry.all().map((def) => ({
+    name: def.name,
+    label: def.name,
+    description: def.description,
+    parameters: def.inputSchema,
+    execute: async (_toolCallId: string, args: unknown) => ({
+      content: [{ type: "text" as const, text: await def.run(args) }],
+    }),
+  }));
+}
+
 export function resolveModel(ref: ModelRef): Model<Api> | undefined {
   return models.getModel(ref.provider, ref.id);
 }
@@ -289,19 +308,7 @@ export async function createSession({
     sessionManager: fresh
       ? SessionManager.create(cwd, dir)
       : SessionManager.continueRecent(cwd, dir),
-    customTools: registry?.all().map((def) => ({
-      name: def.name,
-      label: def.name,
-      description: def.description,
-      parameters: def.inputSchema as never,
-      // pi 1.0's signature is execute(toolCallId, params, …) — params is the
-      // SECOND argument. Reading the first handed every tool its call id and
-      // every parameter arrived undefined; the `as never` below hides that
-      // from the typechecker, so this line has no compile-time guard.
-      execute: async (_id: string, args: unknown) => ({
-        content: [{ type: "text" as const, text: await def.run(args) }],
-      }),
-    })) as never,
+    customTools: registry ? (adaptTools(registry) as never) : undefined,
   });
   if (autoCompact !== undefined) session.setAutoCompactionEnabled(autoCompact);
   return session;
