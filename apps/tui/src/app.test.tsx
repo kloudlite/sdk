@@ -406,3 +406,26 @@ test("the sidebar resizes with [ and ] and clamps at its limits", async () => {
   expect(cols(await t.frame())).toBe(narrow);
   t.done();
 });
+
+// The env tools are defined once but close over a ref, so the danger is a tool
+// that acts on the state of the render that defined it. Create through the tool
+// and look for the workspace in the frame.
+test("the env tools act on live state and reach the UI", async () => {
+  const registry = new Registry();
+  const t = await testRender(<App registry={registry} />, { width: 160, height: 40 });
+  await new Promise((r) => setTimeout(r, 400));
+
+  expect(registry.names()).toContain("env_status");
+  expect(await registry.get("env_status").run({})).toContain("environment:");
+
+  expect(await registry.get("workspace_create").run({ name: "probe-ws" })).toContain("created");
+  await new Promise((r) => setTimeout(r, 200));
+  await t.renderOnce();
+  expect(await registry.get("env_status").run({})).toContain("probe-ws");
+  expect(t.captureCharFrame()).toContain("probe-ws");
+
+  // a name that does not exist has to come back with the names that do
+  const bad = await registry.get("env_connect").run({ name: "nope" });
+  expect(bad).toContain("error");
+  expect(bad).toContain("production");
+}, 20000);

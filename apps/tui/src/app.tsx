@@ -684,6 +684,18 @@ export function App({
   const pushAskRef = useRef(pushAsk);
   pushAskRef.current = pushAsk;
 
+  // The env tools are defined once but have to act on the *current* state, so
+  // they go through a ref that every render refreshes. The UI stubs address
+  // things by position (focus - 1, an env index); a model only has names.
+  const envApi = useRef<{
+    connect: (name: string) => string;
+    intercept: (service: string, workspace: string) => string;
+    release: (workspace: string) => string;
+    create: (name: string) => string;
+    clone: (name: string) => string;
+    list: () => string;
+  }>(null as never);
+
   // The model can ask the user a question with options (opencode's question tool).
   const registered = useRef(false);
   if (!registered.current) {
@@ -712,6 +724,70 @@ export function App({
         return options[Number(picked)] ?? picked;
       },
     });
+
+    // CLAUDE.md: the agent drives the environment lifecycle, not the user —
+    // there is no actions menu and no /env or /intercept command, so these
+    // tools are the only way any of it happens. Each returns a sentence
+    // because the model's next turn has to read what the UI now shows.
+    const env = (
+      name: string,
+      description: string,
+      properties: Record<string, unknown>,
+      required: string[],
+      run: (a: any) => string,
+    ) =>
+      registry.add({
+        name,
+        description,
+        inputSchema: { type: "object", properties, required },
+        run: async (args: any) => run(args),
+      });
+
+    env(
+      "env_status",
+      "Show the connected environment, its services and which workspace intercepts each, the other environments, and this session's workspaces. Call this before acting, since the names the other tools take come from here.",
+      {},
+      [],
+      () => envApi.current.list(),
+    );
+    env(
+      "env_connect",
+      "Point this working session at another environment. The workspaces come along; interceptions held in the environment being left are released.",
+      { name: { type: "string", description: "Environment name, as env_status lists it." } },
+      ["name"],
+      (a) => envApi.current.connect(a.name),
+    );
+    env(
+      "env_intercept",
+      "Route an environment service's traffic to a workspace, so requests to it hit the code running there instead of the deployed service.",
+      {
+        service: { type: "string", description: "Service name in the connected environment." },
+        workspace: { type: "string", description: "Workspace to route traffic to." },
+      },
+      ["service", "workspace"],
+      (a) => envApi.current.intercept(a.service, a.workspace),
+    );
+    env(
+      "env_release",
+      "Release every interception a workspace holds, sending traffic back to the deployed services.",
+      { workspace: { type: "string", description: "Workspace whose interceptions to release." } },
+      ["workspace"],
+      (a) => envApi.current.release(a.workspace),
+    );
+    env(
+      "workspace_create",
+      "Create a new workspace in this working session.",
+      { name: { type: "string", description: "Name for the new workspace." } },
+      ["name"],
+      (a) => envApi.current.create(a.name),
+    );
+    env(
+      "workspace_clone",
+      "Clone a workspace as an ephemeral one hanging off it, like a git worktree.",
+      { name: { type: "string", description: "Workspace to clone." } },
+      ["name"],
+      (a) => envApi.current.clone(a.name),
+    );
   }
 
   /** One key for "what does the column show": chat › files › processes. */
@@ -949,6 +1025,78 @@ export function App({
     setWorkspaces((prev) => [...prev, ws]);
     setFocus(workspaces.length + 1);
   }
+
+  /** Name-addressed wrappers over the UI's lifecycle functions, for the agent. */
+  envApi.current = {
+    list: () =>
+      [
+        `environment: ${envLabel(environment)}`,
+        `services: ${environment.services
+          .map((sv) => `${sv.name}${sv.interceptedBy ? ` (intercepted by ${sv.interceptedBy})` : ""}`)
+          .join(", ") || "none"}`,
+        `environments: ${envs.map(envLabel).join(", ")}`,
+        `workspaces: ${workspaces.map((w) => w.name).join(", ") || "none"}`,
+      ].join("\n"),
+    connect: (name) => {
+      const i = envs.findIndex((e) => envLabel(e) === name || e.name === name);
+      if (i === -1) return `error: no environment named ${name}. Have: ${envs.map(envLabel).join(", ")}`;
+      if (i === env) return `already connected to ${name}`;
+      connectEnv(i);
+      return `connected to ${envLabel(envs[i]!)}`;
+    },
+    intercept: (service, workspace) => {
+      const i = workspaces.findIndex((w) => w.name === workspace);
+      if (i === -1) return `error: no workspace named ${workspace}`;
+      if (!environment.services.some((sv) => sv.name === service))
+        return `error: ${environment.name} has no service named ${service}`;
+      // interceptService reads the focused workspace, so focus it first
+      setFocus(i + 1);
+      const ws = workspaces[i]!;
+      setEnvs((prev) =>
+        prev.map((e, j) =>
+          j === env
+            ? { ...e, services: e.services.map((sv) => (sv.name === service ? { ...sv, interceptedBy: ws.name } : sv)) }
+            : e,
+        ),
+      );
+      return `intercepting ${service}.${environment.name} → ${ws.name}`;
+    },
+    release: (workspace) => {
+      const ws = workspaces.find((w) => w.name === workspace);
+      if (!ws) return `error: no workspace named ${workspace}`;
+      const held = environment.services.filter((sv) => sv.interceptedBy === ws.name).map((sv) => sv.name);
+      if (held.length === 0) return `${workspace} holds no interceptions`;
+      setEnvs((prev) =>
+        prev.map((e, j) =>
+          j === env
+            ? { ...e, services: e.services.map((sv) => (sv.interceptedBy === ws.name ? { ...sv, interceptedBy: undefined } : sv)) }
+            : e,
+        ),
+      );
+      return `released ${held.join(", ")}`;
+    },
+    create: (name) => {
+      if (workspaces.some((w) => w.name === name)) return `error: a workspace named ${name} already exists`;
+      newWorkspace(name);
+      return `created workspace ${name}`;
+    },
+    clone: (name) => {
+      const i = workspaces.findIndex((w) => w.name === name);
+      if (i === -1) return `error: no workspace named ${name}`;
+      setFocus(i + 1);
+      const src = workspaces[i]!;
+      const ws = {
+        ...src,
+        id: freshId(),
+        name: `${src.name}-copy`,
+        owner: CURRENT_USER,
+        session: mainSession,
+        parent: parentFor(workspaces, src),
+      };
+      setWorkspaces((prev) => [...prev, ws]);
+      return `cloned ${name} as ${ws.name}`;
+    },
+  };
 
   function submit(text: string) {
     if (palette) {
