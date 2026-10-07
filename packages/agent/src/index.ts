@@ -294,7 +294,11 @@ export async function createSession({
       label: def.name,
       description: def.description,
       parameters: def.inputSchema as never,
-      execute: async (args: unknown) => ({
+      // pi 1.0's signature is execute(toolCallId, params, …) — params is the
+      // SECOND argument. Reading the first handed every tool its call id and
+      // every parameter arrived undefined; the `as never` below hides that
+      // from the typechecker, so this line has no compile-time guard.
+      execute: async (_id: string, args: unknown) => ({
         content: [{ type: "text" as const, text: await def.run(args) }],
       }),
     })) as never,
