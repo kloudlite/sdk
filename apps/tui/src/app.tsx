@@ -27,7 +27,29 @@ import {
   writeSettings,
   type AgentSession,
   type AgentSessionEvent,
+  type ThinkingLevel,
 } from "@kloudlite-tui/agent";
+
+/** pi's reasoning budgets, least to most; a model may support only a prefix. */
+const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const satisfies readonly ThinkingLevel[];
+
+const THINKING_HINT: Record<ThinkingLevel, string> = {
+  off: "no reasoning",
+  minimal: "~1k tokens",
+  low: "~2k tokens",
+  medium: "~8k tokens",
+  high: "~16k tokens",
+  xhigh: "~32k tokens",
+  max: "maximum",
+};
 import { Login } from "./components/Login.tsx";
 import { AskPanel, type Ask } from "./components/Ask.tsx";
 import { toolDiff } from "./diff.ts";
@@ -177,6 +199,8 @@ export function App({
     return {
       sidebar: s.sidebar ?? "show",
       thinking: s.thinking ?? "show",
+      thinkingLevel: s.thinkingLevel ?? "medium",
+      autoCompact: s.autoCompact ?? "on",
       vim: s.vim ?? "off",
       sidebarWidth: clampSidebar(s.sidebarWidth ?? SIDEBAR_WIDTH),
     };
@@ -508,7 +532,13 @@ export function App({
           .map((b: any) => b.thinking)
           .join("");
         if (thinking)
-          upsert(key, `${mid}t`, () => ({ kind: "thinking", id: `${mid}t`, text: thinking }));
+          upsert(key, `${mid}t`, () => ({
+            kind: "thinking",
+            id: `${mid}t`,
+            text: thinking,
+            // live reasoning stays a one-line ticker; a finished block opens up
+            done: event.type === "message_end",
+          }));
         const text = msg.content
           .filter((b: any) => b.type === "text")
           .map((b: any) => b.text)
@@ -579,9 +609,23 @@ export function App({
       case "compaction_start":
         append(key, { kind: "info", text: "compacting context…" });
         break;
-      case "compaction_end":
-        append(key, { kind: "info", text: "context compacted" });
+      case "compaction_end": {
+        // an aborted or failed compaction must not report success
+        if (event.aborted) append(key, { kind: "info", text: "compaction cancelled" });
+        else if (event.errorMessage)
+          append(key, { kind: "error", text: cleanError(event.errorMessage) });
+        else {
+          const before = event.result?.tokensBefore;
+          const after = event.result?.estimatedTokensAfter;
+          append(key, {
+            kind: "info",
+            text: before
+              ? `context compacted — ${before.toLocaleString()} tokens${after ? ` → ~${after.toLocaleString()}` : ""}`
+              : "context compacted",
+          });
+        }
         break;
+      }
       case "auto_retry_start":
         append(key, {
           kind: "info",
@@ -601,7 +645,14 @@ export function App({
     if (existing) return existing;
     const model = resolveModel(getSession(sessions, key).model);
     if (!model) return Promise.reject(new Error("no model available"));
-    const created = createSession({ key, model, registry, fresh: opts?.fresh }).then((agent) => {
+    const created = createSession({
+      key,
+      model,
+      registry,
+      fresh: opts?.fresh,
+      thinkingLevel: prefs.thinkingLevel,
+      autoCompact: prefs.autoCompact === "on",
+    }).then((agent) => {
       agent.subscribe((event) => handleAgentEvent(key, event));
       installPermissionGate(key, agent);
       if (!opts?.fresh) restoreTranscript(key, agent);
@@ -990,6 +1041,20 @@ export function App({
         if (value === "reset") resizeSidebar(SIDEBAR_WIDTH - prefs.sidebarWidth);
         else resizeSidebar(value === "wider" ? SIDEBAR_STEP : -SIDEBAR_STEP);
       }
+      if (key === "thinkingLevel" && (THINKING_LEVELS as readonly string[]).includes(value ?? "")) {
+        const level = value as ThinkingLevel;
+        setPrefs((p) => ({ ...p, thinkingLevel: level }));
+        writeSettings({ thinkingLevel: level });
+        // every live session, not just the visible one — a turn may be streaming elsewhere
+        for (const agent of agents.current.values())
+          agent.then((a) => a.setThinkingLevel(level)).catch(() => {});
+      }
+      if (key === "autoCompact" && (value === "on" || value === "off")) {
+        setPrefs((p) => ({ ...p, autoCompact: value }));
+        writeSettings({ autoCompact: value });
+        for (const agent of agents.current.values())
+          agent.then((a) => a.setAutoCompactionEnabled(value === "on")).catch(() => {});
+      }
       if (key === "vim" && (value === "on" || value === "off")) {
         setPrefs((p) => ({ ...p, vim: value }));
         writeSettings({ vim: value });
@@ -1086,6 +1151,18 @@ export function App({
             hint: prefs[key] === value ? "current" : "",
           })),
         ),
+        ...THINKING_LEVELS.map((value) => ({
+          key: "thinkingLevel",
+          value,
+          hint: [prefs.thinkingLevel === value ? "current" : "", THINKING_HINT[value]]
+            .filter(Boolean)
+            .join(" · "),
+        })),
+        ...(["on", "off"] as const).map((value) => ({
+          key: "autoCompact",
+          value,
+          hint: prefs.autoCompact === value ? "current" : "",
+        })),
         ...(["wider", "narrower", "reset"] as const).map((value) => ({
           key: "width",
           value,

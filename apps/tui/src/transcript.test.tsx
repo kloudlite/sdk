@@ -60,3 +60,30 @@ test("a long block collapses to its head and ctrl+o toggles it both ways", async
   expect(await frame()).not.toContain("line 25");
   t.renderer.destroy();
 });
+
+// reasoning is a ticker while it streams and a readable block once it lands —
+// the old renderer clipped every thinking entry to one line, so a large
+// thinking budget was invisible
+test("thinking tickers while streaming and opens up when done", async () => {
+  const long = Array.from({ length: 18 }, (_, i) => `reasoning line ${i + 1}`).join("\n");
+  const t = await testRender(
+    <Transcript
+      entries={[
+        { kind: "thinking", id: "a", text: "step one\nstep two\nstep three" },
+        { kind: "thinking", id: "b", text: long, done: true },
+      ]}
+    />,
+    { width: 90, height: 40 },
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  await t.renderOnce();
+  const frame = t.captureCharFrame();
+  // streaming: newest line only, earlier ones not kept
+  expect(frame).toContain("step three");
+  expect(frame).not.toContain("step one");
+  // done: labelled, collapsed to its head, expandable
+  expect(frame).toContain("Thinking");
+  expect(frame).toContain("reasoning line 10");
+  expect(frame).toContain("+8 lines");
+  expect(frame).not.toContain("reasoning line 11");
+}, 20000);

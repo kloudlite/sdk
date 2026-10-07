@@ -9,7 +9,13 @@ import type { FileDiff } from "../diff.ts";
 export type Entry =
   | { kind: "user"; text: string; images?: number }
   | { kind: "agent"; id?: string; text: string }
-  | { kind: "thinking"; id?: string; text: string }
+  | {
+      kind: "thinking";
+      id?: string;
+      text: string;
+      /** the message finished streaming — render the whole block, not a ticker */
+      done?: boolean;
+    }
   | {
       kind: "tool";
       id?: string;
@@ -148,13 +154,28 @@ function Row({
       );
     }
     case "thinking": {
-      // opencode ReasoningPart (hide mode): one dim summary line
-      const summary = entry.text.trim().split("\n")[0] ?? "";
+      // while streaming, reasoning is a progress ticker: its newest line only
+      if (!entry.done) {
+        const lines = entry.text.trim().split("\n");
+        return (
+          <box paddingLeft={3} height={1} overflow="hidden">
+            <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
+              {lines[lines.length - 1] ?? ""}
+            </text>
+          </box>
+        );
+      }
+      // finished: the same collapsing block an agent message gets, so a long
+      // reasoning budget is actually readable instead of clipped to one line
+      const body = collapse(entry.text, open);
+      const long = entry.text.trim().split("\n").length > COLLAPSE_MAX;
       return (
-        <box paddingLeft={3} height={1} overflow="hidden">
+        <box flexDirection="column" paddingLeft={3}>
           <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
-            {summary}
+            Thinking
           </text>
+          <Md text={body.text} fg={theme.muted} />
+          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} />}
         </box>
       );
     }

@@ -34,7 +34,10 @@ export const models = runtime;
 
 export type ModelRef = { provider: string; id: string };
 
-type Settings = { defaultModel?: ModelRef; theme?: string; sidebar?: "show" | "hide"; sidebarWidth?: number; thinking?: "show" | "hide"; vim?: "on" | "off" };
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** `thinking` is whether thinking blocks are shown; `thinkingLevel` is pi's reasoning budget. */
+type Settings = { defaultModel?: ModelRef; theme?: string; sidebar?: "show" | "hide"; sidebarWidth?: number; thinking?: "show" | "hide"; thinkingLevel?: ThinkingLevel; autoCompact?: "on" | "off"; vim?: "on" | "off" };
 
 const SETTINGS_PATH = join(CONFIG_DIR, "settings.json");
 
@@ -238,6 +241,8 @@ export async function createSession({
   model,
   registry,
   fresh = false,
+  thinkingLevel,
+  autoCompact,
 }: {
   key: string;
   cwd?: string;
@@ -245,6 +250,10 @@ export async function createSession({
   registry?: Registry;
   /** Start a brand-new persisted session instead of continuing the last one (/clear). */
   fresh?: boolean;
+  /** pi's reasoning budget; a model that cannot think ignores it. */
+  thinkingLevel?: ThinkingLevel;
+  /** Let pi compact the context on its own when it fills up (default on). */
+  autoCompact?: boolean;
 }): Promise<AgentSession> {
   const dir = sessionDir(key);
   // meta.json makes a session findable later: its key, its name, last use
@@ -253,6 +262,7 @@ export async function createSession({
     cwd,
     modelRuntime: runtime,
     model,
+    ...(thinkingLevel ? { thinkingLevel } : {}),
     // continue the most recent session in this key's dir (new file if none)
     sessionManager: fresh
       ? SessionManager.create(cwd, dir)
@@ -267,5 +277,6 @@ export async function createSession({
       }),
     })) as never,
   });
+  if (autoCompact !== undefined) session.setAutoCompactionEnabled(autoCompact);
   return session;
 }
