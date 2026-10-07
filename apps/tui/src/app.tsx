@@ -14,7 +14,7 @@ import { Spinner } from "./components/Spinner.tsx";
 import { menuItems, placeholders } from "./slash.ts";
 import { CURRENT_USER, envLabel, MOCK_ENVIRONMENTS, MOCK_WORKSPACES, parentFor, wsPath } from "./workspaces.ts";
 import { setTheme, theme, themeNames } from "./theme.ts";
-import { catalog, loadProviderAuth, modelLabel } from "./models.ts";
+import { catalog, loadProviderAuth, modelLabel, refreshCatalog } from "./models.ts";
 import {
   clearSessionHistory,
   createSession,
@@ -147,8 +147,11 @@ export function App({
     setInput(`/${prefill}`);
   };
   const [login, setLogin] = useState<{ provider: string; type: "oauth" | "api_key" } | null>(null);
-  // provider id → auth status, resolved once on startup
+  // provider id → auth status, re-resolved after a login
   const [auth, setAuth] = useState<Map<string, { ok: boolean; envKey?: string }>>(new Map());
+  // seeded from pi's bundled catalog so the picker paints at once, then
+  // replaced by the providers' live lists — never block the TUI on the network
+  const [models, setModels] = useState(catalog);
   // Every context — the environment's main sessions and each workspace's —
   // can hold several named sessions: base key → id of the one in use, plus a
   // name cache so the UI can label them.
@@ -225,6 +228,7 @@ export function App({
 
   useEffect(() => {
     loadProviderAuth().then(setAuth).catch(() => {});
+    refreshCatalog().then(setModels).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1029,11 +1033,11 @@ export function App({
     },
   ];
 
-  // Built once per auth change, NOT per keystroke — sorting/mapping the full
-  // model catalog on every key press is feelable input latency.
+  // Built once per auth or catalog change, NOT per keystroke — sorting/mapping
+  // the full model catalog on every key press is feelable input latency.
   const menuCtx = useMemo(
     () => ({
-      models: [...catalog]
+      models: [...models]
         .sort(
           (a, b) =>
             Number(auth.get(b.provider)?.ok ?? 0) - Number(auth.get(a.provider)?.ok ?? 0),
@@ -1085,7 +1089,7 @@ export function App({
         })),
       ],
     }),
-    [auth, prefs, envs, env, focus, environment, activeBase, sessionId, sessionNames],
+    [auth, models, prefs, envs, env, focus, environment, activeBase, sessionId, sessionNames],
   );
   const jumpMatches = useMemo(
     () =>
@@ -1162,7 +1166,10 @@ export function App({
                 type={login.type}
                 onDone={(ok) => {
                   setLogin(null);
-                  if (ok) loadProviderAuth().then(setAuth).catch(() => {});
+                  if (ok) {
+                    loadProviderAuth().then(setAuth).catch(() => {});
+                    refreshCatalog().then(setModels).catch(() => {});
+                  }
                 }}
               />
             </box>
