@@ -46,11 +46,6 @@ export function sessionIdOf(base: string, key: string): string {
   return key === base ? "main" : key.slice(base.length + 1);
 }
 
-/** A fresh session id, used as the key suffix for a new named session. */
-export function newSessionId(): string {
-  return Date.now().toString(36);
-}
-
 export type SessionMap = Record<string, Session>;
 
 export function getSession(map: SessionMap, key: string): Session {

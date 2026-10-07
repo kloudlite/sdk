@@ -59,7 +59,6 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import {
   getSession,
-  newSessionId,
   patchSession,
   sessionBase,
   sessionIdOf,
@@ -962,7 +961,6 @@ export function App({
       const rest = trimmed.slice("/session".length).trim();
       const [verb, ...words] = rest.split(/\s+/);
       const arg = words.join(" ").trim();
-      const ws = focus === 0 ? undefined : workspaces[focus - 1]!.id;
       if (verb === "name" && arg) {
         // name the session in use, so it can be found in the list later
         nameSession(activeKey, arg);
@@ -973,15 +971,6 @@ export function App({
         describeSession(activeKey, arg);
         setSessionDescs((d) => ({ ...d, [activeKey]: arg }));
         return append(activeKey, { kind: "info", text: `session described "${arg}"` });
-      }
-      if (verb === "new" && arg) {
-        const id = newSessionId();
-        const key = sessionKey(ws, id);
-        nameSession(key, arg);
-        setSessionNames((n) => ({ ...n, [key]: arg }));
-        setSessionId((m) => ({ ...m, [activeBase]: id }));
-        ensureAgent(key).catch(() => {});
-        return;
       }
       if (verb === "use" && arg) {
         setSessionId((m) => ({ ...m, [activeBase]: arg }));

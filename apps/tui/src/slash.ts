@@ -9,7 +9,7 @@ export const commands: SlashCommand[] = [
   { name: "/help", description: "Keyboard shortcuts and commands" },
   { name: "/tools", description: "List registered tools" },
   { name: "/clear", description: "Clear the transcript" },
-  { name: "/session", description: "Name, start or continue a main session", hasOptions: true },
+  { name: "/session", description: "Name or continue a main session", hasOptions: true },
   { name: "/model", description: "Set this session's model", hasOptions: true },
   { name: "/theme", description: "Switch theme", hasOptions: true },
   { name: "/login", description: "Log in to a provider", hasOptions: true },
@@ -93,10 +93,9 @@ export function menuItems(input: string, ctx: MenuContext): MenuItem[] {
   if (cmd === "/session") {
     const rest = input.slice(space + 1);
     // "/session name <text>" is free text — no options to pick from
-    if (/^(name|new)\s/.test(rest)) return [];
+    if (/^name\s/.test(rest)) return [];
     return [
       { insert: "/session name ", label: "name", hint: "name the session you're in" },
-      { insert: "/session new ", label: "new", hint: "start another main session, named" },
       ...ctx.sessions.map((sn) => ({
         insert: `/session use ${sn.id}`,
         label: sn.label,
