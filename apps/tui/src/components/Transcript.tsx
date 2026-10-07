@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
-import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
+import { SyntaxStyle, TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import { theme } from "../theme.ts";
 import { SplitBorder } from "../ui/border.ts";
 import { DiffView } from "./Diff.tsx";
@@ -77,6 +77,38 @@ function collapse(
 }
 
 /**
+ * Collapse a markdown block. Unlike `collapse`, this cuts on *source* lines and
+ * never rejoins soft-wrapped fragments: a table row or a fenced block is one
+ * source line that must reach the markdown parser whole, and splitting it at
+ * the terminal width turns a table into loose pipes. The screen rows are still
+ * what decides *whether* to cut, so a long paragraph collapses as before; only
+ * the cut itself lands on a line boundary.
+ *
+ * An unterminated code fence in the kept head would swallow the rest of the
+ * block, so one is closed off.
+ */
+function collapseMd(
+  text: string | undefined,
+  open: boolean,
+  width: number,
+): { text: string; hidden: number } {
+  if (!text) return { text: "", hidden: 0 };
+  const lines = text.trim().split("\n");
+  if (open || rowCount(text, width) <= COLLAPSE_MAX) return { text: lines.join("\n"), hidden: 0 };
+  // take source lines until their wrapped height reaches the head budget
+  const kept: string[] = [];
+  let rows = 0;
+  for (const line of lines) {
+    const h = wrap(line, width).length;
+    if (rows + h > COLLAPSE_MAX && kept.length > 0) break;
+    kept.push(line);
+    rows += h;
+  }
+  if (kept.filter((l) => l.trimStart().startsWith("```")).length % 2 === 1) kept.push("```");
+  return { text: kept.join("\n"), hidden: lines.length - kept.length };
+}
+
+/**
  * Whether this entry has a block long enough to collapse — the wrapper needs
  * to know before rendering the Row, so the whole cell can be the toggle and
  * only entries that actually collapse react to a click.
@@ -128,19 +160,56 @@ function More({
   );
 }
 
-/** Minimal inline markdown: **bold** and `code`. */
-function Md({ text, fg }: { text: string; fg?: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+/**
+ * Syntax colours for fenced code inside a markdown block. opentui wants a
+ * SyntaxStyle object rather than a palette, and building one allocates on the
+ * native side, so it is cached. `setTheme` mutates the palette in place, so
+ * the cache is keyed on the colours themselves — a module-level constant
+ * would keep the colours the first theme happened to have.
+ */
+let mdStyleCache: { key: string; style: SyntaxStyle } | null = null;
+function mdSyntaxStyle(): SyntaxStyle {
+  const key = `${theme.fg}${theme.accent}${theme.success}${theme.warning}${theme.muted}`;
+  if (mdStyleCache?.key !== key) {
+    mdStyleCache = {
+      key,
+      style: SyntaxStyle.fromStyles({
+        default: { fg: theme.fg },
+        keyword: { fg: theme.accent },
+        string: { fg: theme.success },
+        number: { fg: theme.warning },
+        comment: { fg: theme.muted, italic: true },
+        function: { fg: theme.accent },
+        type: { fg: theme.warning },
+        variable: { fg: theme.fg },
+        punctuation: { fg: theme.muted },
+      }),
+    };
+  }
+  return mdStyleCache.style;
+}
+
+/**
+ * A markdown block, rendered by opentui's own parser — tables, lists,
+ * headings, blockquotes and fenced code all draw properly. The hand-rolled
+ * version this replaces understood only `**bold**` and `` `code` ``, so a
+ * table arrived as its raw pipes and a list kept its literal dashes.
+ *
+ * `streaming` keeps the trailing block unstable while chunks are still
+ * arriving, which is what stops a half-written table row from being parsed as
+ * final; it is turned off once the message is done so the last token settles.
+ */
+function Md({ text, fg, streaming }: { text: string; fg?: string; streaming?: boolean }) {
   return (
-    <text fg={fg ?? theme.fg}>
-      {parts.map((part, i) => {
-        if (part.startsWith("**") && part.endsWith("**"))
-          return <b key={i}>{part.slice(2, -2)}</b>;
-        if (part.startsWith("`") && part.endsWith("`"))
-          return <span key={i} fg={theme.accent}>{part.slice(1, -1)}</span>;
-        return <span key={i}>{part}</span>;
-      })}
-    </text>
+    <markdown
+      content={text}
+      syntaxStyle={mdSyntaxStyle()}
+      fg={fg ?? theme.fg}
+      streaming={streaming}
+      // "grid" draws the full box rule around every cell, which is what makes
+      // a table legible in a transcript that has no other column structure.
+      tableOptions={{ style: "grid", borderColor: theme.border }}
+    />
   );
 }
 
@@ -178,6 +247,7 @@ function Row({
   onOpen,
   width,
   hover,
+  streaming,
 }: {
   entry: Entry;
   /** this entry is expanded — render every line */
@@ -187,6 +257,8 @@ function Row({
   width: number;
   /** the pointer is over this entry and it can collapse */
   hover?: boolean;
+  /** the last entry, so markdown may still be mid-token */
+  streaming?: boolean;
 }) {
   switch (entry.kind) {
     case "user":
@@ -218,14 +290,14 @@ function Row({
       );
     case "agent": {
       // opencode TextPart: markdown, paddingLeft 3
-      const body = collapse(entry.text, open, width - 3);
+      const body = collapseMd(entry.text, open, width - 3);
       // the expander stays visible once open, so the block can be re-collapsed
       const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
         // hovering a collapsible block tints it, the way a desktop list row
         // lights up under the pointer — subtle, one step off the background
         <box flexDirection="column" paddingLeft={3} backgroundColor={hover ? theme.surface : undefined}>
-          <Md text={body.text} />
+          <Md text={body.text} streaming={streaming} />
           {long && <More hidden={body.hidden} open={open} onToggle={onOpen} hover={hover} />}
         </box>
       );
@@ -244,7 +316,7 @@ function Row({
       }
       // finished: the same collapsing block an agent message gets, so a long
       // reasoning budget is actually readable instead of clipped to one line
-      const body = collapse(entry.text, open, width - 3);
+      const body = collapseMd(entry.text, open, width - 3);
       const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
         <box flexDirection="column" paddingLeft={3} backgroundColor={hover ? theme.surface : undefined}>
@@ -538,6 +610,9 @@ export function Transcript({
             width={width}
             entry={entry}
             hover={canCollapse && hover === key}
+            // only the final entry can still be mid-token; settling the
+            // earlier ones lets their trailing markdown parse as final
+            streaming={i === visible.length - 1}
             open={openAll !== open.has(key)}
             onOpen={toggle}
           />
