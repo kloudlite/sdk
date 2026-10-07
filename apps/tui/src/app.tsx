@@ -200,7 +200,7 @@ export function App({
       thinking: s.thinking ?? "show",
       thinkingLevel: s.thinkingLevel ?? "medium",
       autoCompact: s.autoCompact ?? "on",
-      codemode: s.codemode ?? "off",
+      codemode: s.codemode ?? "on",
       vim: s.vim ?? "off",
       sidebarWidth: clampSidebar(s.sidebarWidth ?? SIDEBAR_WIDTH),
     };
