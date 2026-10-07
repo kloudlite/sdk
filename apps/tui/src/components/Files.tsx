@@ -6,6 +6,7 @@ import { SplitBorder } from "../ui/border.ts";
 import { DiffView } from "./Diff.tsx";
 import { SPECIAL } from "./Input.tsx";
 import type { FileDiff } from "../diff.ts";
+import { useWheelAccel } from "../wheel.ts";
 import {
   changes as scanChanges,
   displayRoot,
@@ -46,6 +47,7 @@ export function Files({
   /** `f` moves on to the next view, same as outside. */
   onCycle: () => void;
 }) {
+  const wheel = useWheelAccel();
   const [changes, setChanges] = useState<Change[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Record<string, TreeNode[]>>({});
@@ -322,7 +324,7 @@ export function Files({
       </box>
 
       {search ? (
-        <scrollbox flexGrow={1} flexBasis={0} minHeight={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }}>
+        <scrollbox flexGrow={1} flexBasis={0} minHeight={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }} scrollAcceleration={wheel}>
           <box flexDirection="column" flexShrink={0} width="100%">
           {search.matches.length === 0 ? (
             <box paddingLeft={1} paddingTop={1}>
@@ -365,7 +367,7 @@ export function Files({
           paddingLeft={1}
           onMouseDown={() => setPane("tree")}
         >
-          <scrollbox flexGrow={1} flexBasis={0} scrollbarOptions={{ visible: false }}>
+          <scrollbox flexGrow={1} flexBasis={0} scrollbarOptions={{ visible: false }} scrollAcceleration={wheel}>
             {rows.map((row, i) => {
               const active = i === cur && pane === "tree";
               if (row.kind === "header")
@@ -462,7 +464,7 @@ export function Files({
                       : `${body.lines.length} lines`}
                 </text>
               </box>
-              <scrollbox ref={scrollRef} flexGrow={1} flexBasis={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }}>
+              <scrollbox ref={scrollRef} flexGrow={1} flexBasis={0} marginTop={1} paddingLeft={1} scrollbarOptions={{ visible: false }} scrollAcceleration={wheel}>
                 <DiffView diff={body} maxLines={5000} />
               </scrollbox>
             </>

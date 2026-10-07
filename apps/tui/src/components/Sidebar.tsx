@@ -1,6 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import { theme } from "../theme.ts";
 import { CURRENT_USER, type Service, type Workspace } from "../workspaces.ts";
+import { useWheelAccel } from "../wheel.ts";
 
 // resolved per render: the theme singleton mutates on /theme
 
@@ -89,6 +90,7 @@ export function Sidebar({
   /** The environment row opens the connect picker. */
 }) {
   const inner = width - 4; // padding + row padding
+  const wheel = useWheelAccel();
   // the tree counts workspaces, not their ephemeral tasks
   const count = workspaces.filter((w) => !w.parent).length;
 
@@ -110,7 +112,7 @@ export function Sidebar({
         </text>
       </box>
 
-      <scrollbox flexGrow={1} flexBasis={0} flexShrink={1} paddingLeft={1} paddingRight={1} scrollbarOptions={{ visible: false }}>
+      <scrollbox flexGrow={1} flexBasis={0} flexShrink={1} paddingLeft={1} paddingRight={1} scrollbarOptions={{ visible: false }} scrollAcceleration={wheel}>
         <box flexDirection="column" flexShrink={0}>
           <Heading count={count} width={width - 2} flush>Workspaces</Heading>
           {workspaces.length === 0 && (

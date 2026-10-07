@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { SyntaxStyle, TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
+import { useWheelAccel } from "../wheel.ts";
 import { theme } from "../theme.ts";
 import { SplitBorder } from "../ui/border.ts";
 import { DiffView } from "./Diff.tsx";
@@ -484,6 +485,7 @@ export function Transcript({
   keys?: "off" | "page" | "normal";
 }) {
   const scrollRef = useRef<ScrollBoxRenderable>(null);
+  const wheel = useWheelAccel();
   // scrolled up far enough that new output lands off screen — shows the
   // jump-to-bottom affordance, which `stickyScroll` otherwise hides
   const [away, setAway] = useState(false);
@@ -578,6 +580,7 @@ export function Transcript({
       stickyScroll
       stickyStart="bottom"
       scrollbarOptions={{ visible: false }}
+      scrollAcceleration={wheel}
     >
       {/* opencode: one blank row above the first message */}
       <box height={1} />

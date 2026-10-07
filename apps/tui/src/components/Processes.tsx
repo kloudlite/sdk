@@ -4,6 +4,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
 import { theme } from "../theme.ts";
 import { SplitBorder } from "../ui/border.ts";
 import type { Process, ProcessStatus } from "../workspaces.ts";
+import { useWheelAccel } from "../wheel.ts";
 
 const color = (status: ProcessStatus) =>
   ({
@@ -33,6 +34,7 @@ export function Processes({
   /** `f` moves on to the next view, same as outside. */
   onCycle: () => void;
 }) {
+  const wheel = useWheelAccel();
   const [sel, setSel] = useState(0);
   const [pane, setPane] = useState<"list" | "log">("list");
   const logRef = useRef<ScrollBoxRenderable>(null);
@@ -149,7 +151,7 @@ export function Processes({
                 flexBasis={0}
                 marginTop={1}
                 paddingLeft={2}
-                scrollbarOptions={{ visible: false }}
+                scrollbarOptions={{ visible: false }} scrollAcceleration={wheel}
               >
                 <box flexDirection="column" flexShrink={0}>
                   {lines.length === 0 ? (
