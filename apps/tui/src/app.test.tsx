@@ -89,13 +89,15 @@ test("card keeps its shape after submit", async () => {
   t.done();
 });
 
-test("tab cycles focus, shift-tab cycles back", async () => {
+// shift+tab belongs to the permission mode now, so tab only goes forward;
+// k / ^k is what walks the ring backwards.
+test("tab cycles focus forward through the ring", async () => {
   const t = await mount();
-  t.mockInput.pressKey("\t"); // main → first workspace
+  t.mockInput.pressKey("\t"); // main -> first workspace
   expect(await t.path()).toContain("api-gateway");
-  t.mockInput.pressKey("[Z"); // shift-tab → back to main (in the ring)
+  t.mockInput.pressKey("k"); // back to main (in the ring)
   expect(await t.path()).not.toContain("api-gateway");
-  t.mockInput.pressKey("[Z"); // again → wraps to the last workspace
+  t.mockInput.pressKey("k"); // again -> wraps to the last workspace
   expect(await t.path()).toContain("infra-iac");
   t.done();
 });
@@ -429,3 +431,35 @@ test("the env tools act on live state and reach the UI", async () => {
   expect(bad).toContain("error");
   expect(bad).toContain("production");
 }, 20000);
+
+// Permission mode is per-session chrome: shift+tab cycles it and only a
+// non-default mode shows, so the ordinary case stays quiet.
+test("shift+tab cycles the permission mode and shows it in the hint bar", async () => {
+  const t = await mount();
+  expect(t.captureCharFrame()).not.toContain("shift+tab");
+  await t.mockInput.pressKey("TAB", { shift: true });
+  await tick();
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("acceptEdits");
+  await t.mockInput.pressKey("TAB", { shift: true });
+  await t.mockInput.pressKey("TAB", { shift: true });
+  await tick();
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("bypass");
+  t.done();
+});
+
+// Typing "/" opens the command overlay; deleting it back out has to close it,
+// or the menu outlives the slash that opened it.
+test("backspacing the slash closes the command overlay", async () => {
+  const t = await mount({ vim: "off" });
+  await t.mockInput.typeText("/");
+  await tick();
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("Commands");
+  await t.mockInput.pressKey("BACKSPACE");
+  await tick();
+  await t.renderOnce();
+  expect(t.captureCharFrame()).not.toContain("Commands");
+  t.done();
+});

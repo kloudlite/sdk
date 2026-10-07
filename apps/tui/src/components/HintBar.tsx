@@ -7,6 +7,7 @@ export function HintBar({
   busy,
   tokens,
   queued,
+  permMode,
   active,
   inWorkspace,
   normal,
@@ -17,6 +18,8 @@ export function HintBar({
   busy: boolean;
   tokens: number;
   queued: number;
+  /** Permission mode; only shown when it is not "default". */
+  permMode?: string;
   /** Context path: "main" or "main › <workspace>" */
   active: string;
   inWorkspace: boolean;
@@ -34,6 +37,11 @@ export function HintBar({
     <box flexDirection="row" flexShrink={0} justifyContent="space-between" overflow="hidden">
       <box flexDirection="row" gap={2} marginLeft={1}>
         <text selectable={false} fg={theme.muted}>{active}</text>
+        {permMode && permMode !== "default" && (
+          <text selectable={false} fg={permMode === "bypass" ? theme.error : theme.warning}>
+            {permMode} <span attributes={TextAttributes.DIM}>shift+tab</span>
+          </text>
+        )}
         {queued > 0 && (
           <box onMouseDown={click("queue")}>
             <text selectable={false} fg={theme.warning}>

@@ -213,6 +213,11 @@ export function App({
   const [asks, setAsks] = useState<Ask[]>([]);
   // tools granted "always allow" per session key
   const alwaysAllow = useRef(new Map<string, Set<string>>());
+  // Permission mode is per-process and resets on restart: a forgotten "bypass"
+  // persisted across launches is the one failure worth not having.
+  const [permMode, setPermMode] = useState<PermMode>("default");
+  const modeRef = useRef<PermMode>("default");
+  modeRef.current = permMode;
 
   const environment = envs[env]!;
   const mainBase = sessionBase();
@@ -384,7 +389,11 @@ export function App({
       if (command(key.name)) return;
     }
 
-    if (key.name === "tab" && !menuOpen && keyMode === "normal") return cycle(key.shift ? -1 : 1);
+    // shift+tab cycles the permission mode in both key schemes; plain tab keeps
+    // cycling workspaces in NORMAL
+    if (key.name === "tab" && key.shift && !menuOpen)
+      return setPermMode((m) => PERM_MODES[(PERM_MODES.indexOf(m) + 1) % PERM_MODES.length]!);
+    if (key.name === "tab" && !menuOpen && keyMode === "normal") return cycle(1);
     // ↑/↓ recall this session's prompt history (menu closed only)
     if (keyMode === "insert" && !menuOpen && (key.name === "up" || key.name === "down")) {
       const h = session.history;
@@ -826,6 +835,12 @@ export function App({
   // web_fetch leaves the machine, and the URL can come from text the model
   // just read, so the user sees it before it goes out
   const GATED = new Set(["bash", "write", "edit", "web_fetch"]);
+  /** Tools that only mutate the workspace's files — what acceptEdits waves through. */
+  const EDITS = new Set(["write", "edit"]);
+
+/** Shift+tab cycles these in order. */
+type PermMode = "default" | "acceptEdits" | "plan" | "bypass";
+const PERM_MODES: PermMode[] = ["default", "acceptEdits", "plan", "bypass"];
 
   /** Chain a permission gate ahead of pi's installed beforeToolCall hook. */
   function installPermissionGate(key: string, agent: AgentSession) {
@@ -833,7 +848,21 @@ export function App({
     agent.agent.beforeToolCall = async (ctx: any, signal?: AbortSignal) => {
       const name = ctx.toolCall.name;
       const granted = alwaysAllow.current.get(key) ?? new Set<string>();
-      if (GATED.has(name) && !granted.has(name)) {
+      // the hook is installed once per session but the mode changes under it,
+      // so the mode is read from a ref at call time, never captured here
+      const mode = modeRef.current;
+
+      // plan mode answers rather than asks: a refusal the model can read and
+      // work around beats a permission card the user has to reject every turn
+      if (mode === "plan" && GATED.has(name))
+        return {
+          block: true,
+          reason: `Plan mode: ${name} is not available. Research and explain what you would do; the user will leave plan mode when they want it done.`,
+        };
+
+      const waved =
+        mode === "bypass" || (mode === "acceptEdits" && EDITS.has(name));
+      if (GATED.has(name) && !granted.has(name) && !waved) {
         const diff = toolDiff(name, ctx.args) ?? undefined;
         const choice = await pushAskRef.current({
           title: "Permission required",
@@ -935,6 +964,9 @@ export function App({
     // The "/" stays in the draft: Input keeps its own copy of the value, and
     // clearing it here would desync the two.
     if (v === "/" && !cmdMode && !palette) setCmdMode(true);
+    // ...and deleting it back out closes it again, so the overlay never
+    // outlives the slash that opened it
+    if (cmdMode && !v.startsWith("/")) setCmdMode(false);
     setInput(v);
   }
 
@@ -1560,6 +1592,7 @@ export function App({
               menu={menu}
             />
           <HintBar
+            permMode={permMode}
             normal={prefs.vim === "on" && keyMode === "normal" && !palette && !cmdMode}
             vim={prefs.vim === "on"}
             busy={busy}
