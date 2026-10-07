@@ -50,6 +50,17 @@ export function Login({
           setValue("");
           setSel(0);
           setPending({ prompt, resolve, reject });
+          // pi cancels a single prompt when something else answers the step —
+          // a manual_code raced against the OAuth callback server. Drop the
+          // input instead of leaving the user typing into a resolved prompt.
+          prompt.signal?.addEventListener(
+            "abort",
+            () => {
+              setPending((cur) => (cur?.prompt === prompt ? null : cur));
+              reject(new Error("cancelled"));
+            },
+            { once: true },
+          );
         }),
     })
       .then(() => onDone(true))
@@ -94,7 +105,17 @@ export function Login({
 
       {events.map((event, i) => (
         <box key={i} flexDirection="column">
-          {event.type === "info" && <text fg={theme.muted}>{event.message}</text>}
+          {event.type === "info" && (
+            <>
+              <text fg={theme.muted}>{event.message}</text>
+              {event.links?.map((link) => (
+                <text key={link.url} fg={theme.accent} attributes={TextAttributes.UNDERLINE}>
+                  {link.label ? `${link.label}: ${link.url}` : link.url}
+                </text>
+              ))}
+            </>
+          )}
+          {event.type === "progress" && <text fg={theme.muted}>{event.message}</text>}
           {event.type === "auth_url" && (
             <>
               <text fg={theme.muted}>
