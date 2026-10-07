@@ -18,6 +18,8 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
     "ssh2": "^1.17.0"
   }
 }

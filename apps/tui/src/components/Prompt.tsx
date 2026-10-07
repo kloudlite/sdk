@@ -126,12 +126,15 @@ export function Prompt({
             </span>
             {normal ? (
               <span fg={theme.muted}> · i to type · ? for help</span>
-            ) : overlay ? (
-              <span fg={theme.muted}> · type to filter, esc to close</span>
             ) : (
+              // the model is which model answers, so it stays on screen while
+              // an overlay is open — the overlay's hint is appended, not swapped in
               <span>
                 <span fg={theme.muted}> · {model} </span>
                 <span fg={theme.placeholder}>{provider}</span>
+                {overlay ? (
+                  <span fg={theme.muted}> · type to filter, esc to close</span>
+                ) : null}
               </span>
             )}
           </text>

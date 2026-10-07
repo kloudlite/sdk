@@ -121,3 +121,31 @@ test("clicking a long block toggles it, dragging over it does not", async () => 
   await t.renderOnce();
   expect(t.captureCharFrame()).toContain("click to collapse");
 }, 15000);
+
+// codemode's argument is a whole script, not a one-line command, so it gets
+// the bash block with its source where the command goes.
+test("a codemode call renders its script above its output", async () => {
+  const t = await testRender(
+    <Transcript
+      width={100}
+      entries={[
+        {
+          kind: "tool",
+          id: "c1",
+          name: "codemode",
+          status: "ok",
+          summary: 'const f = await tools.read({path: "a.ts"});\nreturn f.length;',
+          output: "Script completed\n42",
+        },
+      ]}
+    />,
+    { width: 100, height: 20 },
+  );
+  await new Promise((r) => setTimeout(r, 200));
+  await t.renderOnce();
+  const frame = t.captureCharFrame();
+  expect(frame).toContain("codemode");
+  expect(frame).toContain("tools.read");
+  expect(frame).toContain("return f.length;");
+  expect(frame).toContain("Script completed");
+}, 15000);

@@ -85,8 +85,12 @@ function collapsible(entry: Entry, width: number): boolean {
   if (entry.kind === "agent") return rowCount(entry.text, width - 3) > COLLAPSE_MAX;
   if (entry.kind === "thinking")
     return !!entry.done && rowCount(entry.text, width - 3) > COLLAPSE_MAX;
-  if (entry.kind === "tool" && entry.name === "bash")
-    return rowCount(entry.output, width - 2) > COLLAPSE_MAX;
+  if (entry.kind === "tool" && (entry.name === "bash" || entry.name === "codemode"))
+    // codemode shows its script above its output, so both count toward the head
+    return (
+      rowCount(`${entry.name === "codemode" ? entry.summary : ""}\n${entry.output}`, width - 2) >
+      COLLAPSE_MAX
+    );
   return false;
 }
 
@@ -252,7 +256,11 @@ function Row({
       const running = entry.status === "running";
       const failed = entry.status === "error";
 
-      if (entry.name === "bash") {
+      // codemode: the model writes a script that calls the other tools, so the
+      // script is the interesting part — same block as bash, with the source
+      // where the command goes. Nested tool calls never reach us; pi returns
+      // only the script's own output.
+      if (entry.name === "bash" || entry.name === "codemode") {
         // opencode Shell via BlockTool: panel bg block, $ command, output tail
         const out = collapse(entry.output, open, width - 2);
         return (
@@ -263,12 +271,24 @@ function Row({
             paddingBottom={1}
             backgroundColor={hover ? theme.surfaceRaised : theme.surface}
           >
-            <text fg={running ? theme.fg : theme.muted}>
-              {running ? "⚙ " : "$ "}
-              {entry.summary}
-            </text>
+            {entry.name === "codemode" ? (
+              <box flexDirection="column">
+                <text fg={running ? theme.fg : theme.accent}>
+                  {running ? "⚙ codemode" : "⌁ codemode"}
+                </text>
+                <text fg={theme.muted}>{collapse(entry.summary, open, width - 2).text}</text>
+              </box>
+            ) : (
+              <text fg={running ? theme.fg : theme.muted}>
+                {running ? "⚙ " : "$ "}
+                {entry.summary}
+              </text>
+            )}
+            {entry.name === "codemode" && out.text !== "" && (
+              <text fg={theme.border}>{"─".repeat(Math.max(0, width - 4))}</text>
+            )}
             {out.text !== "" && <text fg={theme.muted}>{out.text}</text>}
-            {rowCount(entry.output, width - 2) > COLLAPSE_MAX && (
+            {rowCount(`${entry.name === "codemode" ? entry.summary : ""}\n${entry.output}`, width - 2) > COLLAPSE_MAX && (
               <More hidden={out.hidden} open={open} onToggle={onOpen} hover={hover} />
             )}
             {entry.error && <text fg={theme.error}>{entry.error}</text>}

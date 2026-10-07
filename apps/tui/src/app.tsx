@@ -200,6 +200,7 @@ export function App({
       thinking: s.thinking ?? "show",
       thinkingLevel: s.thinkingLevel ?? "medium",
       autoCompact: s.autoCompact ?? "on",
+      codemode: s.codemode ?? "off",
       vim: s.vim ?? "off",
       sidebarWidth: clampSidebar(s.sidebarWidth ?? SIDEBAR_WIDTH),
     };
@@ -477,6 +478,8 @@ export function App({
     const clip = (v: string) => (v.length > 100 ? `${v.slice(0, 99)}…` : v);
     if (args && typeof args === "object") {
       if (name === "bash" && args.command) return clip(one(args.command));
+      // codemode's arg is a whole script — keep its newlines, the block renders them
+      if (name === "codemode" && args.code) return String(args.code);
       const path = args.path ?? args.file_path ?? args.filePath;
       if (path) return clip(one(path));
       const vals = Object.values(args).filter((v) => typeof v === "string");
@@ -651,6 +654,7 @@ export function App({
       fresh: opts?.fresh,
       thinkingLevel: prefs.thinkingLevel,
       autoCompact: prefs.autoCompact === "on",
+      codemode: prefs.codemode === "on",
     }).then((agent) => {
       agent.subscribe((event) => handleAgentEvent(key, event));
       installPermissionGate(key, agent);
@@ -1046,6 +1050,16 @@ export function App({
         for (const agent of agents.current.values())
           agent.then((a) => a.setAutoCompactionEnabled(value === "on")).catch(() => {});
       }
+      // pi fixes the tool list when the session is built, so unlike
+      // thinkingLevel and autoCompact this cannot be pushed into live sessions
+      if (key === "codemode" && (value === "on" || value === "off")) {
+        setPrefs((p) => ({ ...p, codemode: value }));
+        writeSettings({ codemode: value });
+        append(key, {
+          kind: "info",
+          text: `codemode ${value} — applies to sessions started from now on`,
+        });
+      }
       if (key === "vim" && (value === "on" || value === "off")) {
         setPrefs((p) => ({ ...p, vim: value }));
         writeSettings({ vim: value });
@@ -1153,6 +1167,13 @@ export function App({
           key: "autoCompact",
           value,
           hint: prefs.autoCompact === value ? "current" : "",
+        })),
+        ...(["on", "off"] as const).map((value) => ({
+          key: "codemode",
+          value,
+          hint: [prefs.codemode === value ? "current" : "", "model scripts its tool calls"]
+            .filter(Boolean)
+            .join(" · "),
         })),
         ...(["wider", "narrower", "reset"] as const).map((value) => ({
           key: "width",

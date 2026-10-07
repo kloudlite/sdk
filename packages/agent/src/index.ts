@@ -2,9 +2,12 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   createAgentSession,
+  createCodemodeExtension,
+  getAgentDir,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, AuthInteraction, AuthType, Credential, Model } from "@earendil-works/pi-ai";
@@ -37,7 +40,7 @@ export type ModelRef = { provider: string; id: string };
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** `thinking` is whether thinking blocks are shown; `thinkingLevel` is pi's reasoning budget. */
-type Settings = { defaultModel?: ModelRef; theme?: string; sidebar?: "show" | "hide"; sidebarWidth?: number; thinking?: "show" | "hide"; thinkingLevel?: ThinkingLevel; autoCompact?: "on" | "off"; vim?: "on" | "off" };
+type Settings = { defaultModel?: ModelRef; theme?: string; sidebar?: "show" | "hide"; sidebarWidth?: number; thinking?: "show" | "hide"; thinkingLevel?: ThinkingLevel; autoCompact?: "on" | "off"; codemode?: "on" | "off"; vim?: "on" | "off" };
 
 const SETTINGS_PATH = join(CONFIG_DIR, "settings.json");
 
@@ -243,6 +246,7 @@ export async function createSession({
   fresh = false,
   thinkingLevel,
   autoCompact,
+  codemode,
 }: {
   key: string;
   cwd?: string;
@@ -254,12 +258,30 @@ export async function createSession({
   thinkingLevel?: ThinkingLevel;
   /** Let pi compact the context on its own when it fills up (default on). */
   autoCompact?: boolean;
+  /** Let the model write a script that calls tools, instead of one call per turn. */
+  codemode?: boolean;
 }): Promise<AgentSession> {
   const dir = sessionDir(key);
   // meta.json makes a session findable later: its key, its name, last use
   writeMeta({ ...(readMeta(key) ?? { key }), key, updated: Date.now() });
+  // pi's codemode ships as an extension and is registered *inactive*, so both
+  // halves are needed: the factory on a resource loader, and the tool named in
+  // `tools` to turn it on. Omitting `tools` would drop the built-ins with it,
+  // so the default four are listed back explicitly.
+  let resourceLoader: DefaultResourceLoader | undefined;
+  if (codemode) {
+    resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir: getAgentDir(),
+      extensionFactories: [{ name: "codemode", factory: createCodemodeExtension() }],
+    });
+    await resourceLoader.reload();
+  }
   const { session } = await createAgentSession({
     cwd,
+    ...(resourceLoader
+      ? { resourceLoader, tools: ["read", "bash", "edit", "write", "codemode"] }
+      : {}),
     modelRuntime: runtime,
     model,
     ...(thinkingLevel ? { thinkingLevel } : {}),
