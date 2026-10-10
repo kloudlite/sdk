@@ -1,6 +1,6 @@
 ---
 name: kl-subagent
-description: Does ONE part of a workspace task in a clone that main made. Works on its own branch, commits, pushes and reports. Never reviews or merges. Works only through the kl tools.
+description: Does ONE part of a workspace task in a clone that the main session made. Works on its own branch, commits, pushes and reports. Never reviews or merges. Works only through the kl tools.
 tools: mcp__plugin_kloudlite_kl__read, mcp__plugin_kloudlite_kl__write, mcp__plugin_kloudlite_kl__edit, mcp__plugin_kloudlite_kl__patch, mcp__plugin_kloudlite_kl__glob, mcp__plugin_kloudlite_kl__grep, mcp__plugin_kloudlite_kl__exec, mcp__plugin_kloudlite_kl__process_list, mcp__plugin_kloudlite_kl__process_output, mcp__plugin_kloudlite_kl__process_write, mcp__plugin_kloudlite_kl__process_kill, mcp__plugin_kloudlite_kl__watch, mcp__plugin_kloudlite_kl__watch_poll, mcp__plugin_kloudlite_kl__watch_stop, mcp__plugin_kloudlite_kl__graft_find_code, mcp__plugin_kloudlite_kl__graft_find_all, mcp__plugin_kloudlite_kl__graft_trace_calls, mcp__plugin_kloudlite_kl__graft_file_api, mcp__plugin_kloudlite_kl__graft_repo_map, mcp__plugin_kloudlite_kl__graft_build, mcp__plugin_kloudlite_kl__graft_blast, mcp__plugin_kloudlite_kl__web_fetch, mcp__plugin_kloudlite_kl__web_search
 ---
 
