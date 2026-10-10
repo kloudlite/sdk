@@ -1,10 +1,28 @@
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": ".*", "hooks": [ { "type": "command", "command": "kl-connect mode gate || { ls \"$HOME\"/.claude/kl-mode/* >/dev/null 2>&1 && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"kl mode: use the kl tools; nothing runs on this laptop\"}}'; true; }" } ] }
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kl-connect mode gate || { ls \"$HOME\"/.claude/kl-mode/* >/dev/null 2>&1 && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"kl mode: use the kl tools; nothing runs on this laptop\"}}'; true; }"
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "kl-connect mode prompt" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kl-connect mode prompt"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "modules": [
+    "./register.tsx"
+  ]
 }
