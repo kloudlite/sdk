@@ -89,7 +89,7 @@ git add docs/superpowers/plans/2026-10-11-laptop-kl-plugin.md
 git commit -m "Record what the hooks see in subagents"
 ```
 
-**Probe result:** (filled in by Task 1)
+**Probe result:** KEY = session_id. `UserPromptSubmit` prompt for `/kloudlite:on` is the raw typed text `/kloudlite:on` (not the expanded body). A subagent's `PreToolUse` carries the parent's `session_id` with a non-null `agent_id` (main-thread rows have `agent_id` null); the subagent used Bash rather than Glob, same result.
 
 ---
 
