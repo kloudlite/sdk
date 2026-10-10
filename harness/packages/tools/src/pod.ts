@@ -151,3 +151,32 @@ export async function podExec(ws: string, cmd: string, timeoutMs = 120_000): Pro
     return { code: -1, stdout: "", stderr: e instanceof NotReady ? `workspace not ready: ${e.message}` : `${e?.message ?? e}` };
   }
 }
+
+/**
+ * The pod tools for ANY workspace (the laptop MCP door, backend/src/mcp.ts): each takes a required
+ * `workspace` and runs through that workspace's own `podTools`. Schemas come from `sample` (a running
+ * workspace) when it answers; a workspace's tools are built once and kept, so its address is
+ * resolved on first use and re-resolved by `podTools` itself.
+ */
+export async function anyPodTools(sample?: string): Promise<ToolDef[]> {
+  const shape = new Map((sample ? await podTools(sample) : []).map((t) => [t.name, t]));
+  const per = new Map<string, Promise<ToolDef[]>>();
+  return POD_TOOLS.map((name) => {
+    const s: any = shape.get(name)?.inputSchema ?? { type: "object", additionalProperties: true };
+    const description = (shape.get(name)?.description ?? "").replace(/ ?\(This tool runs in workspace [^)]*\.\)$/, "");
+    return {
+      name,
+      description: `${description} Runs in the workspace named by \`workspace\`.`.trim(),
+      inputSchema: { ...s, type: "object", properties: { workspace: { type: "string", description: "Workspace id" }, ...s.properties }, required: ["workspace", ...(s.required ?? []).filter((n: string) => n !== "workspace")] },
+      run: async (input: any) => {
+        const { workspace, ...args } = input ?? {};
+        if (typeof workspace !== "string" || !workspace) throw new Error(`${name}: workspace is required`);
+        let tools = per.get(workspace);
+        if (!tools) per.set(workspace, (tools = podTools(workspace)));
+        const t = (await tools).find((t) => t.name === name);
+        if (!t) throw new Error(`${name}: workspace ${workspace} does not serve this tool`);
+        return t.run(args);
+      },
+    };
+  });
+}

@@ -188,3 +188,14 @@ test("every workspace and env param says it takes the id, not the name", () => {
         if (p) expect(`${t.name}.${k}: ${p.description ?? ""}`).toContain("id (");
       }
 });
+
+test("all is main's table plus the workspace-only tools, each aimed by a required workspace or env", () => {
+  const main = platformTools("main").map((t) => t.name);
+  const all = platformTools("all");
+  const names = all.map((t) => t.name);
+  expect(new Set(names).size).toBe(names.length);
+  for (const n of main) expect(names).toContain(n);
+  for (const n of ["packages_add", "packages_remove", "packages_update"]) expect((tool(all, n).inputSchema as any).required).toContain("workspace");
+  expect((tool(all, "intercept").inputSchema as any).required).toEqual(["env", "service", "workspace"]);
+  expect((tool(all, "release").inputSchema as any).required).toEqual(["env", "service"]);
+});

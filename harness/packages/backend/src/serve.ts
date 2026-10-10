@@ -74,6 +74,10 @@ export function serve(backend: Backend, peer: Peer) {
 
   peer.handle("settings.write", (patch) => backend.settings.write(patch));
   peer.handle("space", () => backend.space());
+  peer.handle("mcp", (msg) => {
+    if (!backend.mcp) throw new Error("this bench serves no MCP");
+    return backend.mcp(msg);
+  });
   peer.handle("models.refresh", () => backend.models.refresh());
   peer.handle("auth.providers", () => backend.auth.providers());
   peer.handle("auth.claudeSignedIn", (fresh) => backend.auth.claudeSignedIn(fresh));

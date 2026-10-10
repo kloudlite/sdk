@@ -10,6 +10,7 @@ mod bench;
 mod builder;
 mod config;
 mod login;
+mod mcp;
 mod proxy;
 mod sshconfig;
 mod ws;
@@ -58,6 +59,11 @@ enum Cmd {
     Builder {
         #[command(subcommand)]
         cmd: BuilderCmd,
+    },
+    /// Serve every bench tool (all workspaces, environments, pod tools) as a stdio MCP server:
+    /// `claude mcp add kl -- kl-connect mcp`
+    Mcp {
+        team: Option<String>,
     },
     /// kl-tui's pipe for `kl-connect [team]`: pump stdio to the bench daemon through the gateway
     #[command(hide = true)]
@@ -132,5 +138,6 @@ async fn run(cmd: &Cmd) -> Result<(), String> {
             BuilderCmd::Status { team } => builder::status(team.as_deref()).await,
         },
         Cmd::BenchProxy { team } => bench::proxy(team.as_deref()).await,
+        Cmd::Mcp { team } => mcp::mcp(team.as_deref()).await,
     }
 }

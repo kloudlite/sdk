@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalBackend, DESTRUCTIVE, asking, baseHandle, mustAsk, roleCard, stripCard, shareable, installGate, registryFor, sessionCwd, sessionKind } from "./local.ts";
+import { LocalBackend, DESTRUCTIVE, asking, baseHandle, mustAsk, roleCard, stripCard, shareable, installGate, mcpTools, registryFor, sessionCwd, sessionKind } from "./local.ts";
 import { toolDiff } from "./diff.ts";
 import { Cards } from "./cards.ts";
 import { PROTOCOL } from "./wire.ts";
 import { readBoards, readTasks } from "./tasks.ts";
+import { POD_TOOLS, platformTools } from "@kloudlite-tui/tools";
 
 test("hello carries what the TUI reads at boot", async () => {
   const h = await new LocalBackend().hello();
@@ -377,4 +378,14 @@ test("space() carries the boards (main first) and the message log", async () => 
   const v = await new LocalBackend().space();
   expect(v.boards![0]!.session).toBe("main");
   expect(Array.isArray(v.messages)).toBe(true);
+});
+
+test("the MCP door serves every platform and pod tool with no `because`, plus main's delegation", async () => {
+  const deps = { live: new Map(), busy: new Set<string>(), open: async () => null as never, permit: async () => ({}), tasks: mkdtempSync(join(tmpdir(), "kl-mcp-")) };
+  const tools = await mcpTools(deps);
+  const names = tools.map((t) => t.name);
+  for (const n of [...platformTools("all").map((t) => t.name), ...POD_TOOLS, "workspace_ask", "web_fetch", "web_search", "scratch_bash", "scratch_read"]) expect(names).toContain(n);
+  for (const t of tools) expect((t.inputSchema as any).properties?.because).toBeUndefined();
+  expect((tools.find((t) => t.name === "exec")!.inputSchema as any).required).toContain("workspace");
+  expect(names).not.toContain("question");
 });

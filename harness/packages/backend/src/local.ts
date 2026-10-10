@@ -23,7 +23,7 @@ import {
   writeSettings,
   type ModelRef,
 } from "@kloudlite-tui/agent";
-import { Registry, platformTools, podTools, scratchRoot, scratchTools, webFetch, webSearch, type ToolDef } from "@kloudlite-tui/tools";
+import { Registry, anyPodTools, platformTools, podTools, scratchRoot, scratchTools, webFetch, webSearch, type ToolDef } from "@kloudlite-tui/tools";
 import { Cards } from "./cards.ts";
 import { claudeLogin } from "./claudelogin.ts";
 import { WORKSPACE_DIR, delegateTools, resumeAsks, type DelegateDeps } from "./delegate.ts";
@@ -34,6 +34,7 @@ import { BECAUSE_SCHEMA, TurnWords, consented } from "./consent.ts";
 import { toolDiff } from "./diff.ts";
 import { podfs } from "./podfs.ts";
 import { space as spaceView } from "./space.ts";
+import { mcpServer } from "./mcp.ts";
 import { boardTools, readBoards, taskTools, tasksFile } from "./tasks.ts";
 import { messagesFile, readMessages } from "./messages.ts";
 import { PROTOCOL } from "./wire.ts";
@@ -162,6 +163,16 @@ export async function registryFor(k: SessionKind, deps: DelegateDeps, opts: Sess
     return r.add(...[webFetch, webSearch, ...(await podTools(k.ws)), ...platformTools("workspace", k.ws).filter((t) => !no.has(t.name)), ...opts.tools].map(asking));
   }
   return r.add(...[webFetch, webSearch, ...(await podTools(k.ws)), ...platformTools("workspace", k.ws), ...delegateTools("workspace", k.ws, deps, opts, key), ...taskTools(tasksFile(key, deps.tasks)), ...opts.tools].map(asking), ...(deps.cards ? [question(key, deps.cards)] : []));
+}
+
+/** Every tool the laptop MCP door (mcp.ts) serves: main's reach plus the workspace-only platform
+ * tools and every pod tool, each aimed by a required `workspace`/`env`. No `asking`, no question
+ * card: the MCP client's own approvals are the gate. Pod schemas come from one running workspace. */
+export async function mcpTools(deps: DelegateDeps): Promise<ToolDef[]> {
+  const running = (await spaceView()).workspaces.find((w) => w.state === "ready")?.id;
+  return new Registry().add(webFetch, webSearch, ...(await anyPodTools(running)),
+     ...platformTools("all").map((t) => (t.name === "workspace_delete" ? forgetting(t, deps) : t)), ...delegateTools("main", undefined, deps, { tools: [] } as unknown as SessionOpts, "main"), ...taskTools(tasksFile("main", deps.tasks)), ...boardTools(deps.tasks), // the bench's own scratch folder: renamed, since `read`/`write` here are the pod's
+    ...scratchTools(scratchRoot("main")).map((t) => ({ ...t, name: `scratch_${t.name}`, description: `On the bench's scratch folder, not a workspace. ${t.description}` }))).all();
 }
 
 /** The permission gate, on both doors a call comes through: `agent.beforeToolCall` for a
@@ -673,6 +684,9 @@ export class LocalBackend implements Backend {
       return () => void this.#watchers.delete(cb);
     },
   };
+
+  #mcp?: ReturnType<typeof mcpServer>;
+  mcp = (msg: unknown) => (this.#mcp ??= mcpServer(() => mcpTools(this.#deps())))(msg as any);
 
   space = async (): Promise<SpaceView> => ({ ...(await spaceView()), boards: readBoards(), messages: readMessages(messagesFile()) });
 
