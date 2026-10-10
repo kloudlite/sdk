@@ -47,15 +47,15 @@ Lifecycle calls return at once. Poll `workspace_get` or `env_get` until the stat
 
 ## Give code work to kl-workspace
 
-Use one `kl-workspace` agent for each workspace. The prompt names the workspace and the goal. Start the workspace first with `workspace_start`. Do not do the work of the agent.
+Use one `kl-workspace` agent for each workspace. Name it `<ws>`, the name of the workspace. `/kloudlite:on` spawns one for each `ready` workspace. It returns `READY` and waits. Give it the goal with `SendMessage`. When you start a workspace later, spawn its agent when the workspace is `ready`. Do not do the work of the agent.
 
 ## The flow
 
-1. Give the goal and the workspace `W` to a new `kl-workspace` agent.
+1. Send the goal to the agent named `W` with `SendMessage`. If no agent has that name, start `W`, then spawn a `kl-workspace` agent with the workspace and the goal.
 2. If the agent returns `DONE`, go to step 8.
 3. On `SPLIT`, call `workspace_clone` once for each part. Name each clone `<ws>-<part>`.
 4. Start each clone with `workspace_start`. Poll until it is `ready`.
-5. Spawn one `kl-subagent` for each part, all in parallel. The prompt gives the clone, the branch and the part.
+5. Spawn one `kl-subagent` for each part, all in parallel. Name each agent `<ws>/<part>`, for example `chat-frontend/api`. The prompt gives the clone, the branch and the part.
 6. Collect each `REPORT`. Resume the SAME `kl-workspace` with `SendMessage` and all reports. It keeps its plan.
 7. On `REWORK`, resume that part's `kl-subagent` with `SendMessage` and the text. Send the new report to the `kl-workspace`. Repeat from step 2.
 8. On `DONE`, call `workspace_delete` for each clone. Tell the person the branch, the commits, the test result and what the agent did not do.
