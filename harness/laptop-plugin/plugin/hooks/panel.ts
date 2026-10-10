@@ -16,11 +16,15 @@ const GREEN = { glyph: '●', color: 'success' }
 const GRAY = { glyph: '○', color: 'inactive' }
 const RED = { glyph: '✕', color: 'error' }
 const YELLOW = { glyph: '◐', color: 'warning' } // creating, pending, deleting, starting
+const BLUE = { glyph: '◉', color: 'claude' } // a kl tool is running against it
 
 /** The dot and color one state draws with. */
 export function mark(state: string): Mark {
   switch (state) {
+    case 'working':
+      return BLUE
     case 'ready':
+    case 'idle':
     case 'running':
       return GREEN
     case 'stopped':
@@ -53,6 +57,17 @@ const row = (d: any): Row => ({
 
 export function workspaces(text: string): Row[] {
   return list(text).map(row)
+}
+
+// ponytail: an agent's tool calls arrive with thinking gaps between them, so "working" holds this long
+// after the last call ends; a real activity signal from the pod replaces it if one ever lands.
+export const GRACE_MS = 15_000
+
+/** What a workspace row says: a ready workspace is `working` while a kl tool call names it (or did
+ * within `GRACE_MS`), `idle` otherwise; any other state is shown as the api gives it. */
+export function activity(r: Row, inFlight: number, lastEnd: number, now: number): Row {
+  if (r.state !== 'ready') return r
+  return { ...r, state: inFlight > 0 || now - lastEnd < GRACE_MS ? 'working' : 'idle' }
 }
 
 /** `ws` names the intercepting workspace, which the api gives by id. */
