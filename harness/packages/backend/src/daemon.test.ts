@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { host, listenTcp } from "./daemon.ts";
+import { host, listenTcp, openConnections } from "./daemon.ts";
 import { connect, RemoteBackend } from "./remote.ts";
 import { connect as netConnect } from "node:net";
 import { Peer } from "./wire.ts";
@@ -160,5 +160,17 @@ test("a second sessions.watch on one connection is answered at once and holds on
   expect(second.length).toBe(1); // answered before the promise resolved
   expect(adds - offs).toBe(1);
   c.close();
+  server.close();
+});
+
+test("an open 7791 connection counts until it closes", async () => {
+  const server = await listenTcp(fakeBackend().b, 0, "127.0.0.1");
+  const open = openConnections(server);
+  const c = netConnect((server.address() as any).port, "127.0.0.1");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(open()).toBe(1);
+  c.destroy();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(open()).toBe(0);
   server.close();
 });
