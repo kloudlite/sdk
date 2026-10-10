@@ -13,7 +13,7 @@ This skill is written in ASD-STE100 Simplified Technical English. The laptop ses
 
 **Worktree.** An extra working copy in a workspace. It gives a second branch without a second workspace.
 
-**Clone.** A copy of a workspace in its current state. The clone is a new workspace. The `based_on` field in the reply tells you the age of the copy. Main makes clones for subagents.
+**Clone.** A copy of a workspace in its current state. The clone is a new workspace. The `based_on` field in the reply tells you the age of the copy. The main session makes clones for subagents.
 
 **Snapshot.** A read-only copy of the disk of a workspace or environment. A push records a named snapshot in the history. This push is not `git push`. Sync points are automatic copies for recovery after a crash. They do not show in the history. A restore makes a new copy from a snapshot.
 
@@ -35,7 +35,7 @@ This skill is written in ASD-STE100 Simplified Technical English. The laptop ses
 
 ## Every pod tool takes `workspace`
 
-The pod tools work in the pod of the workspace that you name in the `workspace` argument. The workspace must be up. Only main starts a workspace, with `workspace_start`. Always give `workspace`.
+The pod tools work in the pod of the workspace that you name in the `workspace` argument. The workspace must be up. Only the main session starts a workspace, with `workspace_start`. Always give `workspace`.
 
 ## Tools
 
@@ -179,8 +179,8 @@ These tools belong to the bench sessions. Do not use them: `workspace_ask`, `tas
 
 ## Roles
 
-**Main** is the laptop session. It talks to the person and owns the lifecycle of workspaces and environments. It does not read or judge code. It gives code work to `kl-workspace` agents and moves splits and reports between agents.
+**The main session** is this Claude Code session, not an agent. It talks to the person and owns the lifecycle of workspaces and environments. It does not read or judge code. It gives code work to `kl-workspace` agents and moves splits and reports between agents.
 
 **`kl-workspace`** owns the code of one workspace: its design, working branch, packages, service and intercept. It plans, does its own parts and reviews the branches of subagents. It merges, tests and pushes. It cannot start agents, so it returns a split to main.
 
-**`kl-subagent`** does one part in a clone that main made. It works on its own branch, commits, pushes and reports. It does not review or merge.
+**`kl-subagent`** does one part in a clone that the main session made. It works on its own branch, commits, pushes and reports. It does not review or merge.

@@ -1,9 +1,11 @@
 ---
 name: orchestrate
-description: The laptop main session's role in kl mode. Lifecycle and environments only; code goes to kl-workspace agents; relay splits and reports between agents.
+description: The main session's role in kl mode. Lifecycle and environments only; code goes to kl-workspace agents; relay splits and reports between agents.
 ---
 
-# You are main
+# You are the main session
+
+The main session is this Claude Code session: the one that talks to the person. It is not an agent. There is no main agent. Do not spawn one.
 
 This skill is written in ASD-STE100 Simplified Technical English. Read the `kloudlite:kloudlite` skill first.
 
@@ -42,6 +44,19 @@ You own the lifecycle of workspaces and environments. You do not read code. You 
 | `quota` | Show the limits and the use of an owner. |
 | `builder_status` | Check the image builder. |
 | `regions` | List the regions. |
+| `volume_list` | List the volumes. |
+| `volume_history` | Show the snapshot history of a volume. |
+| `volume_refs` | Show the snapshots that a volume names. |
+| `volume_delete` | Delete a detached volume. Ask the person first. |
+| `snapshot_delete` | Delete a snapshot. Ask the person first. |
+| `requests_list` | List the requests of an owner. |
+| `request_get` | Read one request. |
+| `request_create` | Ask an admin for more quota, access or a region. |
+| `packages_list` | Show the packages of a workspace. |
+| `web_fetch` | Read a web page. |
+| `web_search` | Search the web. |
+| `Agent` | Spawn a `kl-workspace` or a `kl-subagent`. Give it a name. |
+| `SendMessage` | Resume an agent by its name. |
 
 Lifecycle calls return at once. Poll `workspace_get` or `env_get` until the state is the one that you want. Use ids, not names.
 
