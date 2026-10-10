@@ -25,23 +25,11 @@ test('lists parse and errors surface', () => {
     ]),
     ws,
   )
-  expect(env.notes.map(n => n.text)).toEqual(['Degraded: NodeDead'])
   const [web, db] = env.services
-  expect(web.ports).toBe(':3000 :3001')
-  expect(web.intercept?.who).toBe('chat')
-  expect(web.intercept?.ports).toBe(':3000 → :5173')
-  expect(web.intercept?.state).toBe('proxy ready')
+  expect(web).toEqual({ name: 'web', ports: ':3000 :3001', state: 'ready', mark: mark('ready'), interceptedBy: 'chat' })
   expect(db.state).toBe('failing')
-  expect(db.ports).toBe('—')
-  expect(db.message).toBe('ImagePullBackOff')
-  expect(db.intercept).toBeUndefined()
-
-  // asked for, not yet in force
-  const [pending] = environments(
-    JSON.stringify([{ name: 'x', state: 'running', services: [{ name: 'api' }], intercepts: [{ service: 'api', workspace: 'w9' }] }]),
-  )
-  expect(pending.services[0].intercept?.state).toBe('pending')
-  expect(pending.services[0].intercept?.who).toBe('w9')
+  expect(db.ports).toBe('')
+  expect(db.interceptedBy).toBeUndefined()
 
   expect(() => workspaces('503: api unavailable')).toThrow('503: api unavailable')
   expect(mark('running').color).toBe('success')

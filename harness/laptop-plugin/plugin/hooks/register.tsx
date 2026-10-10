@@ -1,5 +1,5 @@
 // The Kloudlite side pane: workspaces and environments, each environment with its services (ports,
-// readiness, intercepts), beside the transcript while kl mode is on. kl mode is the flag file
+// state, the intercepting workspace), beside the transcript while kl mode is on. kl mode is the flag file
 // `~/.claude/kl-mode/<session id>` that `kl-connect mode prompt` writes on /kloudlite:on, so the
 // pane follows the same switch as the tool gate: it opens with it and closes with it.
 //
@@ -77,58 +77,21 @@ export const register: Register = on => {
       )
     }
     const service = (s: Service) => (
-      <Box flexDirection="column">
-        <Box gap={1}>
-          <Text color={s.mark.color}>{s.mark.glyph}</Text>
-          <Box flexGrow={1} gap={2}>
-            <Text wrap="truncate-end">{s.name}</Text>
-            <Text color="suggestion">{s.ports}</Text>
-          </Box>
-          <Text dimColor>{s.state}</Text>
+      <Box gap={1}>
+        <Text color={s.mark.color}>{s.mark.glyph}</Text>
+        <Box flexGrow={1} gap={2}>
+          <Text wrap="truncate-end">{s.name}</Text>
+          <Text dimColor>{s.ports}</Text>
         </Box>
-        {s.message ? (
-          <Box paddingLeft={2}>
-            <Text color="error" wrap="wrap">{s.message}</Text>
-          </Box>
-        ) : null}
-        {s.intercept ? (
-          <Box flexDirection="column" paddingLeft={2}>
-            <Box gap={1}>
-              <Text color={s.intercept.mark.color}>⤷</Text>
-              <Box flexGrow={1}>
-                <Text wrap="wrap">
-                  <Text dimColor>intercepted by </Text>
-                  <Text bold>{s.intercept.who}</Text>
-                </Text>
-              </Box>
-              <Text color={s.intercept.mark.color}>{s.intercept.state}</Text>
-            </Box>
-            {s.intercept.ports ? (
-              <Box paddingLeft={2}>
-                <Text color="suggestion">{s.intercept.ports}</Text>
-              </Box>
-            ) : null}
-            {s.intercept.notes.map(n => (
-              <Box paddingLeft={2}>
-                <Text dimColor wrap="wrap">{n}</Text>
-              </Box>
-            ))}
-          </Box>
-        ) : null}
+        {s.interceptedBy ? <Text color="suggestion">{`⤷ ${s.interceptedBy}`}</Text> : <Text dimColor>{s.state}</Text>}
       </Box>
     )
     const env = (x: Env) => (
       <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
         {head(x)}
-        {x.notes.map(n => (
-          <Box gap={1}>
-            <Text color={n.mark.color}>{n.mark.glyph}</Text>
-            <Text color={n.mark.color} wrap="wrap">{n.text}</Text>
-          </Box>
-        ))}
-        <Box flexDirection="column" marginTop={x.services.length ? 1 : 0}>
-          {x.services.length ? x.services.map(service) : <Text dimColor>No services</Text>}
-        </Box>
+        {x.services.length ? (
+          <Box flexDirection="column" marginTop={1}>{x.services.map(service)}</Box>
+        ) : null}
       </Box>
     )
     const section = (title: string, count: number, body: unknown) => (
