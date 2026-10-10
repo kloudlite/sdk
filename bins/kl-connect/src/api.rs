@@ -78,6 +78,20 @@ pub async fn list(
     json(req.send().await.map_err(|e| Error::Other(e.to_string()))?).await
 }
 
+/// `GET /v1/environments`: the api takes the team as `?owner=`, not `?team=`.
+pub async fn list_envs(
+    cfg: &crate::config::Config,
+    team: Option<&str>,
+) -> Result<Vec<crate::status::Env>, Error> {
+    let mut req = client()
+        .get(format!("{}/v1/environments", cfg.api))
+        .bearer_auth(&cfg.token);
+    if let Some(t) = team {
+        req = req.query(&[("owner", t)]);
+    }
+    json(req.send().await.map_err(|e| Error::Other(e.to_string()))?).await
+}
+
 /// `target` is an id or a name; the api resolves either (see `api::ssh_session` on the server).
 ///
 /// PERCENT-ENCODED into the path: the name comes from a person's command line, and a `/` or a `?`

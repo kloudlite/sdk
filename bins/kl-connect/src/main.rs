@@ -14,6 +14,7 @@ mod mcp;
 mod mode;
 mod proxy;
 mod sshconfig;
+mod status;
 mod ws;
 
 use clap::{Parser, Subcommand};
@@ -85,6 +86,8 @@ enum ModeCmd {
     Gate,
     /// UserPromptSubmit: switch kl mode on `/kloudlite:on|off`
     Prompt,
+    /// statusLine: workspaces and environments with their states while kl mode is on
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -154,6 +157,7 @@ async fn run(cmd: &Cmd) -> Result<(), String> {
         },
         Cmd::BenchProxy { team } => bench::proxy(team.as_deref()).await,
         Cmd::Mcp { team } => mcp::mcp(team.as_deref().filter(|t| !t.is_empty())).await,
+        Cmd::Mode { cmd: ModeCmd::Status } => status::run().await,
         Cmd::Mode { cmd } => mode::run(matches!(cmd, ModeCmd::Gate)),
     }
 }

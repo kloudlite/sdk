@@ -33,6 +33,11 @@ fn key(input: &Value) -> Option<String> {
     (!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then(|| s.to_string())
 }
 
+/// Whether kl mode is on for the session this hook or status-line input names.
+pub fn is_on(input: &Value) -> bool {
+    dirs::home_dir().and_then(|h| flag(&h.join(".claude/kl-mode"), input)).is_some_and(|f| f.exists())
+}
+
 fn flag(dir: &Path, input: &Value) -> Option<PathBuf> {
     key(input).map(|k| dir.join(k))
 }
