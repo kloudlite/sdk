@@ -204,6 +204,8 @@ export interface Backend {
   settings: { write(patch: Partial<Settings>): Promise<void> };
   /** The space's real workspaces and environments; never throws, `available: false` says why. */
   space(): Promise<SpaceView>;
+  /** One JSON-RPC message from the laptop MCP door (mcp.ts); the reply, null for a notification. */
+  mcp?(msg: unknown): Promise<unknown>;
   models: { refresh(): Promise<CatalogModel[]> };
   auth: {
     providers(): Promise<ProviderAuth[]>;

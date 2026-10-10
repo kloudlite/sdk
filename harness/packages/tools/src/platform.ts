@@ -3,6 +3,8 @@
 //! EVERY call, never cached. Non-2xx comes back as text for the model, never a throw.
 //! Main sessions get the whole table; a workspace session gets the subset its own token's
 //! route list allows (WORKSPACE_TOOL_ROUTES), with its workspace fixed and `env` defaulted.
+//! `all` (the laptop MCP door, backend/src/mcp.ts) is main's table plus the workspace-only tools,
+//! each aimed by a required `workspace`/`env`.
 import { readFileSync } from "node:fs";
 import type { ToolDef } from "./index.ts";
 
@@ -125,7 +127,7 @@ async function load(path: string): Promise<{ doc: any } | { err: string }> {
   return { doc: r.data };
 }
 
-export function platformTools(kind: "main" | "workspace", wsId?: string): ToolDef[] {
+export function platformTools(kind: "main" | "workspace" | "all", wsId?: string): ToolDef[] {
   const ws = kind === "workspace";
   const W = ws ? `/v1/workspaces/${seg(wsId!)}` : "";
   const wsPath = (a: any) => (ws ? W : `/v1/workspaces/${seg(a.workspace)}`);
@@ -241,7 +243,7 @@ export function platformTools(kind: "main" | "workspace", wsId?: string): ToolDe
   const lifecycle = (name: string, description: string, method: string, suffix: string, key = "workspace", base = "/v1/workspaces") =>
     def(name, description, { [key]: key === "env" ? ENV : WS }, [key], async (a) => api(method, `${base}/${seg(a[key])}${suffix}`));
 
-  return [
+  const main: ToolDef[] = [
     def("workspace_list", "List the workspaces of the person. You can give one team.", { team: S }, [], async (a) => api("GET", `/v1/workspaces${qs({ team: a.team })}`)),
     def("workspace_get", "Read the state of one workspace. Poll this tool after any lifecycle call. The `state` is `creating`, `ready`, `stopped`, `error` or `deleted`. `ready` means up. A workspace is not `running` at any time. Stop the poll when the state is `error` or `deleted`.", { workspace: WS }, ["workspace"], async (a) => api("GET", `/v1/workspaces/${seg(a.workspace)}`)),
     def("workspace_create", "Create a workspace in a region." + ASYNC, { name: S, region: S, quota_gb: N, image: S, repo: S, branch: S, packages: SL, team: S }, ["name", "region", "quota_gb"], async (a) =>
@@ -303,4 +305,7 @@ export function platformTools(kind: "main" | "workspace", wsId?: string): ToolDe
     ),
     def("regions", "List the regions where workspaces and environments can be created.", {}, [], async () => api("GET", "/v1/regions")),
   ];
+  if (kind !== "all") return main;
+  const have = new Set(main.map((t) => t.name));
+  return [...main, ...shared.filter((t) => !have.has(t.name))];
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { podTools } from "./pod.ts";
+import { anyPodTools, podTools } from "./pod.ts";
 
 const realFetch = globalThis.fetch;
 let log: { url: string; auth: string | null }[] = [];
@@ -88,4 +88,23 @@ test("a 4xx from a pod tool throws with tool name and status; a non-zero exit st
   const t = await podTools("w1");
   await expect(t.find((x) => x.name === "read")!.run({ path: "x" })).rejects.toThrow('read 404: no such file');
   expect(await t.find((x) => x.name === "exec")!.run({ cmd: "false" })).toContain('"exit_code": 3');
+});
+
+test("anyPodTools: schemas from the sample, each call reaches the named workspace, a stopped one says not ready", async () => {
+  handler = (u) =>
+    u.endsWith("/v1/workspaces/w1/tools") ? j({ address: "10.0.0.1:7788" })
+    : u.endsWith("/v1/workspaces/w2/tools") ? j({ address: "10.0.0.2:7788" })
+    : u.endsWith("/v1/workspaces/off/tools") ? j({ error: "workspace not ready" }, 409)
+    : u.endsWith(":7788/tools") ? j({ tools: [{ name: "read", description: "Read a file", schema: { type: "object", properties: { path: {} }, required: ["path"] } }] })
+    : j({ at: u });
+  const t = await anyPodTools("w1");
+  expect(t.length).toBe(23);
+  const read = t.find((x) => x.name === "read")!;
+  expect(read.inputSchema).toEqual({ type: "object", properties: { workspace: { type: "string", description: "Workspace id" }, path: {} }, required: ["workspace", "path"] });
+  expect(read.description).toBe("Read a file Runs in the workspace named by `workspace`.");
+  expect(await read.run({ workspace: "w2", path: "a" })).toContain("http://10.0.0.2:7788/tools/read");
+  const posted = log.filter((l) => l.url.endsWith("/tools/read")).map((l) => l.url);
+  expect(posted).toEqual(["http://10.0.0.2:7788/tools/read"]);
+  await expect(read.run({ workspace: "off", path: "a" })).rejects.toThrow("workspace not ready");
+  await expect(read.run({ path: "a" })).rejects.toThrow("workspace is required");
 });

@@ -93,7 +93,7 @@ pub async fn proxy(team: Option<&str>) -> Result<(), String> {
 /// One connection's lifetime: wait for the bench to be `Ready` (re-asking every 1 s while it
 /// answers `Waking`; the state goes to stderr, which kl-tui shows), then dial its TUI door and pump.
 /// `r` is never read before the pump starts — bytes written while the bench slept still arrive.
-async fn serve<R, W>(cfg: &Config, team: Option<&str>, r: R, w: W) -> Result<(), String>
+pub(crate) async fn serve<R, W>(cfg: &Config, team: Option<&str>, r: R, w: W) -> Result<(), String>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
