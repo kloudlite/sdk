@@ -1,5 +1,5 @@
-// The Kloudlite side pane: workspaces, environments (with their services) and this session's
-// agents, each with its state, beside the transcript while kl mode is on. kl mode is the flag file
+// The Kloudlite side pane: workspaces and environments, each environment with its services (ports,
+// readiness, intercepts), beside the transcript while kl mode is on. kl mode is the flag file
 // `~/.claude/kl-mode/<session id>` that `kl-connect mode prompt` writes on /kloudlite:on, so the
 // pane follows the same switch as the tool gate: it opens with it and closes with it.
 //
@@ -8,15 +8,15 @@
 // last answer skips, so a slow api never stacks calls. A failed call keeps the last lists and shows
 // the error under them. A pane the person closes stays closed until kl mode goes off and on.
 import type { Register } from 'claude-code'
-import { mark, rows, type Agent, type Row } from './panel'
+import { environments, mark, workspaces, type Env, type Row, type Service } from './panel'
 
 const PANE = 'kloudlite'
 
 const state = {
   ws: [] as Row[],
-  envs: [] as Row[],
-  agents: [] as Agent[],
+  envs: [] as Env[],
   error: '',
+  at: '', // HH:MM:SS of the last good answer
   busy: false,
   open: false,
 }
@@ -41,16 +41,16 @@ export const register: Register = on => {
           else await $.ui.close({ id: PANE })
         }
         if (!lit) return
-        state.agents = (await $.agent.list()).map(a => ({ name: a.name ?? a.description, status: a.status }))
         const kl = await $.mcp.connect('kl')
         if (!kl.isConnected) throw new Error(`kl server: ${kl.message ?? kl.reason ?? 'not connected'}`)
         const [ws, envs] = await Promise.all([
           $.mcp.call(kl.server, 'workspace_list', args),
           $.mcp.call(kl.server, 'env_list', args),
         ])
-        state.ws = rows(text(ws))
-        state.envs = rows(text(envs))
+        state.ws = workspaces(text(ws))
+        state.envs = environments(text(envs), state.ws)
         state.error = ''
+        state.at = new Date().toTimeString().slice(0, 8)
       } catch (err: any) {
         state.error = String(err?.message ?? err)
       } finally {
@@ -63,31 +63,112 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const line = (r: { name: string; state: string; detail?: string }) => {
+    // one row: dot, name, then the state flush right
+    const head = (r: Row, bold = true) => {
       const m = mark(r.state)
       return (
-        <Box flexDirection="column">
-          <Box gap={1}>
-            <Text color={m.color}>{m.glyph}</Text>
-            <Text wrap="truncate-end">{r.name}</Text>
-            <Text dimColor>{r.state}</Text>
+        <Box gap={1}>
+          <Text color={m.color}>{m.glyph}</Text>
+          <Box flexGrow={1}>
+            <Text bold={bold} wrap="truncate-end">{r.name}</Text>
           </Box>
-          {r.detail ? <Text dimColor wrap="wrap">{`  ${r.detail}`}</Text> : null}
+          <Text color={m.color}>{r.state}</Text>
         </Box>
       )
     }
-    const section = (title: string, items: { name: string; state: string; detail?: string }[]) => (
+    const service = (s: Service) => (
+      <Box flexDirection="column">
+        <Box gap={1}>
+          <Text color={s.mark.color}>{s.mark.glyph}</Text>
+          <Box flexGrow={1} gap={2}>
+            <Text wrap="truncate-end">{s.name}</Text>
+            <Text color="suggestion">{s.ports}</Text>
+          </Box>
+          <Text dimColor>{s.state}</Text>
+        </Box>
+        {s.message ? (
+          <Box paddingLeft={2}>
+            <Text color="error" wrap="wrap">{s.message}</Text>
+          </Box>
+        ) : null}
+        {s.intercept ? (
+          <Box flexDirection="column" paddingLeft={2}>
+            <Box gap={1}>
+              <Text color={s.intercept.mark.color}>⤷</Text>
+              <Box flexGrow={1}>
+                <Text wrap="wrap">
+                  <Text dimColor>intercepted by </Text>
+                  <Text bold>{s.intercept.who}</Text>
+                </Text>
+              </Box>
+              <Text color={s.intercept.mark.color}>{s.intercept.state}</Text>
+            </Box>
+            {s.intercept.ports ? (
+              <Box paddingLeft={2}>
+                <Text color="suggestion">{s.intercept.ports}</Text>
+              </Box>
+            ) : null}
+            {s.intercept.notes.map(n => (
+              <Box paddingLeft={2}>
+                <Text dimColor wrap="wrap">{n}</Text>
+              </Box>
+            ))}
+          </Box>
+        ) : null}
+      </Box>
+    )
+    const env = (x: Env) => (
+      <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
+        {head(x)}
+        {x.notes.map(n => (
+          <Box gap={1}>
+            <Text color={n.mark.color}>{n.mark.glyph}</Text>
+            <Text color={n.mark.color} wrap="wrap">{n.text}</Text>
+          </Box>
+        ))}
+        <Box flexDirection="column" marginTop={x.services.length ? 1 : 0}>
+          {x.services.length ? x.services.map(service) : <Text dimColor>No services</Text>}
+        </Box>
+      </Box>
+    )
+    const section = (title: string, count: number, body: unknown) => (
       <Box flexDirection="column" marginBottom={1}>
-        <Text bold>{title}</Text>
-        {items.length ? items.map(line) : <Text dimColor>none</Text>}
+        <Box justifyContent="space-between" marginBottom={1}>
+          <Text bold color="claude">{title}</Text>
+          <Text dimColor>{String(count)}</Text>
+        </Box>
+        {body}
       </Box>
     )
     return (
-      <Box flexDirection="column">
-        {section('Workspaces', state.ws)}
-        {section('Environments', state.envs)}
-        {section('Agents', state.agents.map(a => ({ name: a.name, state: a.status })))}
-        {state.error ? <Text color="red" wrap="wrap">{state.error}</Text> : null}
+      <Box flexDirection="column" paddingX={2} paddingY={1}>
+        <Box justifyContent="space-between" marginBottom={1}>
+          <Text bold>KLOUDLITE</Text>
+          <Text dimColor>{state.at ? `updated ${state.at}` : 'loading…'}</Text>
+        </Box>
+        {section(
+          'WORKSPACES',
+          state.ws.length,
+          state.ws.length ? (
+            <Box flexDirection="column">{state.ws.map(w => head(w, false))}</Box>
+          ) : (
+            <Text dimColor>No workspaces</Text>
+          ),
+        )}
+        {section(
+          'ENVIRONMENTS',
+          state.envs.length,
+          state.envs.length ? (
+            <Box flexDirection="column" gap={1}>{state.envs.map(env)}</Box>
+          ) : (
+            <Text dimColor>No environments</Text>
+          ),
+        )}
+        {state.error ? (
+          <Box borderStyle="round" borderColor="error" paddingX={1}>
+            <Text color="error" wrap="wrap">{state.error}</Text>
+          </Box>
+        ) : null}
       </Box>
     )
   })
