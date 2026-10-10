@@ -28,8 +28,12 @@ test("every mcp__plugin_kloudlite_kl__ name in the plugin is one the bench serve
     for (const m of text.matchAll(/mcp__plugin_kloudlite_kl__([a-z_]+)/g)) expect(names.has(m[1]!) ? m[1] : `missing: ${m[1]}`).toBe(m[1]!);
 });
 
-test("the two agents have the kl tools only", () => {
+test("the two agents have the kl tools only, and no lifecycle tool", () => {
   const a = agents();
   expect(a.length).toBe(2);
-  for (const text of a) expect(text.match(/^tools: (.*)$/m)?.[1]).toBe("mcp__plugin_kloudlite_kl__*");
+  for (const text of a) {
+    const tools = text.match(/^tools: (.*)$/m)![1]!.split(", ");
+    for (const t of tools) expect(t).toStartWith("mcp__plugin_kloudlite_kl__");
+    for (const t of tools) expect(t).not.toMatch(/__(workspace_(list|create|clone|restore|start|stop|delete|push)|env_(create|start|stop|delete|clone|push|restore.*))$/);
+  }
 });
