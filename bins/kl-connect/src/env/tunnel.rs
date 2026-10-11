@@ -66,7 +66,9 @@ pub async fn bring_up(cfg: &Config, team: &str, secret: &StaticSecret) -> Result
 
     let mut c = tun::Configuration::default();
     c.address(welcome.addr).destination(GATEWAY).netmask(Ipv4Addr::new(255, 255, 255, 255)).mtu(MTU).up();
-    // We add the one route we want ourselves; the crate's own would route the /32 peer.
+    // We add the one route we want ourselves; the crate's own would route the /32 peer. macOS-only
+    // knob: the workspace build compiles this binary on Linux too.
+    #[cfg(target_os = "macos")]
     c.platform_config(|p| {
         p.enable_routing(false);
     });
