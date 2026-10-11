@@ -218,15 +218,14 @@ async fn a_path_that_is_not_a_browse_route_never_reaches_upstream() {
 async fn an_unreachable_fleet_is_a_502_not_a_hang() {
     let e = common::env().await;
     // A port nothing listens on: the api process holds no repo state, so a dead fleet is the only
-    // thing it can report.
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // thing it can report. Port 1, not a bound-then-dropped ephemeral port: a parallel test's
+    // upstream could take that port back, answer 200 here and count a hit it never caused.
     let dead = Upstream {
-        addr: l.local_addr().unwrap(),
+        addr: "127.0.0.1:1".parse().unwrap(),
         hits: Arc::new(AtomicUsize::new(0)),
         seen: Arc::new(Mutex::new(HeaderMap::new())),
         saw_path: Arc::new(Mutex::new(String::new())),
     };
-    drop(l);
     let base = api(&e, &dead).await;
     let r = reqwest::get(format!("{base}/api/alice/web/refs"))
         .await
