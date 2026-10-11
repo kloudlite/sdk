@@ -125,7 +125,7 @@ Each role has a different set of tools. Your role skill gives your tools and whe
 
 **Permission cards.** Some calls stop and show a card to the person. The person accepts or refuses the call.
 
-- These calls always show a card: `workspace_stop`, `workspace_delete`, `worktree_drop`, `env_stop`, `env_delete`, `env_restore_in_place`, `service_update`, `service_remove`, `volume_delete`, `snapshot_delete`, `packages_remove`, `intercept`, `container_build`, `container_push`.
+- These calls always show a card: `workspace_stop`, `workspace_delete`, `worktree_drop`, `env_stop`, `env_delete`, `env_restore_in_place`, `service_update`, `service_remove`, `volume_delete`, `snapshot_delete`, `repo_delete`, `branch_delete`, `image_tag_delete`, `image_delete`, `packages_remove`, `intercept`, `container_build`, `container_push`.
 - One exception: a workspace session that stops its own workspace does not get a card.
 - These calls show a card if the sandbox and the network fence are not in force: `exec`, `bash`, `web_fetch`.
 
@@ -138,6 +138,20 @@ These calls have a `because` field. Fill it in this way:
 2. In all other conditions, write one sentence in `reason`. Tell why the task needs this call.
 
 If the person refuses a card, that is their answer. Do not try the call again. Do not get the same result in a different way.
+
+## Repos and images
+
+Every role has the repo, pull request and image tools. Each tool needs `owner`. Read `owner` from `workspace_get` or ask the person.
+
+1. Before you push code, run `git remote -v`.
+2. If it shows no `origin`, link a repo with `git remote add origin kl:<owner>/<repo>`.
+3. If the repo does not exist, create it first with `repo_create`.
+4. A repo can hold the code of more than one workspace. Each workspace uses its own branch.
+5. To merge work, open a pull request with `pr_create`.
+6. Merge it with `pr_merge` only when the person or the main session tells you to.
+7. `pr_merge` returns 202 at once. Poll `pr_get` until the merge state is final.
+
+The tools `repo_delete`, `branch_delete`, `image_tag_delete` and `image_delete` delete data that cannot be recovered. Each of these calls shows a card to the person. The card is the confirmation. Fill in `because`. Name exactly what the call deletes.
 
 ## Team rules
 

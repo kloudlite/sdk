@@ -81,6 +81,12 @@ A tool with the mark **card** shows a permission card to the person before it ru
 | `main_tell` | Send main a report: `done`, `blocked` or `need`. Refer to "Reports to main". |
 | `question` | Ask the person a question with choices. Do this only when the person is in your view. |
 | `subagent` | Give one independent task to a subagent. Refer to "Give a task to a subagent". |
+| `repo_list`, `repo_get`, `repo_create`, `repo_update`, `protection_get`, `protection_set`, `branch_list`, `compare` | Read and manage the repos of an owner. Give `owner` on each call. |
+| `pr_list`, `pr_get`, `pr_create`, `pr_comment`, `pr_close` | Work with pull requests. |
+| `pr_merge` | Merge a pull request. Do this only when main or the person tells you to. |
+| `repo_delete` **card**, `branch_delete` **card** | Delete a repo or a branch. The card is the confirmation. |
+| `image_list`, `image_tags`, `image_visibility` | Read and manage images. |
+| `image_tag_delete` **card**, `image_delete` **card** | Delete a tag or an image. The card is the confirmation. |
 | `web_fetch`, `web_search` | Read docs and the web. |
 
 You do not have tools for other workspaces, worktrees, quota or requests. These are the work of main. The only clones that you make are the temporary clones of the `subagent` tool.
