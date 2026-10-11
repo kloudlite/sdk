@@ -6,6 +6,10 @@
 //! `UserPromptSubmit` hook, before the command's own body runs.
 //!
 //! An allow list, not a deny list: a tool Claude Code adds later is denied until named here.
+//!
+//! The read-only kl tools are also ALLOWED outright, mode on or off: without an answer from this
+//! hook, auto mode's classifier judges every kl call and refused `workspace_list` (2026-10-11).
+//! Anything that changes a workspace, an environment or a volume still goes to the classifier.
 //! Spec: docs/superpowers/specs/2026-10-11-laptop-kl-plugin-design.md.
 
 use std::io::Read;
@@ -19,6 +23,15 @@ const ALLOWED: &[&str] = &[
     "Agent", "Task", "Skill", "ToolSearch", "AskUserQuestion", "SendMessage", "TaskCreate", "TaskUpdate", "TaskList",
     "TaskGet", "TodoWrite",
 ];
+/// kl tools that only read: lists, docs, history, files and the code graph. `graft_build` writes
+/// the graph cache and `web_*` reach outside, so they stay with the classifier.
+const READ_ONLY: &[&str] = &[
+    "workspace_list", "workspace_get", "env_list", "env_get", "volume_list", "volume_history", "volume_refs",
+    "requests_list", "request_get", "builder_status", "quota", "regions", "space_env_current", "packages_list",
+    "read", "glob", "grep", "process_list", "process_output", "watch_poll", "graft_find_code", "graft_find_all",
+    "graft_trace_calls", "graft_file_api", "graft_repo_map", "graft_blast",
+];
+const ALLOW_REASON: &str = "kl: read-only tool";
 pub const DENY_REASON: &str = "kl mode: use the kl tools; nothing runs on this laptop";
 const ON_CONTEXT: &str = "kl mode is on: work only through the kl tools; nothing runs on this laptop.";
 
@@ -37,16 +50,21 @@ fn flag(dir: &Path, input: &Value) -> Option<PathBuf> {
     key(input).map(|k| dir.join(k))
 }
 
-/// The `PreToolUse` answer: a deny line while the mode is on and the tool is not allowed.
+/// The `PreToolUse` answer: allow a read-only kl tool; deny while the mode is on and the tool is
+/// not allowed; otherwise nothing, and Claude Code's own permission mode decides.
 pub fn gate(dir: &Path, input: &Value) -> Option<String> {
     let on = flag(dir, input).is_some_and(|f| f.exists());
     let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("");
-    (on && !allowed(tool)).then(|| {
+    let answer = |decision: &str, reason: &str| {
         json!({ "hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": DENY_REASON,
+            "hookEventName": "PreToolUse", "permissionDecision": decision, "permissionDecisionReason": reason,
         } })
         .to_string()
-    })
+    };
+    if tool.strip_prefix(KL_PREFIX).is_some_and(|t| READ_ONLY.contains(&t)) {
+        return Some(answer("allow", ALLOW_REASON));
+    }
+    (on && !allowed(tool)).then(|| answer("deny", DENY_REASON))
 }
 
 /// The `UserPromptSubmit` answer: switch the mode on `/kloudlite:on|off`, then add the context
@@ -105,11 +123,28 @@ mod tests {
     fn on_allows_kl_and_coordination_only() {
         let d = tmp("on");
         assert!(prompt(&d, &input("", "/kloudlite:on")).unwrap().unwrap().contains(ON_CONTEXT));
-        for t in ["mcp__plugin_kloudlite_kl__read", "mcp__plugin_kloudlite_kl__exec", "Agent", "Skill", "SendMessage", "TodoWrite"] {
+        for t in ["mcp__plugin_kloudlite_kl__exec", "mcp__plugin_kloudlite_kl__env_delete", "Agent", "Skill", "SendMessage", "TodoWrite"] {
             assert_eq!(gate(&d, &input(t, "")), None, "{t}");
         }
         for t in ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit", "mcp__serena__find_symbol", "mcp__kl__read"] {
             assert!(gate(&d, &input(t, "")).unwrap().contains(DENY_REASON), "{t}");
+        }
+    }
+
+    #[test]
+    fn read_only_kl_tools_are_allowed_mode_on_or_off() {
+        let d = tmp("ro");
+        for on in [false, true] {
+            if on {
+                prompt(&d, &input("", "/kloudlite:on")).unwrap();
+            }
+            for t in ["workspace_list", "env_get", "read", "graft_repo_map"] {
+                assert!(gate(&d, &input(&format!("{KL_PREFIX}{t}"), "")).unwrap().contains(ALLOW_REASON), "{t} on={on}");
+            }
+            for t in ["exec", "write", "env_delete", "workspace_stop", "graft_build", "web_fetch"] {
+                assert_eq!(gate(&d, &input(&format!("{KL_PREFIX}{t}"), "")), None, "{t} on={on}");
+            }
+            assert_eq!(gate(&d, &input("mcp__kl__workspace_list", "")).is_some(), on); // not our plugin's server
         }
     }
 
