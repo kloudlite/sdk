@@ -28,10 +28,10 @@ rules:
     verbs: ["get", "list", "create", "patch"]
   # A person's space environment (`/v1/me/environments`): spec the api writes by server-side apply
   # (`create` + `patch`); `delete` is the person's DELETE and `delete_env`'s by-label sweep (a
-  # departed member's choice is the controller's GC, not this).
+  # departed member's choice is the controller's GC, not this); `watch` is `/v1/me/environments/watch`.
   - apiGroups: ["kloudlite.io"]
     resources: ["spaceenvironments"]
-    verbs: ["get", "list", "create", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   # Read-only, one object: the migration clears the retired `attachedEnvironment` only once the
   # agent DaemonSet has fully rolled a template carrying `kloudlite.io/space-env`.
   - apiGroups: ["apps"]

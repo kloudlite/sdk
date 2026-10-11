@@ -91,7 +91,7 @@ use environments::{
     patch_env_services, restore_env_in_place, set_intercept, start_env, stop_env,
 };
 use bench::{bench_session, bench_teams, create_bench, get_bench, start_bench, stop_bench};
-use me::{attach_gone, clear_my_environment, list_my_environments, set_my_environment};
+use me::{attach_gone, clear_my_environment, list_my_environments, set_my_environment, watch_my_environments};
 use push::{push_env, push_ws};
 use volumes::{delete_snapshot, delete_volume, list_volumes, volume_history, volume_refs};
 use workspaces::{
@@ -238,6 +238,7 @@ mod route_tests {
         "/v1/internal/builders/{slug}/stop",
         "/v1/teams/{slug}/members/{email}/delete-now",
         "/v1/teams/{slug}/removals",
+        "/v1/me/environments/watch",
         "/v1/bench",
         "/v1/bench/teams",
         "/v1/bench/start",
@@ -421,6 +422,7 @@ pub fn router(state: Arc<ApiState>) -> Router {
         .route("/v1/workspaces/{id}/attach", post(attach_gone))
         .route("/v1/workspaces/{id}/detach", post(attach_gone))
         .route("/v1/me/environments", get(list_my_environments))
+        .route("/v1/me/environments/watch", get(watch_my_environments))
         .route("/v1/me/environments/{team}", axum::routing::put(set_my_environment).delete(clear_my_environment))
         .route("/v1/workspaces/{id}/ssh-session", post(ssh_session))
         .route("/v1/environments", post(create_env).get(list_env))
