@@ -985,6 +985,15 @@ export function App({
         .catch((e) => done({ error: String(e?.message ?? e) }));
       return;
     }
+    if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+      const instructions = trimmed.slice(8).trim();
+      const key = activeKey;
+      // pi's compaction_end already shows a failure, so the catch only keeps the rejection from going unhandled
+      ensureAgent(key)
+        .then((a) => (a.busy ? append(key, { kind: "info", text: "a turn is running; /compact after it ends" }) : a.compact(instructions || undefined)))
+        .catch(() => {});
+      return;
+    }
     if (trimmed === "/clear") {
       // the daemon archives the transcript and tells every view (this one included) to reopen empty
       void backend().sessions.clear(activeKey).catch((e) => append(activeKey, { kind: "error", text: String(e.message ?? e) }));

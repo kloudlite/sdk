@@ -9,6 +9,7 @@ export const commands: SlashCommand[] = [
   { name: "/help", description: "Keyboard shortcuts and commands" },
   { name: "/tools", description: "List registered tools" },
   { name: "/clear", description: "Clear the transcript" },
+  { name: "/compact", description: "Compact the context now; text after it says what to keep" },
   { name: "/session", description: "Name or continue a main session", hasOptions: true },
   { name: "/model", description: "Set this session's model", hasOptions: true },
   { name: "/theme", description: "Switch theme", hasOptions: true },

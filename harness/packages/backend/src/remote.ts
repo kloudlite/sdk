@@ -96,6 +96,7 @@ export class RemoteBackend implements Backend {
       followUp: call("followUp"),
       clearQueue: call("clearQueue"),
       btw: (q: string) => this.peer.request<string>("session.call", { key, method: "btw", args: [q] }),
+      compact: call("compact"),
       abort: call("abort"),
       setModel: call("setModel"),
       setThinkingLevel: call("setThinkingLevel"),

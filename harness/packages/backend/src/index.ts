@@ -173,6 +173,8 @@ export type SessionHandle = {
   clearQueue(): Promise<void>;
   /** Side question answered from the conversation so far; never recorded anywhere. */
   btw(question: string): Promise<string>;
+  /** Compact the context now; pi's compaction events report the result. */
+  compact(instructions?: string): Promise<void>;
   abort(): Promise<void>;
   dispose(): Promise<void>;
   setModel(ref: ModelRef): Promise<void>;

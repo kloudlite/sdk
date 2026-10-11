@@ -117,6 +117,14 @@ function promptAgent(messages: unknown[]) {
 const blank = (): any => ({ type: "session_state", model: { provider: "p", id: "m" }, thinkingLevel: "off", autoCompact: true, codemode: false, queued: { steering: [], followUp: [] }, tokens: 0 });
 const handleOf = (agent: any, key: string) => baseHandle(agent, key, { busy: new Set(), onEnd() {}, onDispose() {}, state: blank() });
 
+test("compact passes instructions to pi, empty becomes undefined", async () => {
+  const seen: unknown[] = [];
+  const h = handleOf({ subscribe: () => () => {}, messages: [], compact: async (i?: string) => void seen.push(i), dispose() {} }, "main");
+  await h.compact("");
+  await h.compact("x");
+  expect(seen).toEqual([undefined, "x"]);
+});
+
 test("the role card rides the first prompt only, and never a resumed session's", async () => {
   const fresh = promptAgent([]);
   const h = handleOf(fresh, "main");
