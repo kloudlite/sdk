@@ -52,6 +52,8 @@ RUN chmod 0755 /etc/kl/sv/*/run
 
 # TMPDIR: a private dir under the shared /tmp emptyDir, made by bench/sv/sessions/run.
 ENV TMPDIR=/tmp/kl
+# Plain-text tool results go to the region's Kompress model (deploy/k3s/kompress.yaml); unreachable = rules only.
+ENV KL_KOMPRESS_URL=http://kloudlite-kompress.kloudlite-system.svc:8787
 
 # node:24-bookworm-slim ships uid/gid 1000 as `node`; rename rather than useradd a second uid 1000
 # (plan R3). Home is the workspace volume (2026-09-22 ruling): /home/kl IS the mounted volume.
