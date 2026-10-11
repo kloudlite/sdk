@@ -11,6 +11,26 @@ const METHODS = new Set([
   "setModel", "setThinkingLevel", "setAutoCompactionEnabled", "setCodemode",
 ]);
 
+/** pi's `message_update` carries the WHOLE partial message per token, twice (`message` and
+ * `assistantMessageEvent.partial`, pi-agent-core agent-loop.js): forwarded as is, a long answer or
+ * tool call is quadratic on the wire (2026-10-11: 322 MB to one laptop in three minutes, queued in
+ * the daemon's socket buffer until the bench sandbox was OOM-killed mid-turn, twice). So the wire
+ * carries only the token: text and thinking deltas (a block's start is an empty one), and a tool
+ * call's header so content indexes stay true. Tool-call arguments are not streamed: nothing renders
+ * them before `tool_execution_start`, and `message_end` carries the finished message. A connection
+ * that joins mid-message gets that message whole once, then deltas. remote.ts rebuilds it. */
+function delta(e: any): unknown {
+  const a = e.assistantMessageEvent ?? {};
+  const i = a.contentIndex;
+  const [kind, step] = String(a.type).split("_");
+  if ((kind === "text" || kind === "thinking") && step !== "end") return { type: "message_update", i, kind, delta: a.delta ?? "" };
+  if (a.type === "toolcall_start") {
+    const { id, name } = e.message.content[i] ?? {};
+    return { type: "message_update", i, kind: "toolCall", id, name };
+  }
+  return undefined; // a block's end adds nothing its deltas did not
+}
+
 export function serve(backend: Backend, peer: Peer) {
   const open = new Map<string, SessionHandle>();
 
@@ -29,7 +49,15 @@ export function serve(backend: Backend, peer: Peer) {
       client: true,
     });
     open.set(key, h);
-    h.subscribe((event) => peer.emit("session", key, event));
+    let streaming = false; // this connection has the in-progress message: deltas suffice
+    h.subscribe((event: any) => {
+      if (event.type === "message_start") streaming = event.message?.role === "assistant";
+      else if (event.type === "message_end") streaming = false;
+      if (event.type !== "message_update") return peer.emit("session", key, event);
+      if (!streaming) return (streaming = true), peer.emit("session", key, { type: "message_update", message: event.message });
+      const d = delta(event);
+      if (d) peer.emit("session", key, d);
+    });
     return { messages: h.messages, busy: h.busy, state: h.state };
   });
 

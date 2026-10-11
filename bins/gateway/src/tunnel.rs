@@ -293,6 +293,10 @@ async fn connect(gw: Arc<Gateway>, ws: String, headers: HeaderMap, upgrade: WebS
     };
     // ssh and the TUI wire are interactive: a keystroke must not wait for Nagle to batch it with the next one.
     let _ = tcp.set_nodelay(true);
+    // A pod whose sandbox died (OOM-killed and re-created, 2026-10-11) sends no FIN or RST, and an
+    // idle TUI writes nothing, so without keepalive this read waits forever while the laptop's
+    // Pings keep the websocket alive: kl-tui froze on the dead turn instead of saying the bench left.
+    kloudlite_core::peer::bound_dead_peer(&tcp);
     // Spent only now that the connect can actually proceed: a 409 (still starting), a 503 (at a
     // connection limit) and a 502 (pod not listening yet) are the refusals worth retrying, and
     // burning the token on any of them would turn a retryable refusal into "log in again".
