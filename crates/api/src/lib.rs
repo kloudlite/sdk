@@ -431,6 +431,11 @@ pub async fn serve(
 /// `POST /v1/repos` is here because creating a repository is one of the tools; every write it
 /// admits is still gated by `may_act_under` on the owner, exactly as the same call from a browser
 /// is. The bench adds no authority of its own — it only stops being anonymous.
+///
+/// 2026-10-11 ruling: agents manage repositories and images as the person, so the repo settings,
+/// protection, branch delete and the image routes are admitted too. Deletes are asked of the
+/// person by the harness (`DESTRUCTIVE`, or a skill rule on the laptop), not by this tier; each is
+/// still gated by `settings_caller` / `browse_caller` on the owner. `/v2` stays closed.
 pub(crate) const BENCH_PERSON_ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/repos"),
     ("POST", "/v1/repos"),
@@ -444,6 +449,17 @@ pub(crate) const BENCH_PERSON_ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/repos/{owner}/{name}/pulls/{number}/merge"),
     ("POST", "/v1/repos/{owner}/{name}/pulls/{number}/close"),
     ("POST", "/v1/repos/{owner}/{name}/commits"),
+    ("PATCH", "/v1/repos/{owner}/{name}"),
+    ("DELETE", "/v1/repos/{owner}/{name}"),
+    ("GET", "/v1/repos/{owner}/{name}/protection"),
+    ("POST", "/v1/repos/{owner}/{name}/protection"),
+    ("DELETE", "/v1/repos/{owner}/{name}/branches/{branch}"),
+    ("GET", "/api/{owner}/images"),
+    // No literal route: the GET fallback `handle` serves it (see the table test's exemption).
+    ("GET", "/api/{owner}/{image}/imagetags"),
+    ("POST", "/api/{owner}/{image}/imagetagdelete"),
+    ("POST", "/api/{owner}/{image}/imagedelete"),
+    ("POST", "/api/{owner}/{image}/imagevisibility"),
     // Reads only: which teams the person is in, and who is in one — what a repo owner picker and
     // a pull request's reviewer list are made of.
     ("GET", "/v1/teams"),
@@ -716,6 +732,16 @@ mod tests {
             (Method::POST, "/v1/repos/alice/web/pulls/7/merge"),
             (Method::POST, "/v1/repos/alice/web/pulls/7/close"),
             (Method::POST, "/v1/repos/alice/web/commits"),
+            (Method::PATCH, "/v1/repos/alice/web"),
+            (Method::DELETE, "/v1/repos/alice/web"),
+            (Method::GET, "/v1/repos/alice/web/protection"),
+            (Method::POST, "/v1/repos/alice/web/protection"),
+            (Method::DELETE, "/v1/repos/alice/web/branches/x"),
+            (Method::GET, "/api/alice/images"),
+            (Method::GET, "/api/alice/app/imagetags"),
+            (Method::POST, "/api/alice/app/imagetagdelete"),
+            (Method::POST, "/api/alice/app/imagedelete"),
+            (Method::POST, "/api/alice/app/imagevisibility"),
             (Method::GET, "/v1/teams"),
             (Method::GET, "/v1/teams/acme"),
             (Method::GET, "/v1/teams/acme/members"),
@@ -729,11 +755,10 @@ mod tests {
             (Method::POST, "/v1/keys"),
             (Method::GET, "/v1/cli/tokens"),
             (Method::GET, "/v1/tokens"),
-            // A read is admitted; the write beside it is not.
-            (Method::PATCH, "/v1/repos/alice/web"),
-            (Method::DELETE, "/v1/repos/alice/web"),
-            (Method::POST, "/v1/repos/alice/web/protection"),
-            (Method::DELETE, "/v1/repos/alice/web/branches/x"),
+            // The registry stays closed to the bench token.
+            (Method::GET, "/v2/token"),
+            (Method::DELETE, "/v2/alice/app/blobs/sha256:abc"),
+            (Method::POST, "/api/alice/app/imagerename"),
             // Team WRITES, and the admin surface.
             (Method::POST, "/v1/teams"),
             (Method::POST, "/v1/teams/acme/invites"),
@@ -748,6 +773,9 @@ mod tests {
         // Every entry names a route this tier actually serves, spelled as the router spells it.
         let src = include_str!("lib.rs");
         for (_, p) in BENCH_PERSON_ROUTES {
+            if *p == "/api/{owner}/{image}/imagetags" {
+                continue; // served by the GET fallback `handle`, which has no literal route
+            }
             assert!(src.contains(&format!("\"{p}\"")), "{p} is not a route of this tier");
         }
     }
