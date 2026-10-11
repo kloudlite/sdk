@@ -9,7 +9,9 @@
 //!
 //! The read-only kl tools are also ALLOWED outright, mode on or off: without an answer from this
 //! hook, auto mode's classifier judges every kl call and refused `workspace_list` (2026-10-11).
-//! Anything that changes a workspace, an environment or a volume still goes to the classifier.
+//! While the mode is on, EVERY kl tool is allowed too: turning it on is the person's choice to work
+//! through kl, so the classifier never stands between them and a kl call. With the mode off,
+//! anything that changes a workspace, an environment or a volume still goes to the classifier.
 //! Spec: docs/superpowers/specs/2026-10-11-laptop-kl-plugin-design.md.
 
 use std::io::Read;
@@ -32,6 +34,7 @@ const READ_ONLY: &[&str] = &[
     "graft_trace_calls", "graft_file_api", "graft_repo_map", "graft_blast",
 ];
 const ALLOW_REASON: &str = "kl: read-only tool";
+const ON_ALLOW_REASON: &str = "kl mode: kl tool";
 pub const DENY_REASON: &str = "kl mode: use the kl tools; nothing runs on this laptop";
 const ON_CONTEXT: &str = "kl mode is on: work only through the kl tools; nothing runs on this laptop.";
 
@@ -50,8 +53,9 @@ fn flag(dir: &Path, input: &Value) -> Option<PathBuf> {
     key(input).map(|k| dir.join(k))
 }
 
-/// The `PreToolUse` answer: allow a read-only kl tool; deny while the mode is on and the tool is
-/// not allowed; otherwise nothing, and Claude Code's own permission mode decides.
+/// The `PreToolUse` answer: allow a read-only kl tool, and every kl tool while the mode is on; deny
+/// while the mode is on and the tool is not allowed; otherwise nothing, and Claude Code's own
+/// permission mode decides.
 pub fn gate(dir: &Path, input: &Value) -> Option<String> {
     let on = flag(dir, input).is_some_and(|f| f.exists());
     let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("");
@@ -63,6 +67,9 @@ pub fn gate(dir: &Path, input: &Value) -> Option<String> {
     };
     if tool.strip_prefix(KL_PREFIX).is_some_and(|t| READ_ONLY.contains(&t)) {
         return Some(answer("allow", ALLOW_REASON));
+    }
+    if on && tool.starts_with(KL_PREFIX) {
+        return Some(answer("allow", ON_ALLOW_REASON));
     }
     (on && !allowed(tool)).then(|| answer("deny", DENY_REASON))
 }
@@ -123,7 +130,10 @@ mod tests {
     fn on_allows_kl_and_coordination_only() {
         let d = tmp("on");
         assert!(prompt(&d, &input("", "/kloudlite:on")).unwrap().unwrap().contains(ON_CONTEXT));
-        for t in ["mcp__plugin_kloudlite_kl__exec", "mcp__plugin_kloudlite_kl__env_delete", "Agent", "Skill", "SendMessage", "TodoWrite"] {
+        for t in ["exec", "env_delete", "workspace_stop"] {
+            assert!(gate(&d, &input(&format!("{KL_PREFIX}{t}"), "")).unwrap().contains(ON_ALLOW_REASON), "{t}");
+        }
+        for t in ["Agent", "Skill", "SendMessage", "TodoWrite"] {
             assert_eq!(gate(&d, &input(t, "")), None, "{t}");
         }
         for t in ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit", "mcp__serena__find_symbol", "mcp__kl__read"] {
@@ -142,7 +152,9 @@ mod tests {
                 assert!(gate(&d, &input(&format!("{KL_PREFIX}{t}"), "")).unwrap().contains(ALLOW_REASON), "{t} on={on}");
             }
             for t in ["exec", "write", "env_delete", "workspace_stop", "graft_build", "web_fetch"] {
-                assert_eq!(gate(&d, &input(&format!("{KL_PREFIX}{t}"), "")), None, "{t} on={on}");
+                let a = gate(&d, &input(&format!("{KL_PREFIX}{t}"), ""));
+                // off: the classifier decides; on: the mode allows it
+                assert_eq!(a.is_some_and(|a| a.contains(ON_ALLOW_REASON)), on, "{t} on={on}");
             }
             assert_eq!(gate(&d, &input("mcp__kl__workspace_list", "")).is_some(), on); // not our plugin's server
         }
