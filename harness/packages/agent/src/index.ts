@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, AuthInteraction, AuthType, Credential, Model } from "@earendil-works/pi-ai";
 import type { Registry } from "@kloudlite-tui/tools";
+import { budgeted, budgetExtension } from "./budget.ts";
 import { orphansExtension } from "./orphans.ts";
 import { CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
 
@@ -91,7 +92,8 @@ export function adaptTools(registry: Registry) {
 }
 
 export function resolveModel(ref: ModelRef): Model<Api> | undefined {
-  return models.getModel(ref.provider, ref.id);
+  const m = models.getModel(ref.provider, ref.id);
+  return m && budgeted(m);
 }
 
 type ProviderAuth = {
@@ -452,6 +454,7 @@ export async function createSession({
     // rules prepended to its description (CODEMODE_NOTE) now carry that.
     extensionFactories: [
       { name: "orphans", factory: orphansExtension },
+      { name: "budget", factory: budgetExtension },
       ...(codemode ? [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" })) }] : []),
     ],
     appendSystemPrompt: systemAppends(codemode, role),
