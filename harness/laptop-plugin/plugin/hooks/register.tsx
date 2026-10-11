@@ -14,6 +14,7 @@
 // the call ends plus `GRACE_MS`.
 import type { Register } from 'claude-code'
 import { activity, environments, mark, workspaces, type Env, type Row, type Service } from './panel'
+import { register as tools } from './tools'
 
 const PANE = 'kloudlite'
 
@@ -28,6 +29,8 @@ const state = {
 }
 
 export const register: Register = on => {
+  tools(on) // hooks.json takes one module per plugin; the kl tool rows live in tools.tsx
+
   on('tool.call', { tool: /^mcp__plugin_kloudlite_kl__/ }, async ($, e: any, next) => {
     const key = typeof e.workspace === 'string' ? e.workspace : ''
     if (!key) return next(e)
