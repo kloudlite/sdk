@@ -117,7 +117,7 @@ spec:
           image: ghcr.io/kloudlite/kloudlite-workspace:a9a838a5b7deba00a45da1ef93039c54b68a1b26@sha256:b6156d8fad69466a5edf3b006ced9ea623f3ba9bcd188b9508cf3261ae18f7f8
           command: ["true"]
         - name: warm-bench-image
-          image: ghcr.io/kloudlite/kloudlite-bench:a480e70194e95b8b12513850faf480264d07d62b@sha256:5259924a9f5b6e025e10f9a1829618090beef036017ae0c200161bc772221fbb
+          image: ghcr.io/kloudlite/kloudlite-bench:59985c55e2e59f09590e7e3d8b74a541f1dca5a8@sha256:4093f2232cc7ac511bc66ef6d70c276c8161ec4985d2259e4906c56353175758
           command: ["true"]
       containers:
         - name: agent
@@ -231,7 +231,7 @@ spec:
             # The sessions container a bench workspace's pod carries beside the workspace
             # container (a bench IS a Workspace since 2026-09-16). Pinned by deploy/pin.sh.
             - name: KLOUDLITE_BENCH_IMAGE
-              value: ghcr.io/kloudlite/kloudlite-bench:a480e70194e95b8b12513850faf480264d07d62b@sha256:5259924a9f5b6e025e10f9a1829618090beef036017ae0c200161bc772221fbb
+              value: ghcr.io/kloudlite/kloudlite-bench:59985c55e2e59f09590e7e3d8b74a541f1dca5a8@sha256:4093f2232cc7ac511bc66ef6d70c276c8161ec4985d2259e4906c56353175758
             # The forwarder that stands in for an intercepted service. Pinned by deploy/pin.sh.
             - name: WS_INTERCEPT_PROXY_IMAGE
               value: ghcr.io/kloudlite/kloudlite-intercept-proxy:a9a838a5b7deba00a45da1ef93039c54b68a1b26@sha256:6a6390f66c9b0fe4892c371af7f15a0c26b580b9f08dd50d54dbdc49f360064f
