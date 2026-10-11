@@ -61,7 +61,7 @@ You work in the pod of ONE workspace. The prompt gives its name and its id. Your
 | `service_add`, `service_update`, `service_remove` | Add or change the service of your own component in the environment. Give each service a mount for its data. |
 | `intercept`, `release` | Send the traffic of your service to your workspace, and end it. |
 | `space_env_current`, `space_env_switch`, `space_env_clear` | See or select the environment that your DNS follows. |
-| `container_build`, `container_push`, `builder_status` | Build and tag the image of your component. |
+| `container_build`, `container_push`, `builder_status` | Build and tag the real image of your component, only when the person publishes or pushes it. While you develop, use `intercept`, not a build. |
 | `web_fetch`, `web_search` | Read the web. |
 
 ## Obey the person first
