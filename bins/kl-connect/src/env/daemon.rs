@@ -1,7 +1,11 @@
-//! The root daemon's loop (spec section 2): holds one `GET /v1/me/environments/watch` open and runs a
-//! pass as soon as the selection changes, plus a 60 s beat for the rest; an environment switch keeps
-//! the tunnel and rewrites only the hosts block. A pass reads what the person chose, makes the tunnel
-//! and `/etc/hosts` match it, and say what happened in `env-status.json`. No socket: the CLI writes
+//! The root daemon's loop (spec section 2): holds `GET /v1/me/environments/watch` and, while
+//! connected, `GET /v1/environments/{id}/watch` open, and watches `/etc/hosts` itself, and runs a
+//! pass as soon as any of them moves. Every change is followed at once: a switch, services added
+//! to or readied in the environment, a person editing `/etc/hosts`. The 60 s beat only covers login
+//! expiry and a dropped tunnel (plus a 2 s retry while a new service does not resolve yet). An
+//! environment switch keeps the tunnel and rewrites only the hosts block. A pass reads what the
+//! person chose, makes the tunnel and `/etc/hosts` match it, and say what happened in
+//! `env-status.json`. No socket: the CLI writes
 //! `env.json` (the wish) under the person's config dir, which the daemon only READS (it runs as root
 //! with root's `HOME` and is told whose home to serve); the report goes to `super::STATUS` under
 //! /var/run, because root never writes inside a directory the user controls.
@@ -18,9 +22,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const HOSTS: &str = "/etc/hosts";
-// The beat now only catches services added to the environment, login expiry and a dropped tunnel;
-// a switch arrives through the watch.
+// Login expiry and a dropped tunnel; everything else arrives through a watch.
 const BEAT: Duration = Duration::from_secs(60);
+// While a service name did not resolve (its Service object is not there yet) look again soon.
+// ponytail: a name that never resolves costs one pass per 2 s; back off if that ever shows up.
+const RETRY: Duration = Duration::from_secs(2);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
 #[derive(serde::Serialize, Default, Clone)]
@@ -44,9 +50,50 @@ struct Daemon {
     backoff: Duration,
     /// The ETag of the selection the watch last returned.
     seen: Option<String>,
+    /// The ETag of the connected environment the watch last returned; cleared with the environment
+    /// so the first watch on a new one returns at once.
+    env_seen: Option<String>,
+    /// The last pass had a service name with no address yet.
+    retry: bool,
+    /// `/etc/hosts` events; the watcher must live as long as the daemon.
+    hosts_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    _hosts_watcher: Option<notify::RecommendedWatcher>,
+}
+
+/// Does this event touch the file `hosts` itself? We replace it by rename, so the directory is
+/// watched and everything else in it (our `.kl-connect.tmp`, resolv.conf) is noise.
+fn is_hosts_event(ev: &notify::Event) -> bool {
+    ev.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "hosts"))
+}
+
+/// Watches the DIRECTORY of /etc/hosts (`/etc` is a symlink to `/private/etc`). Our own rewrite
+/// fires an event too: the pass it causes finds `text == cur` and writes nothing, so no loop.
+/// `None` (logged once) if it cannot be made; the beat still runs.
+fn watch_hosts() -> (Option<tokio::sync::mpsc::UnboundedReceiver<()>>, Option<notify::RecommendedWatcher>) {
+    use notify::{RecursiveMode, Watcher};
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let made = (|| -> Result<_, String> {
+        let dir = Path::new(HOSTS).parent().unwrap().canonicalize().map_err(|e| e.to_string())?;
+        let mut w = notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
+            if r.is_ok_and(|ev| is_hosts_event(&ev)) {
+                let _ = tx.send(());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+        w.watch(&dir, RecursiveMode::NonRecursive).map_err(|e| e.to_string())?;
+        Ok(w)
+    })();
+    match made {
+        Ok(w) => (Some(rx), Some(w)),
+        Err(e) => {
+            eprintln!("kl-connect env: not watching {HOSTS}: {e}");
+            (None, None)
+        }
+    }
 }
 
 pub async fn run(home: PathBuf) -> Result<(), String> {
+    let (hosts_rx, _hosts_watcher) = watch_hosts();
     let mut d = Daemon {
         home,
         secret: StaticSecret::random_from_rng(rand_core::OsRng),
@@ -54,6 +101,10 @@ pub async fn run(home: PathBuf) -> Result<(), String> {
         last: vec![],
         backoff: Duration::from_secs(1),
         seen: None,
+        env_seen: None,
+        retry: false,
+        hosts_rx,
+        _hosts_watcher,
     };
     loop {
         match d.pass().await {
@@ -88,13 +139,22 @@ fn change(current: Option<&Space>, wanted: &Space) -> Change {
 }
 
 impl Daemon {
-    /// Returns when the watch says the selection moved, or after `beat`, whichever is first.
+    /// Returns at the first of: the selection moved, the connected environment moved, `/etc/hosts`
+    /// was touched, or the timer (`RETRY` while a name is unresolved, else `beat`).
     /// The first watch has no tag and returns at once; that one extra pass at start is the price
-    /// of never missing a switch made between a pass and its watch.
+    /// of never missing a change made between a pass and its watch.
     async fn until_change(&mut self, beat: Duration) {
         let home = self.home.clone();
-        let seen = &mut self.seen;
-        let _ = tokio::time::timeout(beat, async {
+        let env = self.current.as_ref().map(|(s, _)| s.environment.clone());
+        let wait = if self.retry { RETRY } else { beat };
+        let Self { seen, env_seen, hosts_rx, .. } = self;
+        // Events from before this wait were answered by the pass that just ran.
+        if let Some(rx) = hosts_rx.as_mut() {
+            while rx.try_recv().is_ok() {}
+        }
+        // A watch that cannot be held (old api without the route, offline) waits forever: the
+        // timer still runs the pass.
+        let spaces = async {
             loop {
                 let Ok(cfg) = crate::config::load_from(&home) else { return std::future::pending::<()>().await };
                 match api::watch_spaces(&cfg, seen.as_deref()).await {
@@ -103,12 +163,38 @@ impl Daemon {
                         return;
                     }
                     Ok(None) => {}
-                    // Old api without the route, offline: the beat still runs the pass.
                     Err(_) => return std::future::pending::<()>().await,
                 }
             }
-        })
-        .await;
+        };
+        let environment = async {
+            let Some(id) = env else { return std::future::pending::<()>().await };
+            loop {
+                let Ok(cfg) = crate::config::load_from(&home) else { return std::future::pending::<()>().await };
+                match api::watch_environment(&cfg, &id, env_seen.as_deref()).await {
+                    Ok(Some(t)) => {
+                        *env_seen = Some(t);
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(_) => return std::future::pending::<()>().await,
+                }
+            }
+        };
+        let edited = async {
+            match hosts_rx.as_mut() {
+                Some(rx) => {
+                    rx.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = spaces => {}
+            _ = environment => {}
+            _ = edited => {}
+        }
     }
 
     fn dir(&self) -> PathBuf {
@@ -163,6 +249,7 @@ impl Daemon {
             // Old addresses belong to the old environment's services.
             Change::Hosts => {
                 self.last.clear();
+                self.env_seen = None;
                 if let Some((s, _)) = &mut self.current {
                     *s = space.clone();
                 }
@@ -201,6 +288,7 @@ impl Daemon {
         if fresh.is_empty() && !names.is_empty() {
             return fail(self, "cluster DNS did not answer over the tunnel".into(), &doc.id);
         }
+        self.retry = names.iter().any(|n| !fresh.iter().any(|(m, _)| m == n));
         let entries = merge(&names, &fresh, &self.last);
         self.last = entries.clone();
         let block = hosts::Block { env: doc.id.clone(), name: doc.name.clone(), entries };
@@ -238,6 +326,7 @@ impl Daemon {
     }
 
     async fn tear_down(&mut self, remove_hosts: bool) {
+        self.env_seen = None;
         if let Some((_, up)) = self.current.take() {
             up.down().await;
         }
@@ -311,6 +400,15 @@ mod tests {
         let fresh = vec![(n("a"), ip(5))];
         let got = merge(&[n("a"), n("b"), n("new")], &fresh, &last);
         assert_eq!(got, vec![(n("a"), ip(5)), (n("b"), ip(2))]);
+    }
+
+    #[test]
+    fn only_the_hosts_file_wakes_the_daemon() {
+        let ev = |p: &str| notify::Event::new(notify::EventKind::Any).add_path(PathBuf::from(p));
+        assert!(is_hosts_event(&ev("/private/etc/hosts")));
+        assert!(!is_hosts_event(&ev("/private/etc/hosts.kl-tmp")));
+        assert!(!is_hosts_event(&ev("/private/etc/hosts.kl-connect.tmp")));
+        assert!(!is_hosts_event(&ev("/private/etc/resolv.conf")));
     }
 
     #[test]

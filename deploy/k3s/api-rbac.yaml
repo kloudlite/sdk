@@ -14,12 +14,13 @@ metadata:
   name: kloudlite-api
 rules:
   # Spec is the API's to write. It never writes status — that is the controller's, and the split is
-  # what stops the two overwriting each other's view of the same object. No `watch`: nothing in the
-  # API watches — every read is a one-shot list on a request. No `update`: every write is a
+  # what stops the two overwriting each other's view of the same object. `watch` only for the two long-poll
+  # routes, `/v1/me/environments/watch` and `/v1/environments/{id}/watch`; every other read is a
+  # one-shot list on a request. No `update`: every write is a
   # server-side `patch`, never a whole-object replace.
   - apiGroups: ["kloudlite.io"]
     resources: ["workspaces", "environments"]
-    verbs: ["get", "list", "create", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   # A Bench, like a workspace, is spec the API writes and status the agent writes. No `delete`: a
   # member leaving is a pause, then a `kloudlite.io/delete-after` mark the keys beat writes, and the
   # cluster controller's GC (controller-rbac.yaml) is what deletes a due bench.

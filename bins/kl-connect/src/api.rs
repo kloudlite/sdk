@@ -281,6 +281,27 @@ pub async fn watch_spaces(cfg: &crate::config::Config, seen: Option<&str>) -> Re
     json::<serde_json::Value>(r).await.map(|_| None)
 }
 
+/// `GET /v1/environments/{id}/watch`: same contract as `watch_spaces`, for one environment's
+/// object (services added, removed or readied). `Some(tag)` = it moved; `None` = 304.
+pub async fn watch_environment(cfg: &crate::config::Config, id: &str, seen: Option<&str>) -> Result<Option<String>, Error> {
+    let mut rb = client()
+        .get(format!("{}/v1/environments/{}/watch", cfg.api, path_segment(id)))
+        .bearer_auth(&cfg.token)
+        .timeout(std::time::Duration::from_secs(70));
+    if let Some(t) = seen {
+        rb = rb.header(reqwest::header::IF_NONE_MATCH, t);
+    }
+    let r = rb.send().await.map_err(|e| Error::Other(e.to_string()))?;
+    if r.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    if r.status().is_success() {
+        let tag = r.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        return Ok(Some(tag));
+    }
+    json::<serde_json::Value>(r).await.map(|_| None)
+}
+
 pub async fn set_space(cfg: &crate::config::Config, team: &str, env: &str) -> Result<(), Error> {
     let r = client()
         .put(format!("{}/v1/me/environments/{}", cfg.api, path_segment(team)))
