@@ -9,7 +9,7 @@
 export type Mark = { glyph: string; color: string }
 export type Service = { name: string; ports: string; state: string; mark: Mark; interceptedBy?: string }
 export type Row = { id: string; name: string; state: string }
-export type Env = Row & { services: Service[] }
+export type Env = Row & { services: Service[]; volume: boolean }
 
 // theme keys, so the pane follows the person's Claude Code theme
 const GREEN = { glyph: '●', color: 'success' }
@@ -87,6 +87,33 @@ export function environments(text: string, ws: Row[] = []): Env[] {
         ...(st?.interceptedBy && { interceptedBy: wsName(String(st.interceptedBy)) }),
       }
     })
-    return { ...row(d), services }
+    return { ...row(d), services, volume: Boolean(d?.volume) }
   })
 }
+
+/** A row of `volume_history` (`/v1/volumes/{name}/history`), newest first. */
+export type Snap = { id: string; parent?: string | null; message?: string; createdAt: string | null }
+
+/** Where an environment sits: the web's rule (`web/apps/web/src/lib/env-current.ts`, also
+ * `harness/packages/backend/src/space.ts`), kept equal by hand. Never restored: the newest record.
+ * Restored: the newest record pushed AFTER the restore that descends from the restored one, else the
+ * restored record. A `restoredTo` naming no record here (a foreign graft) is no record. */
+export function envCurrent(history: Snap[], restoredTo: string | null, restoredAt: string | null): Snap | undefined {
+  if (restoredTo === null) return history[0]
+  const byId = new Map(history.map(h => [h.id, h]))
+  const restored = byId.get(restoredTo)
+  if (!restored) return undefined
+  const since = restoredAt ? Date.parse(restoredAt) : 0
+  const time = (h: Snap) => (h.createdAt ? Date.parse(h.createdAt) : NaN)
+  const descends = (n: Snap): boolean => {
+    for (let p: Snap | undefined = n; p; p = p.parent ? byId.get(p.parent) : undefined) {
+      if (p.id === restored.id) return true
+      if (!(time(p) > since)) return false
+    }
+    return false
+  }
+  return history.find(h => time(h) > since && descends(h)) ?? restored
+}
+
+/** The snapshot line's name: the push message, else the record id. */
+export const snapName = (s: Snap) => (s.message?.trim() || s.id).split('\n')[0]
