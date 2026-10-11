@@ -1,186 +1,175 @@
 ---
 name: kloudlite
-description: Concepts and tools for Kloudlite work from the laptop through the kl tools. Read it before any workspace, environment or code task in kl mode.
+description: You run on Kloudlite from the laptop through the kl tools. In a request, the words "workspace", "environment", "service" and "snapshot" mean Kloudlite workspaces, environments, services and snapshots. Read this skill before any task that creates, changes, stops, deletes or lists a workspace or environment, or that works in a workspace. Also read it before a task about intercept, push, restore, clone, package, service or build. It gives the concepts, the tools, the team rules and the roles. Your role (main session, kl-workspace or kl-subagent) has its own text. Read the two.
 ---
 
-# Kloudlite from the laptop
+# Kloudlite
 
-This skill is written in ASD-STE100 Simplified Technical English. The laptop session and its agents do the work. The bench serves the tools. In kl mode, no local tool works: use only the kl tools (`mcp__plugin_kloudlite_kl__<name>`). In a request, the words "workspace", "environment", "service" and "snapshot" mean Kloudlite items.
+This skill is written in ASD-STE100 Simplified Technical English. Each word has one meaning. Each instruction is one sentence.
+
+Kloudlite gives each person dev machines in the cloud (workspaces) and shared stacks that run (environments). All of them are on one cluster. You control Kloudlite with the kl tools (`mcp__plugin_kloudlite_kl__<name>`). In kl mode, no local tool works. Nothing runs on the laptop.
+
+The request "delete all workspaces" means Kloudlite workspaces. Only the main session creates and deletes workspaces. To do this, list the workspaces with `workspace_list`. Then delete them, and obey the rule for destructive actions in "Team rules".
+
+## Three roles
+
+Each session has one role. The `orchestrate` skill gives the role of the main session. The agent file of `kl-workspace` and `kl-subagent` gives their roles. This skill gives the shared concepts.
+
+| Role | Where it runs | What it does |
+|---|---|---|
+| **Main** | This Claude Code session. It has no workspace and does not read code. | Talks to the person. Creates, clones, starts and deletes workspaces and environments. Gives each task to the `kl-workspace` agent of the workspace. Moves facts between agents. |
+| **kl-workspace** | An agent. It works in the pod of one workspace, in `~/workspace`. | Owns one component: its design, code, packages, service, intercept and working branch. Its last message is its report to main (`DONE`, `BLOCKED` or `NEED`). Can ask for subagents for independent parts of its task (`SUBAGENT`). |
+| **kl-subagent** | An agent. It works in a temporary clone of one workspace, in `~/workspace`. | Does one task that its workspace gave. Commits, and resolves each conflict with the branch of the workspace. Talks only to its workspace, through main. Its last message is its report. |
+
+Each session is isolated. It works only in its own workspace. A session does not read, run or change code in a different workspace.
+
+Work moves between sessions only in these ways:
+
+- Main gives work to a `kl-workspace` agent with `Agent` (first time) or `SendMessage` (after that).
+- The last message of a `kl-workspace` agent is its report to main.
+- A `kl-workspace` agent asks for subagents with `SUBAGENT`. Main makes the clones and starts the `kl-subagent` agents. Main gives the report of each subagent to its workspace, without a change.
+
+Workspaces do not send messages to other workspaces. Main moves facts between them. A subagent does not send messages to main for itself. Main only carries its report.
+
+## Ids and names
+
+Each workspace has a name and an id. The id starts with `ws-`. Each environment has a name and an id. The id starts with `env-`.
+
+1. Get the id from `workspace_list` or `env_list`.
+2. Use the id in the `workspace` or `env` parameter of a tool call. Do not use the name.
+3. Use the name when you write to the person.
+
+**Every pod tool takes `workspace`.** The code, run, graph, package and build tools work in the pod of the workspace that you give in `workspace`. Always give it. Give only your own workspace. The workspace must be `ready`.
 
 ## Concepts
 
-**Workspace.** One dev machine. It is a pod with its own home, `/home/kl` (a btrfs volume), source code in `~/workspace` and its own packages. Use one workspace for each component, for example frontend, backend or tests.
+**Workspace.** One dev machine. It is a pod with these items:
 
-**Worktree.** An extra working copy in a workspace. It gives a second branch without a second workspace.
+- Its own home, `/home/kl`. This is a btrfs volume.
+- Source code in `~/workspace`.
+- Its own installed packages.
 
-**Clone.** A copy of a workspace in its current state. The clone is a new workspace. The `based_on` field in the reply tells you the age of the copy. The main session makes clones for subagents.
+Use one workspace for each component, for example frontend, backend, worker or test suite. Components can come from different repos or from the same repo. Each type of component usually needs different packages.
 
-**Snapshot.** A read-only copy of the disk of a workspace or environment. A push records a named snapshot in the history. This push is not `git push`. Sync points are automatic copies for recovery after a crash. They do not show in the history. A restore makes a new copy from a snapshot.
+**Worktree.** An extra working copy in a workspace. It gives a second branch without a second workspace. Use `worktree_add` and `worktree_drop`.
 
-**Environment.** A shared stack of services for a team, for example a backend, its database and a queue. Each service runs as its own StatefulSet.
+**Environment.** A shared stack of services for a team. Example: the backend, its database and a queue. Each service runs as its own StatefulSet. Use `service_add`, `service_update` and `service_remove` to add, change and remove services.
 
-**Service data.** A service with no `mounts` loses its data when its pod restarts. Give each directory that must persist a mount in the same call that creates the service. A mount has a `folder` (a name in the volume of the environment) and a `path` (the directory in the container).
+**Packages are development tools. Services go in the environment.** This rule is important. Obey it:
 
-**Service image.** Use a public image or build one with `container_build`. Give `tags: ["name:tag"]`. The build context is the working directory of the workspace. The `kl` command is not on the PATH in `exec`. The build tools run it for you.
+- Packages install the tools that you use to develop: compilers, runtimes, language servers, build tools, test tools and CLIs. Examples: `go`, `nodejs`, `python3`, `rustc`, `protobuf`, `postgresql` for the `psql` client, `mongosh`.
+- Do not install a server as a package to run it. Examples of servers: MongoDB, PostgreSQL, MySQL, Redis, Kafka, RabbitMQ, Elasticsearch, MinIO.
+- Do not download a server binary or a container image into a workspace, and do not run it with `exec`.
+- A service that your code needs is a service of the environment. Add it with `service_add` and its public image, for example `mongo:7`. Give it a mount for its data (refer to "Service data").
+- Your workspace gets to the service by its DNS name through the space (refer to "Space"). Use `env_get` to get the service name and its port.
+- The only process that you run in a workspace is the code of your own component, for example its dev server, its tests or its service under an intercept.
+- If the service is missing and you cannot add it, report `NEED` with the service, its image and its port. Do not run a copy of it in the workspace.
 
-**Intercept.** An intercept sends the traffic for one service of an environment to a workspace. One workspace at a time can intercept a service. A stopped workspace releases the intercept after a short time. The request stays until `release`.
+**Service data.** A service with no `mounts` loses everything it writes each time its pod restarts. It also loses it when the environment stops, restarts or moves. Before each `service_add` or `service_update`, check the service for data that must persist:
 
-**Space.** A space is a team. It follows one environment. The workspaces of the team reach the services of that environment by DNS name.
+1. Ask what the service writes to disk and whether that data must still be there after a restart. Records, uploads, queues, indexes and sessions must persist. Temporary files and build output need not.
+2. Find each directory that holds such data. For a public image, read its documentation or its Dockerfile `VOLUME` lines. For an image that you build, read the code: find where it writes files and the paths in its config and env.
+3. Give each directory a mount in the same call that creates the service. Never add the mount later: the data that the service writes before the mount is lost.
+4. If the service keeps all its data in another service, for example an API that stores its data in a database, it needs no mount. State this in your report.
 
-**Packages.** Nix packages with a version: `name@version`. The version is `latest`, `N`, `N.N` or `N.N.N`. A version that is not in the cache gives 422 and the list of cached versions.
+- A mount has two parts. `folder` is one name, for example `mongo-data`. It names a folder in the environment's own volume, so it is saved in every snapshot. `path` is the directory in the container.
+- Example: `{"name": "mongodb", "image": "mongo:7", "ports": [27017], "mounts": [{"folder": "mongo-data", "path": "/data/db"}]}`.
+- If you find a service that persists data and has no mount, add the mount with `service_update` and report it.
 
-**Lifecycle calls are asynchronous.** Create, start, stop, clone and restore return at once. Poll `workspace_get` or `env_get` until the state is the one that you want. A workspace is up when its state is `ready`. An environment is up when its state is `running`. Stop the poll on `error` or `deleted`.
+**Service image.** When you add a service, you select its image. You can use a public image. To build an image, use the `container_build` tool:
 
-**Ids.** Use the id (`ws-…`, `env-…`) in tool calls. Do not use the name.
+- Give `tags: ["name:tag"]`.
+- The build context is your working directory.
+- The tool builds on your builder and pushes the image to the Kloudlite registry.
 
-## Every pod tool takes `workspace`
+To give an image a new tag, use `container_push`. The `kl` command is not on the PATH in `exec`. These tools run `kl` for you.
 
-The pod tools work in the pod of the workspace that you name in the `workspace` argument. The workspace must be up. Only the main session starts a workspace, with `workspace_start`. Always give `workspace`.
+**Intercept.** An intercept sends the traffic for one service of an environment to a workspace. The service pod does not get this traffic. The code that runs in your workspace gets it.
+
+- `intercept` starts an intercept. `release` ends it.
+- Only one workspace at a time can intercept a service.
+- If the workspace stops, the platform releases the intercept after a short time. But the request for the intercept stays until `release`.
+- `env_get` shows each intercept and the workspace that holds it.
+- Use an intercept to test a change to a service in the real environment, without a build and without a deploy. This is the short dev loop.
+
+**Space.** A space follows one environment. Then the workspaces of the team can get to the services of that environment by their DNS names. Use `space_env_current`, `space_env_switch` and `space_env_clear`.
+
+**Snapshots.** A snapshot is a read-only copy of the disk of a workspace or environment.
+
+- *Sync points*: The platform makes them automatically while a workspace runs. They are only for recovery after a crash. They do not show in the history.
+- *Push* (`workspace_push`, `env_push`): Records a named snapshot in the history. The platform does not remove pushes. This push is not `git push`.
+- *Restore* (`workspace_restore`, `env_restore`): Makes a new copy from a snapshot. `env_restore_in_place` writes the snapshot over the environment.
+- *Clone* (`workspace_clone`, `env_clone`): Copies a workspace or environment. The `based_on` field in the reply tells you the age of the copy.
+- `volume_list`, `volume_history` and `volume_refs` read the history. `snapshot_delete` and `volume_delete` remove history.
+
+**Interrupted workspace.** If the node of a workspace stops, `workspace_start` answers 409. Then clone the workspace. The clone starts from the last sync point.
+
+**Packages (the tools).** Nix packages with a version: `name@version`. The version is `latest`, `N`, `N.N` or `N.N.N`.
+
+- Use `packages_list`, `packages_add` and `packages_remove`.
+- `packages_update` finds newer versions.
+- If a version is not in the cache, the answer is 422. The answer gives the versions that are in the cache.
+
+**Builders.** Each owner has a hidden builder. It starts when `container_build` needs it. `builder_status` shows it.
+
+**Quota and regions.**
+
+- `quota` shows the resources that the owner can still use: workspaces, environments, snapshots, disk, cpu and memory.
+- A call that goes above the quota answers 409.
+- `regions` gives the regions where workspaces can run.
+- If a limit or missing access stops the person, use `request_create` to ask a superadmin. The kinds are quota, access, region and other. Only one request of each kind can wait at a time.
+- `requests_list` and `request_get` show the decision.
+- Do not try the stopped call again. It will not pass.
+
+**Lifecycle calls are asynchronous.** Create, start, stop, clone and restore return immediately. The work continues after the return. Poll `workspace_get` or `env_get` until you get the state that you want.
+
+| Object | States | The state when it is up |
+|---|---|---|
+| Workspace | `creating`, `ready`, `stopped`, `error`, `deleted` | `ready`. A workspace is not `running` at any time. |
+| Environment | `creating`, `running`, `stopped`, `error`, `deleted` | `running` |
+
+Stop the poll when the state is `error` or `deleted`. That state will not change to the state that you want.
 
 ## Tools
 
-### Code
+Each role has a different set of tools. Its role text gives its tools. If a tool is not in your list, it is the work of a different role.
 
-| Tool | What it does |
+| Group | Tools |
 |---|---|
-| `read` | Read a file in the workspace. |
-| `write` | Write a whole file. |
-| `edit` | Replace exact text in a file. |
-| `patch` | Apply a unified diff. Use it for many changes at the same time. |
-| `glob` | Find files by name pattern. |
-| `grep` | Search file contents with a regex. |
+| Code | `read`, `write`, `edit`, `patch`, `glob`, `grep` |
+| Run | `exec` (with `detach: true` for a process that continues), `process_list`, `process_output`, `process_write`, `process_kill`, `watch`, `watch_poll`, `watch_stop` |
+| Graph (use it first to find code) | `graft_find_code`, `graft_find_all`, `graft_trace_calls`, `graft_file_api`, `graft_repo_map`, `graft_build`, `graft_blast` |
+| Build | `container_build`, `container_push`, `builder_status` |
+| Workspaces | `workspace_list`, `workspace_get`, `workspace_create`, `workspace_clone`, `workspace_restore`, `workspace_start`, `workspace_stop`, `workspace_delete`, `workspace_push`, `worktree_add`, `worktree_drop` |
+| Packages | `packages_list`, `packages_add`, `packages_remove`, `packages_update` |
+| Environments | `env_list`, `env_get`, `env_create`, `env_clone`, `env_start`, `env_stop`, `env_delete`, `env_push`, `env_restore`, `env_restore_in_place`, `service_add`, `service_update`, `service_remove`, `service_logs`, `intercept`, `release` |
+| Spaces | `space_env_current`, `space_env_switch`, `space_env_clear` |
+| Storage | `volume_list`, `volume_history`, `volume_refs`, `volume_delete`, `snapshot_delete` |
+| Account | `quota`, `regions`, `requests_list`, `request_get`, `request_create` |
+| Web | `web_fetch`, `web_search` |
 
-### Run
-
-| Tool | What it does |
-|---|---|
-| `exec` | Run a command. It waits for a job that ends, for example a build, a test or `git`. With `detach: true` it starts a process that continues to run and returns a process id. |
-| `process_list` | List the processes that run. |
-| `process_output` | Read the output of a process (the last 4 MiB). |
-| `process_write` | Write to the stdin of a process. |
-| `process_kill` | Stop a process and its group. |
-| `watch` | Wait for a change to files or events. |
-| `watch_poll` | Read the events that a watch collected. |
-| `watch_stop` | Stop a watch. |
-
-### Graph
-
-Use the graph first to find code and to see what a change can break.
-
-| Tool | What it does |
-|---|---|
-| `graft_find_code` | Ask in plain words where an item is or how it works. |
-| `graft_find_all` | Search the graph with a regex to find each use of a name. |
-| `graft_trace_calls` | Find the callers and callees of a symbol before you change it. |
-| `graft_file_api` | See the signatures of a file without its function bodies. |
-| `graft_repo_map` | Get a map of a repo that you do not know. |
-| `graft_build` | Build the graph again if its answers are old, for example after `git pull`. |
-| `graft_blast` | See what a diff can break, before you commit or push it. |
-
-### Build
-
-| Tool | What it does |
-|---|---|
-| `container_build` | Build an image on the builder of the owner and push it to the Kloudlite registry. |
-| `container_push` | Give an image a new tag in the registry. |
-| `builder_status` | Check the state of the image builder for a team. |
-
-### Workspaces
-
-| Tool | What it does |
-|---|---|
-| `workspace_list` | List the workspaces of the person. You can give one team. |
-| `workspace_get` | Read the state of one workspace. Poll it after any lifecycle call. |
-| `workspace_create` | Create a workspace in a region. |
-| `workspace_clone` | Clone the current state of a workspace into a new workspace. |
-| `workspace_restore` | Create a workspace from a snapshot. |
-| `workspace_start` | Start a stopped workspace. |
-| `workspace_stop` | Stop a workspace that is up. The tool makes a snapshot first. |
-| `workspace_delete` | Delete a workspace permanently. |
-| `workspace_push` | Make a snapshot of the workspace in its history. |
-| `worktree_add` | Make a new worktree in a workspace. |
-| `worktree_drop` | Remove a worktree from a workspace. |
-
-### Packages
-
-| Tool | What it does |
-|---|---|
-| `packages_list` | List the packages that the workspace declares. Do this before you change them. |
-| `packages_add` | Declare packages (`attr` or `attr@version`). An entry with the same `attr` replaces the old entry. |
-| `packages_remove` | Remove declared packages. Give the `attr` of each package. |
-| `packages_update` | Resolve the package pins again, to the newest matching versions. |
-
-### Environments
-
-| Tool | What it does |
-|---|---|
-| `env_list` | List the environments. You can give one team. |
-| `env_get` | Read the services, state and intercepts of one environment. Poll `ready` of each service, not the spec. |
-| `env_create` | Create an environment of services in a region. |
-| `env_clone` | Copy an environment that is up into a new environment. |
-| `env_start` | Start a stopped environment. |
-| `env_stop` | Stop an environment that is up. |
-| `env_delete` | Delete an environment permanently. |
-| `env_push` | Make a snapshot of an environment in its history. |
-| `env_restore` | Create an environment from a snapshot. |
-| `env_restore_in_place` | Put an environment back to one of its own snapshots. |
-| `service_add` | Add one service to an environment. The call fails if the name exists. |
-| `service_update` | Replace one existing service. The tool matches it by name. |
-| `service_remove` | Remove a service from an environment. |
-| `service_logs` | Read the recent logs of one service. `previous` reads the last container that crashed. |
-| `intercept` | Send the traffic of an environment service to a workspace. |
-| `release` | Release an intercepted service back to its own pod. |
-
-### Spaces
-
-| Tool | What it does |
-|---|---|
-| `space_env_current` | Show the environment that each space (team) of the person follows. |
-| `space_env_switch` | Make every workspace of a team follow a different environment. |
-| `space_env_clear` | Detach the space of a team from its environment. |
-
-### Storage
-
-| Tool | What it does |
-|---|---|
-| `volume_list` | List the volumes. You can filter by kind and by owner. |
-| `volume_history` | List the snapshots of a volume. These are the ids for restore. |
-| `volume_refs` | Read the branch tips of a volume. |
-| `volume_delete` | Delete a detached volume permanently. |
-| `snapshot_delete` | Delete one snapshot of a volume. |
-
-### Account
-
-| Tool | What it does |
-|---|---|
-| `quota` | Show the limits and the current use of an owner. A call above a limit answers 409. |
-| `requests_list` | List the requests of the person and of their teams, with state and decision note. |
-| `request_get` | Show one request and its decision. |
-| `request_create` | Ask a superadmin for quota, access, a region or anything else. One request of each kind can wait. |
-| `regions` | List the regions where workspaces and environments can be created. |
-
-### Web
-
-| Tool | What it does |
-|---|---|
-| `web_fetch` | Read one URL. |
-| `web_search` | Search the web. |
-
-## Tools that the laptop does not use
-
-These tools belong to the bench sessions. Do not use them: `workspace_ask`, `task_add`, `task_update`, `task_list`, `workspace_tasks`, `scratch_bash`, `scratch_read`, `scratch_write`.
+These kl tools belong to the bench sessions. Do not use them from the laptop: `workspace_ask`, `main_tell`, `subagent`, `task_add`, `task_update`, `task_list`, `workspace_tasks`. Main uses `scratch_read` and `scratch_write` only for its contract files (`contract-<feature>.md`). Main does not use `scratch_bash`.
 
 ## Team rules
 
-1. If a limit or missing access stops the person, use `request_create`. Do not try the stopped call again.
-2. Push a snapshot only when the person asks. Sync points already give recovery.
-3. Intercept the shared team environment from your workspace. Do not make a private copy. Release the intercept when you are done.
-4. Do not go into a different workspace to do work. If a call fails, report the failure as it is.
+These are the rules of the team. Obey them.
 
-## Roles
+**Destructive actions** (delete, stop, restore in place):
 
-**The main session** is this Claude Code session, not an agent. It talks to the person and owns the lifecycle of workspaces and environments. It does not read or judge code. It gives code work to `kl-workspace` agents and moves splits and reports between agents.
+1. List the exact targets by name.
+2. Ask the person in one line, unless the person asked for this action and gave the target in this turn.
+3. Call the tool with their ids.
 
-**`kl-workspace`** owns the code of one workspace: its design, working branch, packages, service and intercept. It plans, does its own parts and reviews the branches of subagents. It merges, tests and pushes. It cannot start agents, so it returns a split to main.
+**No backdoors.** Do not go into a different workspace, pod or session to do work. If a delegation or a push fails, tell the person about the failure as it is. Do not go around it.
 
-**`kl-subagent`** does one part in a clone that the main session made. It works on its own branch, commits, pushes and reports. It does not review or merge.
+**Push a snapshot only when the person asks.** The sync points already give recovery after a crash.
+
+**Environments.** Intercept the shared team environment from your workspace. Do not make a private copy of the environment. Release the intercept when you are done.
+
+**Packages are tools, services are in the environment.** Refer to the concept above. Never run a database or a different server inside a workspace.
+
+**Packages and setup.** At the start, each workspace reads the Setup section of `AGENTS.md` in the repo. Then it installs the missing packages that this section gives. When you install a new package, add it to `AGENTS.md`. The setup requirements of a repo are in that repo.
+
+**Service images.** You make the decision. For code that you own, use `container_build` and `container_push`. For standard software, use any public image.
+
+**Refused calls.** If the person refuses a call, that is their answer. Do not try the call again. Do not get the same result in a different way.
