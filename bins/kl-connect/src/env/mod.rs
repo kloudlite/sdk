@@ -87,7 +87,7 @@ async fn connect(env: &str, team: Option<&str>) -> Result<(), String> {
     api::set_space(&cfg, &team, env).await.map_err(|e| e.to_string())?;
     let p = env_file();
     config::write_atomic(&p, &serde_json::json!({ "team": team }).to_string())?; // 0600 at create
-    println!("connected {env} (team {team}); names appear within 10 s");
+    println!("connected {env} (team {team}); names appear in a few seconds");
     Ok(())
 }
 

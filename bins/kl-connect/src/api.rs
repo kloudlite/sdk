@@ -259,6 +259,28 @@ pub async fn spaces(cfg: &crate::config::Config) -> Result<Vec<Space>, Error> {
     json(r).await
 }
 
+/// `GET /v1/me/environments/watch`: holds up to 50 s. `Some(tag)` = the selection differs from
+/// `seen` (or `seen` was None); `None` = nothing changed (304).
+pub async fn watch_spaces(cfg: &crate::config::Config, seen: Option<&str>) -> Result<Option<String>, Error> {
+    let mut rb = client()
+        .get(format!("{}/v1/me/environments/watch", cfg.api))
+        .bearer_auth(&cfg.token)
+        .timeout(std::time::Duration::from_secs(70));
+    if let Some(t) = seen {
+        rb = rb.header(reqwest::header::IF_NONE_MATCH, t);
+    }
+    let r = rb.send().await.map_err(|e| Error::Other(e.to_string()))?;
+    if r.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    if r.status().is_success() {
+        let tag = r.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        return Ok(Some(tag));
+    }
+    // Not a success: `json` turns it into the same Unauthorized / Gone / Other as every call.
+    json::<serde_json::Value>(r).await.map(|_| None)
+}
+
 pub async fn set_space(cfg: &crate::config::Config, team: &str, env: &str) -> Result<(), Error> {
     let r = client()
         .put(format!("{}/v1/me/environments/{}", cfg.api, path_segment(team)))

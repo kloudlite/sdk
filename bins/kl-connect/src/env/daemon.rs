@@ -1,4 +1,6 @@
-//! The root daemon's loop (spec section 2): every 10 s read what the person chose, make the tunnel
+//! The root daemon's loop (spec section 2): holds one `GET /v1/me/environments/watch` open and runs a
+//! pass as soon as the selection changes, plus a 60 s beat for the rest; an environment switch keeps
+//! the tunnel and rewrites only the hosts block. A pass reads what the person chose, makes the tunnel
 //! and `/etc/hosts` match it, and say what happened in `env-status.json`. No socket: the CLI writes
 //! `env.json` (the wish) under the person's config dir, which the daemon only READS (it runs as root
 //! with root's `HOME` and is told whose home to serve); the report goes to `super::STATUS` under
@@ -16,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const HOSTS: &str = "/etc/hosts";
-const BEAT: Duration = Duration::from_secs(10);
+// The beat now only catches services added to the environment, login expiry and a dropped tunnel;
+// a switch arrives through the watch.
+const BEAT: Duration = Duration::from_secs(60);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
 #[derive(serde::Serialize, Default, Clone)]
@@ -38,6 +42,8 @@ struct Daemon {
     /// The names last written to /etc/hosts; a lookup that misses keeps its old address.
     last: Vec<(String, Ipv4Addr)>,
     backoff: Duration,
+    /// The ETag of the selection the watch last returned.
+    seen: Option<String>,
 }
 
 pub async fn run(home: PathBuf) -> Result<(), String> {
@@ -47,25 +53,64 @@ pub async fn run(home: PathBuf) -> Result<(), String> {
         current: None,
         last: vec![],
         backoff: Duration::from_secs(1),
+        seen: None,
     };
     loop {
-        let delay = match d.pass().await {
+        match d.pass().await {
             Ok(()) => {
                 d.backoff = Duration::from_secs(1);
-                BEAT
+                d.until_change(BEAT).await;
             }
             Err(e) => {
                 eprintln!("kl-connect env: {e}");
                 let b = d.backoff;
                 d.backoff = (b * 2).min(BACKOFF_CAP);
-                b
+                tokio::time::sleep(b).await;
             }
-        };
-        tokio::time::sleep(delay).await;
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Change {
+    None,
+    /// Same team, other environment: the tunnel is per team, only the names move.
+    Hosts,
+    Tunnel,
+}
+
+fn change(current: Option<&Space>, wanted: &Space) -> Change {
+    match current {
+        Some(s) if s.team != wanted.team => Change::Tunnel,
+        Some(s) if s.environment != wanted.environment => Change::Hosts,
+        _ => Change::None,
     }
 }
 
 impl Daemon {
+    /// Returns when the watch says the selection moved, or after `beat`, whichever is first.
+    /// The first watch has no tag and returns at once; that one extra pass at start is the price
+    /// of never missing a switch made between a pass and its watch.
+    async fn until_change(&mut self, beat: Duration) {
+        let home = self.home.clone();
+        let seen = &mut self.seen;
+        let _ = tokio::time::timeout(beat, async {
+            loop {
+                let Ok(cfg) = crate::config::load_from(&home) else { return std::future::pending::<()>().await };
+                match api::watch_spaces(&cfg, seen.as_deref()).await {
+                    Ok(Some(t)) => {
+                        *seen = Some(t);
+                        return;
+                    }
+                    Ok(None) => {}
+                    // Old api without the route, offline: the beat still runs the pass.
+                    Err(_) => return std::future::pending::<()>().await,
+                }
+            }
+        })
+        .await;
+    }
+
     fn dir(&self) -> PathBuf {
         crate::config::dir_in(&self.home)
     }
@@ -113,8 +158,18 @@ impl Daemon {
             return Ok(());
         };
 
+        match change(self.current.as_ref().map(|(s, _)| s), &space) {
+            Change::Tunnel => self.tear_down(true).await,
+            // Old addresses belong to the old environment's services.
+            Change::Hosts => {
+                self.last.clear();
+                if let Some((s, _)) = &mut self.current {
+                    *s = space.clone();
+                }
+            }
+            Change::None => {}
+        }
         match &self.current {
-            Some((s, _)) if *s != space => self.tear_down(true).await,
             // The stream ended (bench restarted, laptop slept): reconnect, last names stay meanwhile.
             Some((_, up)) if up.is_finished() => self.tear_down(false).await,
             _ => {}
@@ -235,6 +290,18 @@ fn rfc3339(t: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sp(t: &str, e: &str) -> Space {
+        Space { team: t.into(), environment: e.into(), region: None }
+    }
+
+    #[test]
+    fn change_keeps_the_tunnel_for_an_environment_switch() {
+        assert_eq!(change(Some(&sp("a", "e1")), &sp("a", "e2")), Change::Hosts);
+        assert_eq!(change(Some(&sp("a", "e1")), &sp("b", "e1")), Change::Tunnel);
+        assert_eq!(change(Some(&sp("a", "e1")), &sp("a", "e1")), Change::None);
+        assert_eq!(change(None, &sp("a", "e1")), Change::None);
+    }
 
     #[test]
     fn a_miss_keeps_the_last_address_and_a_removed_service_goes() {
