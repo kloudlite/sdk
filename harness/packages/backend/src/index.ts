@@ -57,7 +57,7 @@ export type SpaceEnvironment = {
   snapshot?: string;
 };
 export type TaskState = "queued" | "running" | "blocked" | "done" | "failed";
-export type BoardTask = { id: string; title: string; priority: number; dependsOn: string[]; state: TaskState; note?: string; created: number };
+export type BoardTask = { id: string; title: string; priority: number; dependsOn: string[]; state: TaskState; note?: string; /** What changed and where; with `verified`, required to mark done (tasks.ts). */ summary?: string; verified?: string; created: number };
 export type SpaceView = {
   available: boolean;
   error?: string;
@@ -158,7 +158,7 @@ export type SessionOpts = {
 type Image = Parameters<AgentSession["steer"]>[1] extends (infer I)[] | undefined ? I : never;
 /** `session_closed`: the agent behind this handle was disposed (rebuilt, or idle with no views);
  * the handle is dead and the client reopens on its next action. */
-export type SessionEvent = (AgentSessionEvent & { diff?: FileDiff }) | { type: "session_closed"; reopen: boolean } | SessionState;
+export type SessionEvent = (AgentSessionEvent & { diff?: FileDiff }) | { type: "session_closed"; reopen: boolean } | { type: "session_notice"; text: string } | SessionState;
 
 export type SessionHandle = {
   /** Snapshot taken when the session opened; restoreTranscript reads it. */

@@ -80,3 +80,16 @@ test("workspace_tasks reads one board, all boards, a missing board, never main",
   expect(titles(await t!.run({}))).toEqual([["ws-a", ["a1"]], ["ws-b", ["b1"]]]);
   expect(titles(await t!.run({ workspace: "ws-zzz" }))).toEqual([["ws-zzz", []]]);
 });
+
+test("task_update refuses done without summary or verified, and an over-long summary", async () => {
+  const f = tmp();
+  addTask(f, { title: "a" });
+  const upd = taskTools(f)[1]!;
+  expect(await upd.run({ id: "T1", state: "done" })).toContain("summary");
+  expect(await upd.run({ id: "T1", state: "done", summary: "did it" })).toContain("verified");
+  expect(await upd.run({ id: "T1", state: "done", summary: "did it", verified: "  " })).toContain("verified");
+  expect(await upd.run({ id: "T1", summary: "x".repeat(2001) })).toContain("2000");
+  expect(readTasks(f)[0]!.state).toBe("queued");
+  expect(await upd.run({ id: "T1", state: "done", summary: "did it", verified: "bun test: pass" })).toContain("[done]");
+  expect(readTasks(f)[0]).toMatchObject({ state: "done", summary: "did it", verified: "bun test: pass" });
+});

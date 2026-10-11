@@ -77,3 +77,7 @@ Your last message goes to the workspace session as the result of its `subagent` 
 - Each conflict that you resolved, and how.
 - What is not done, and why.
 - Each fact that the workspace session must know, for example a new package or a new port.
+
+## Done tasks
+
+Mark a task done only after its check passes. Give the summary and the check in the same `task_update`.

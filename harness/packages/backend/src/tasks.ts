@@ -77,7 +77,7 @@ export function addTask(file: string, a: { title: string; priority?: number; dep
   return t;
 }
 
-export function updateTask(file: string, id: string, p: Partial<Pick<BoardTask, "title" | "priority" | "dependsOn" | "state" | "note">>): BoardTask | string {
+export function updateTask(file: string, id: string, p: Partial<Pick<BoardTask, "title" | "priority" | "dependsOn" | "state" | "note" | "summary" | "verified">>): BoardTask | string {
   const ts = readTasks(file);
   const cur = ts.find((t) => t.id === id);
   if (!cur) return `error: unknown task ${id}`;
@@ -109,6 +109,20 @@ export function boardText(ts: BoardTask[]): string {
   return [...open.sort(order).map((t) => line(ts, t)), `${ts.length - open.length} done`].join("\n");
 }
 
+/** Longest `summary` the board keeps: it is replayed into a fresh session (local.ts seed). */
+export const SUMMARY_MAX = 2000;
+
+/** Why `p` may not be stored, or undefined. Only the agent's tool asks: the backend's own state moves
+ * (a reply closes an ask) carry no summary and must not be refused. */
+function refuseDone(cur: BoardTask | undefined, p: { state?: TaskState; summary?: string; verified?: string }): string | undefined {
+  const summary = p.summary ?? cur?.summary;
+  if (p.summary && p.summary.length > SUMMARY_MAX) return `error: summary is ${p.summary.length} characters, the limit is ${SUMMARY_MAX}`;
+  if (p.state !== "done" || cur?.state === "done") return undefined;
+  if (!summary?.trim()) return "error: a done task needs a summary: say what changed and where";
+  if (!(p.verified ?? cur?.verified)?.trim()) return "error: a done task needs verified: the check that passed, with its result";
+  return undefined;
+}
+
 const STR = { type: "string" };
 const DEPS = { type: "array", items: STR };
 
@@ -124,10 +138,12 @@ export function taskTools(file: string): ToolDef[] {
   };
   const update: ToolDef = {
     name: "task_update",
-    description: "Change a task. You can change the title, the priority, `depends_on`, the state or the note. The tool refuses a dependency loop or an unknown id. Then the board does not change. Returns the task line.",
-    inputSchema: { type: "object", properties: { id: STR, title: STR, priority: { type: "number" }, depends_on: DEPS, state: { type: "string", enum: STATES }, note: STR }, required: ["id"] },
-    async run(i: { id: string; title?: string; priority?: number; depends_on?: string[]; state?: TaskState; note?: string }) {
+    description: "Change a task. You can change the title, the priority, `depends_on`, the state, the note, the summary or the verified check. To set the state to done, give `summary` (what changed and where, at most 2000 characters) and `verified` (the check that passed, with its result). The tool refuses a done task without both. The tool refuses a dependency loop or an unknown id. Then the board does not change. Returns the task line.",
+    inputSchema: { type: "object", properties: { id: STR, title: STR, priority: { type: "number" }, depends_on: DEPS, state: { type: "string", enum: STATES }, note: STR, summary: STR, verified: STR }, required: ["id"] },
+    async run(i: { id: string; title?: string; priority?: number; depends_on?: string[]; state?: TaskState; note?: string; summary?: string; verified?: string }) {
       const { id, depends_on, ...rest } = i;
+      const no = refuseDone(readTasks(file).find((t) => t.id === id), rest);
+      if (no) return no;
       const r = updateTask(file, id, { ...rest, dependsOn: depends_on });
       return typeof r === "string" ? r : line(readTasks(file), r);
     },
