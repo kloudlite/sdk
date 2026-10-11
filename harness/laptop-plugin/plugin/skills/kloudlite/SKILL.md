@@ -144,17 +144,34 @@ Each role has a different set of tools. Its role text gives its tools. If a tool
 | Packages | `packages_list`, `packages_add`, `packages_remove`, `packages_update` |
 | Environments | `env_list`, `env_get`, `env_create`, `env_clone`, `env_start`, `env_stop`, `env_delete`, `env_push`, `env_restore`, `env_restore_in_place`, `service_add`, `service_update`, `service_remove`, `service_logs`, `intercept`, `release` |
 | Spaces | `space_env_current`, `space_env_switch`, `space_env_clear` |
+| Repos | `repo_list`, `repo_get`, `repo_create`, `repo_update`, `repo_delete`, `protection_get`, `protection_set`, `branch_list`, `branch_delete`, `compare` |
+| Pull requests | `pr_list`, `pr_get`, `pr_create`, `pr_comment`, `pr_merge`, `pr_close` |
+| Images | `image_list`, `image_tags`, `image_visibility`, `image_tag_delete`, `image_delete` |
 | Storage | `volume_list`, `volume_history`, `volume_refs`, `volume_delete`, `snapshot_delete` |
 | Account | `quota`, `regions`, `requests_list`, `request_get`, `request_create` |
 | Web | `web_fetch`, `web_search` |
 
 These kl tools belong to the bench sessions. Do not use them from the laptop: `workspace_ask`, `main_tell`, `subagent`, `task_add`, `task_update`, `task_list`, `workspace_tasks`. Main uses `scratch_read` and `scratch_write` only for its contract files (`contract-<feature>.md`). Main does not use `scratch_bash`.
 
+## Repos and images
+
+Every role has the repo, pull request and image tools. Each tool needs `owner`. Read `owner` from `workspace_get` or ask the person.
+
+1. Before you push code, run `git remote -v`.
+2. If it shows no `origin`, link a repo with `git remote add origin kl:<owner>/<repo>`.
+3. If the repo does not exist, create it first with `repo_create`.
+4. A repo can hold the code of more than one workspace. Each workspace uses its own branch.
+5. To merge work, open a pull request with `pr_create`.
+6. Merge it with `pr_merge` only when the person or the main session tells you to.
+7. `pr_merge` returns 202 at once. Poll `pr_get` until the merge state is final.
+
+The tools `repo_delete`, `branch_delete`, `image_tag_delete` and `image_delete` delete data that cannot be recovered. Before you call one, get a yes from the person. Main asks with `AskUserQuestion`. Name exactly what the call deletes. A `kl-workspace` or `kl-subagent` agent cannot ask the person. It stops and reports `NEED` with the exact target. Main asks the person and passes the answer back.
+
 ## Team rules
 
 These are the rules of the team. Obey them.
 
-**Destructive actions** (delete, stop, restore in place):
+**Destructive actions** (delete, stop, restore in place, and `repo_delete`, `branch_delete`, `image_tag_delete`, `image_delete`):
 
 1. List the exact targets by name.
 2. Ask the person in one line, unless the person asked for this action and gave the target in this turn.
