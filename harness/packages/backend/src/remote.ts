@@ -60,7 +60,23 @@ export class RemoteBackend implements Backend {
     let running = !!busy;
     let state = first;
     // first in the set: Set iterates in insertion order, so `state` is current before any subscriber runs
+    // the message being streamed, rebuilt from serve.ts's deltas so subscribers see pi's shape
+    let cur: any;
     subs.add((e) => {
+      if (e.type === "message_start" && e.message?.role === "assistant") cur = e.message;
+      else if (e.type === "message_end") cur = undefined;
+      else if (e.type === "message_update") {
+        if (e.message) cur = e.message;
+        else if (cur) {
+          const c = cur.content.slice();
+          const b = c[e.i];
+          if (e.kind === "toolCall") c[e.i] = { type: "toolCall", id: e.id, name: e.name, arguments: {} };
+          else c[e.i] = { type: e.kind, ...b, [e.kind]: (b?.[e.kind] ?? "") + e.delta };
+          cur = { ...cur, content: c };
+        }
+        for (const k of ["i", "kind", "delta", "id", "name"]) delete e[k];
+        e.message = cur;
+      }
       if (e.type === "session_state") state = e;
       if (e.type === "agent_start") running = true;
       else if (e.type === "agent_end" || e.type === "session_closed") running = false;
