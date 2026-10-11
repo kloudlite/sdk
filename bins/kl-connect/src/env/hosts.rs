@@ -1,5 +1,6 @@
 //! The `/etc/hosts` block: one marked block, everything outside it left byte for byte. A bare name
-//! the person defined outside the block is never shadowed -- skipped and reported instead.
+//! the person defined outside the block is never shadowed -- skipped and reported instead. Names
+//! compare the way the resolver does: case-insensitive, a trailing dot ignored.
 //! Written by temp file in the same directory and rename, so a killed daemon never leaves half a file.
 use std::{net::Ipv4Addr, path::Path};
 
@@ -49,13 +50,13 @@ pub fn render(current: &str, block: Option<&Block>) -> Result<(String, Vec<Strin
         .lines()
         .map(|l| l.split('#').next().unwrap_or(""))
         .flat_map(|l| l.split_whitespace().skip(1))
-        .map(str::to_string)
+        .map(|n| n.trim_end_matches('.').to_ascii_lowercase())
         .collect();
     let mut skipped = vec![];
     let field = |v: &str| if clean(v) { v.to_string() } else { "invalid".to_string() };
     let mut body = format!("{BEGIN} env={} name={}\n", field(&b.env), field(&b.name));
     for (n, ip) in &b.entries {
-        if !clean(n) || taken.contains(n) {
+        if !clean(n) || taken.contains(n.trim_end_matches('.')) {
             skipped.push(n.clone());
             continue;
         }
@@ -124,6 +125,14 @@ mod tests {
         assert_eq!(skipped, vec!["api".to_string()]);
         assert!(t.contains("10.43.12.7\tmongodb\n") && !t.contains("10.43.40.2"));
         assert!(t.starts_with(&base));
+    }
+
+    #[test]
+    fn a_name_defined_outside_in_another_spelling_is_skipped() {
+        let base = format!("{BASE}127.0.0.1 API.\n");
+        let (t, skipped) = render(&base, Some(&block())).unwrap();
+        assert_eq!(skipped, vec!["api".to_string()]);
+        assert!(!t.contains("\tapi\n"));
     }
 
     #[test]
