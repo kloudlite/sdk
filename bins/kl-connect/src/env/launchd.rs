@@ -56,6 +56,12 @@ fn copy_bin(from: &Path, to: &Path) -> Result<(), String> {
     let dir = to.parent().ok_or("no parent")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    // A pre-existing directory someone else owns (Intel Homebrew hands out /usr/local subdirs) would
+    // let its owner rename the copy away; chmod does not change that, so refuse.
+    let owner = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(dir).map_err(|e| e.to_string())?);
+    if owner != unsafe { libc::geteuid() } {
+        return Err(format!("{} is owned by uid {owner}, not by the installer; remove or chown it", dir.display()));
+    }
     let tmp = dir.join(".kl-connect.tmp");
     let _ = std::fs::remove_file(&tmp);
     std::fs::copy(from, &tmp).map_err(|e| format!("copy to {}: {e}", tmp.display()))?;
