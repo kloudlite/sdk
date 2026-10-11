@@ -4447,6 +4447,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kloudlite-nettun"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "kloudlite-pulls"
 version = "0.1.0"
 dependencies = [
@@ -4597,6 +4604,7 @@ dependencies = [
  "kloudlite-app",
  "kloudlite-core",
  "kloudlite-gitbase",
+ "kloudlite-nettun",
  "kloudlite-pulls",
  "kloudlite-registry",
  "kloudlite-server",
