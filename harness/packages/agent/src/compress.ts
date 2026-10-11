@@ -17,6 +17,8 @@ const MAX_ITEMS = 15;
 // A refusal is already short and exact; compressing it hides why the tool said no.
 const REFUSAL = /^(blocked|failed|denied|error)/i;
 const HASH = /^[0-9a-f]{12}$/;
+// Kompress is a small model behind one POST; past this a reply cannot land inside the timeout.
+const MODEL_MAX = 200_000;
 
 /** Write the original once under its content hash; the hash is the only name the model can use. */
 export function remember(dir: string, original: string): string {
@@ -263,7 +265,7 @@ export function compress(dir: string, text: string, query = ""): Compressed {
 export async function compressWithModel(dir: string, text: string, query = ""): Promise<Compressed> {
   const c = compress(dir, text, query);
   const url = process.env.KL_KOMPRESS_URL;
-  if (!url || !c.plain) return c;
+  if (!url || !c.plain || text.length > MODEL_MAX) return c;
 
   try {
     const res = await fetch(`${url}/compress`, {
@@ -277,11 +279,11 @@ export async function compressWithModel(dir: string, text: string, query = ""): 
     if (typeof body.compressed !== "string" || body.compressed_tokens >= body.original_tokens * 0.8) return c; // same size gate as the rules
     const hash = remember(dir, text);
     return {
-      text: body.compressed + marker(body.original_tokens, body.compressed_tokens, hash),
+      text: body.compressed + marker(text.length, body.compressed.length, hash),
       hash,
       strategy: "kompress",
-      before: body.original_tokens,
-      after: body.compressed_tokens,
+      before: text.length,
+      after: body.compressed.length,
     };
   } catch {
     return c; // network error, timeout, bad json: the rules result already stands
