@@ -111,10 +111,15 @@ export async function space(): Promise<SpaceView> {
 
   const follows = mine?.find((m) => m.team === team) ?? mine?.[0];
   const connected: string | undefined = follows?.environment ?? undefined;
-  // Only the connected environment's snapshot: the sidebar shows that one, and each is a history read.
+  // Only the connected environment's snapshot: the sidebar shows that one, and each costs two reads.
+  // `restored_to` is on the single-environment doc only (read from its Volume); the list leaves it
+  // null, so reading it from the list showed the newest record after every in-place restore.
   const on = envs.find((e) => e.id === connected);
-  const history = on ? await capped(apiJson<Snap[]>("GET", `/v1/volumes/${encodeURIComponent(on.id)}/history`)) : undefined;
-  const at = on && history ? envCurrent(history, on.restored_to ?? null, on.restore_requested_at ?? null) : undefined;
+  const id = on ? encodeURIComponent(on.id) : "";
+  const [doc, history] = on
+    ? await Promise.all([capped(apiJson<any>("GET", `/v1/environments/${id}`)), capped(apiJson<Snap[]>("GET", `/v1/volumes/${id}/history`))])
+    : [];
+  const at = doc && history ? envCurrent(history, doc.restored_to ?? null, doc.restore_requested_at ?? null) : undefined;
 
   const environments: SpaceEnvironment[] = envs.map((e) => {
     const status = new Map<string, any>((e.service_status ?? []).map((s: any) => [s.name, s]));
