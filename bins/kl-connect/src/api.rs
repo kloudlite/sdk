@@ -36,6 +36,9 @@ pub fn client() -> &'static reqwest::Client {
 /// 401 is the one status callers branch on (an expired cli token), so it is its own variant.
 pub enum Error {
     Unauthorized,
+    /// 403 / 404: access lost or the thing is gone. The env daemon tears down on these but only
+    /// retries on every other failure, so they cannot be folded into `Other`.
+    Gone(u16, String),
     Other(String),
 }
 
@@ -43,6 +46,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Unauthorized => write!(f, "your login has expired — run `kl-connect login`"),
+            Error::Gone(c, m) => write!(f, "{c}: {m}"),
             Error::Other(m) => write!(f, "{m}"),
         }
     }
@@ -60,7 +64,11 @@ async fn json<T: serde::de::DeserializeOwned>(r: reqwest::Response) -> Result<T,
             .ok()
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
             .unwrap_or_else(|| body.trim().to_string());
-        return Err(Error::Other(format!("{}: {msg}", status.as_u16())));
+        let code = status.as_u16();
+        if code == 403 || code == 404 {
+            return Err(Error::Gone(code, msg));
+        }
+        return Err(Error::Other(format!("{code}: {msg}")));
     }
     serde_json::from_str(&body).map_err(|e| Error::Other(e.to_string()))
 }
@@ -213,4 +221,83 @@ pub async fn builder_status(
         req = req.query(&[("team", t)]);
     }
     json(req.send().await.map_err(|e| Error::Other(e.to_string()))?).await
+}
+
+/// One of the caller's spaces (`GET /v1/me/environments`): the environment that team follows.
+#[derive(serde::Deserialize, Clone, PartialEq)]
+pub struct Space {
+    pub team: String,
+    pub environment: String,
+    #[allow(dead_code)]
+    pub region: Option<String>,
+}
+
+/// The slice of `model::Environment` the env daemon reads.
+#[derive(serde::Deserialize)]
+pub struct EnvDoc {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub services: Vec<EnvService>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct EnvService {
+    pub name: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub ports: Vec<u16>,
+}
+
+pub async fn spaces(cfg: &crate::config::Config) -> Result<Vec<Space>, Error> {
+    let r = client()
+        .get(format!("{}/v1/me/environments", cfg.api))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    json(r).await
+}
+
+pub async fn set_space(cfg: &crate::config::Config, team: &str, env: &str) -> Result<(), Error> {
+    let r = client()
+        .put(format!("{}/v1/me/environments/{}", cfg.api, path_segment(team)))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "environment": env }))
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    empty(r).await
+}
+
+/// 404 is success: the space is already clear, which is what the caller asked for.
+pub async fn clear_space(cfg: &crate::config::Config, team: &str) -> Result<(), Error> {
+    let r = client()
+        .delete(format!("{}/v1/me/environments/{}", cfg.api, path_segment(team)))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    match empty(r).await {
+        Err(Error::Gone(404, _)) => Ok(()),
+        r => r,
+    }
+}
+
+pub async fn environment(cfg: &crate::config::Config, id: &str) -> Result<EnvDoc, Error> {
+    let r = client()
+        .get(format!("{}/v1/environments/{}", cfg.api, path_segment(id)))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    json(r).await
+}
+
+/// A 2xx with no body we need (204 on PUT/DELETE of a space); failures go through `json`'s mapping.
+async fn empty(r: reqwest::Response) -> Result<(), Error> {
+    if r.status().is_success() {
+        return Ok(());
+    }
+    json::<serde_json::Value>(r).await.map(|_| ())
 }

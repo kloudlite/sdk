@@ -90,6 +90,30 @@ pub async fn proxy(team: Option<&str>) -> Result<(), String> {
     serve(&cfg, team, tokio::io::stdin(), tokio::io::stdout()).await
 }
 
+/// A session for the bench, re-asking every 1 s while the api answers `Waking` (up to
+/// `BENCH_START_WAIT`); `on_wait` sees each waking state. Shared by the TUI pipe and the env
+/// tunnel so both wake a sleeping bench the same way.
+pub async fn session_ready(
+    cfg: &Config,
+    team: Option<&str>,
+    mut on_wait: impl FnMut(&str),
+) -> Result<api::BenchSession, String> {
+    let deadline = tokio::time::Instant::now() + BENCH_START_WAIT;
+    loop {
+        match api::bench_session(cfg, team).await {
+            Ok(SessionAnswer::Ready(s)) => return Ok(s),
+            Ok(SessionAnswer::Waking(state)) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("bench did not start within 90 s".to_string());
+                }
+                on_wait(&state);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
 /// One connection's lifetime: wait for the bench to be `Ready` (re-asking every 1 s while it
 /// answers `Waking`; the state goes to stderr, which kl-tui shows), then dial its TUI door and pump.
 /// `r` is never read before the pump starts — bytes written while the bench slept still arrive.
@@ -98,24 +122,12 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
-    let started = tokio::time::Instant::now();
-    let deadline = started + BENCH_START_WAIT;
     let wait = Progress::start(team);
-    let session = loop {
-        match api::bench_session(cfg, team).await {
-            Ok(SessionAnswer::Ready(s)) => break s,
-            Ok(SessionAnswer::Waking(state)) => {
-                if tokio::time::Instant::now() >= deadline {
-                    wait.stop(false).await;
-                    return Err("bench did not start within 90 s".to_string());
-                }
-                wait.state(&state);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-            Err(e) => {
-                wait.stop(false).await;
-                return Err(e.to_string());
-            }
+    let session = match session_ready(cfg, team, |state| wait.state(state)).await {
+        Ok(s) => s,
+        Err(e) => {
+            wait.stop(false).await;
+            return Err(e);
         }
     };
     wait.stop(true).await;
@@ -135,7 +147,7 @@ struct Progress {
     ticker: Option<tokio::task::JoinHandle<()>>,
     whose: String,
     started: tokio::time::Instant,
-    waited: std::cell::Cell<bool>,
+    waited: std::sync::atomic::AtomicBool,
 }
 
 impl Progress {
@@ -145,12 +157,12 @@ impl Progress {
         let (label, rx) = tokio::sync::watch::channel(format!("Connecting to {whose}"));
         let started = tokio::time::Instant::now();
         let ticker = std::io::stderr().is_terminal().then(|| tokio::spawn(spin(rx, started)));
-        Progress { label, ticker, whose, started, waited: std::cell::Cell::new(false) }
+        Progress { label, ticker, whose, started, waited: std::sync::atomic::AtomicBool::new(false) }
     }
 
     fn state(&self, state: &str) {
         let label = phase_label(state, &self.whose);
-        self.waited.set(true);
+        self.waited.store(true, std::sync::atomic::Ordering::Relaxed);
         if *self.label.borrow() != label {
             if self.ticker.is_none() {
                 eprintln!("{label}");
@@ -168,7 +180,7 @@ impl Progress {
             let _ = t.await;
             eprint!("\r\x1b[2K");
         }
-        if ready && self.waited.get() {
+        if ready && self.waited.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("✓ {} is ready ({}s)", capitalise(&self.whose), self.started.elapsed().as_secs());
         }
     }

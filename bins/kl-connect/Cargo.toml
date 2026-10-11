@@ -24,6 +24,11 @@ tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 futures = { workspace = true }
 dirs = "6"
 open = "5"
+libc = { workspace = true }
+kloudlite-nettun = { path = "../../crates/nettun" }
+boringtun = { workspace = true }
+rand_core = { version = "0.6", features = ["getrandom"] }
+tun = { version = "0.7", features = ["async"] }
 
 [dev-dependencies]
 axum = { workspace = true, features = ["ws"] }
