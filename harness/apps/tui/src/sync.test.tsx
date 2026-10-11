@@ -94,9 +94,9 @@ test("user rows carry the image count from the message's image blocks", () => {
   expect((transcript([{ role: "user", timestamp: 4, content }], false, sum).entries[0] as any).images).toBe(2);
 });
 
-test("pushed session_state sets model, tokens and queue", () => {
-  const p = applyState({ type: "session_state", model: { provider: "openai", id: "x" }, thinkingLevel: "low", autoCompact: true, codemode: true, queued: { steering: ["a"], followUp: ["b"] }, tokens: 12 });
-  expect(p).toEqual({ model: { provider: "openai", id: "x" }, tokens: 12, queued: [{ text: "a", kind: "steer" }, { text: "b", kind: "followUp" }] });
+test("pushed session_state sets model, context and queue", () => {
+  const p = applyState({ type: "session_state", model: { provider: "openai", id: "x" }, thinkingLevel: "low", autoCompact: true, codemode: true, queued: { steering: ["a"], followUp: ["b"] }, context: { tokens: 12, window: 100 } });
+  expect(p).toEqual({ model: { provider: "openai", id: "x" }, context: { tokens: 12, window: 100 }, queued: [{ text: "a", kind: "steer" }, { text: "b", kind: "followUp" }] });
 });
 
 test("a space push with error keeps focus; a good push without the workspace clamps", () => {
@@ -123,7 +123,7 @@ function sessionStub(msgs: any[]) {
     {
       get messages() { return msgs; },
       busy: false,
-      state: { type: "session_state", model: hello().defaultModel, tokens: 0, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
+      state: { type: "session_state", model: hello().defaultModel, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
       subscribe: (cb: any) => (listeners.add(cb), () => listeners.delete(cb)),
     },
     { get: (o: any, k) => (k in o ? o[k] : k === "then" ? undefined : noop) },

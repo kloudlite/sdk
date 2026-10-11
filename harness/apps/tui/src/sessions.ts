@@ -18,7 +18,7 @@ export type Session = {
    */
   restored?: boolean;
   busy: boolean;
-  tokens: number;
+  context?: { tokens: number | null; window: number };
   /** Prompts submitted in this session, oldest first (↑/↓ recall). */
   history: string[];
   model: ModelRef;
@@ -31,7 +31,7 @@ export type Session = {
 
 export type QueuedMessage = { text: string; kind: "steer" | "followUp" };
 
-const emptySession: Session = { entries: [], busy: false, tokens: 0, history: [], model: DEFAULT_MODEL, queued: [] };
+const emptySession: Session = { entries: [], busy: false, history: [], model: DEFAULT_MODEL, queued: [] };
 
 /** The workspace a session key belongs to: `main`, `ws-…`; `ws-…:agent-<hex>` belongs to `ws-…`. */
 export function baseOf(key: string): string {

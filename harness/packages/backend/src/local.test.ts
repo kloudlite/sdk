@@ -114,7 +114,7 @@ function promptAgent(messages: unknown[]) {
   const seen: string[] = [];
   return { seen, messages, subscribe: () => () => {}, prompt: async (t: string) => void (seen.push(t), messages.push({ role: "user" })), dispose() {} };
 }
-const blank = (): any => ({ type: "session_state", model: { provider: "p", id: "m" }, thinkingLevel: "off", autoCompact: true, codemode: false, queued: { steering: [], followUp: [] }, tokens: 0 });
+const blank = (): any => ({ type: "session_state", model: { provider: "p", id: "m" }, thinkingLevel: "off", autoCompact: true, codemode: false, queued: { steering: [], followUp: [] } });
 const handleOf = (agent: any, key: string) => baseHandle(agent, key, { busy: new Set(), onEnd() {}, onDispose() {}, state: blank() });
 
 test("compact passes instructions to pi, empty becomes undefined", async () => {
@@ -475,4 +475,14 @@ test("a task the backend closes without a summary (an answered ask) does not res
 test("compact drops pi's rejection, which compaction_end already reported", async () => {
   const h = handleOf({ subscribe: () => () => {}, messages: [], compact: async () => { throw new Error("Nothing to compact (session too small)"); }, dispose() {} }, "main");
   await h.compact();
+});
+
+test("an assistant message_end fills state.context from pi's context usage", () => {
+  for (const [usage, want] of [[{ tokens: 5000, contextWindow: 184000, percent: 2.7 }, { tokens: 5000, window: 184000 }], [undefined, undefined]] as const) {
+    let fire: (e: any) => void = () => {};
+    const state = blank();
+    baseHandle({ subscribe: (cb: any) => ((fire = cb), () => {}), messages: [], getContextUsage: () => usage, dispose() {} } as any, "main", { busy: new Set(), onEnd() {}, onDispose() {}, state });
+    fire({ type: "message_end", message: { role: "assistant" } });
+    expect(state.context).toEqual(want);
+  }
 });

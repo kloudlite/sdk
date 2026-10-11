@@ -728,7 +728,7 @@ function btwSession(calls: { btw: string[]; abort: number; prompt: string[] }, r
     {
       messages: [],
       busy: false,
-      state: { type: "session_state", model: hello().defaultModel, tokens: 0, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
+      state: { type: "session_state", model: hello().defaultModel, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
       subscribe: () => () => {},
       btw: async (q: string) => (calls.btw.push(q), reply()),
       abort: async () => void calls.abort++,
