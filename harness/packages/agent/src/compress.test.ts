@@ -67,14 +67,17 @@ test("kompress: a good reply is used for plain text and the original is retrieva
   }
 });
 
-test("kompress: any shrink is used, no shrink falls back to rules", async () => {
+test("kompress: any shrink with the marker counted is used, otherwise rules", async () => {
   const d = dir();
-  let reply = { compressed: "shorter", original_tokens: 1029, compressed_tokens: 874 };
+  // the marker is ~130 chars: 200 dropped still shrinks, 50 dropped grows once it is appended
+  let reply = { compressed: PLAIN.slice(200), original_tokens: 9, compressed_tokens: 1 };
   const srv = Bun.serve({ port: 0, fetch: () => Response.json(reply) });
   process.env.KL_KOMPRESS_URL = `http://localhost:${srv.port}`;
   try {
-    expect((await compressWithModel(d, PLAIN)).strategy).toBe("kompress");
-    reply = { compressed: "same", original_tokens: 1029, compressed_tokens: 1029 };
+    const c = await compressWithModel(d, PLAIN);
+    expect(c.strategy).toBe("kompress");
+    expect(c.text.length).toBeLessThan(PLAIN.length);
+    reply = { compressed: PLAIN.slice(50), original_tokens: 9, compressed_tokens: 1 };
     expect((await compressWithModel(d, PLAIN)).strategy).not.toBe("kompress");
   } finally {
     srv.stop(true);
