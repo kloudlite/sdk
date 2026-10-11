@@ -403,9 +403,20 @@ pub(crate) async fn get_env(
     Named(id): Named,
 ) -> Result<Response, Response> {
     let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
-    let e = find_env(&s, &caller_id, &id).await?;
-    let c = kube(&s)?;
-    let pushed = pushed_volumes(&s, c, &e.spec.owner).await?;
+    Ok(read_env(&s, &caller_id, &id).await?.1)
+}
+
+/// Strong ETag of an Environment: its `resourceVersion`, quoted. Any write to the object moves it.
+fn env_tag(e: &crd::Environment) -> String {
+    format!("\"{}\"", e.resource_version().unwrap_or_default())
+}
+
+/// What `get_env` answers, plus the tag it carries. One read for both routes, so the watch's 200
+/// is byte-for-byte the plain GET.
+async fn read_env(s: &ApiState, caller_id: &Caller, id: &str) -> Result<(String, Response), Response> {
+    let e = find_env(s, caller_id, id).await?;
+    let c = kube(s)?;
+    let pushed = pushed_volumes(s, c, &e.spec.owner).await?;
     let mut doc = env_doc(&e, &pushed);
     // Which snapshot is CURRENT is the Volume's answer, not the history's: an in-place restore
     // makes an OLDER record the live one, and a page that assumed "newest = current" would then
@@ -417,7 +428,63 @@ pub(crate) async fn get_env(
             doc.restore_requested_at = st.restore_requested_at;
         }
     }
-    Ok(Json(doc).into_response())
+    let tag = env_tag(&e);
+    let mut r = Json(doc).into_response();
+    if let Ok(v) = tag.parse() {
+        r.headers_mut().insert(axum::http::header::ETAG, v);
+    }
+    Ok((tag, r))
+}
+
+/// Long-poll form of `get_env`, for the laptop daemon: same contract as
+/// `GET /v1/me/environments/watch`. A client with no tag, or a stale one, is answered now; the
+/// same one is held until the Environment changes, then re-read (200 if it moved, 304 if not).
+/// The server gives up after 50 s with 304; the client just asks again.
+pub(crate) async fn watch_env(
+    State(s): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    method: axum::http::Method,
+    uri: axum::extract::OriginalUri,
+    Named(id): Named,
+) -> Result<Response, Response> {
+    use futures::TryStreamExt;
+    use kube::api::{WatchEvent, WatchParams};
+    use std::time::Duration;
+    let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
+    let seen = headers.get(axum::http::header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+    let e = find_env(&s, &caller_id, &id).await?;
+    let name = e.name_any();
+    let rv = e.resource_version().unwrap_or_default();
+    if super::me::answers_now(seen, &env_tag(&e)) {
+        return Ok(read_env(&s, &caller_id, &id).await?.1);
+    }
+    // ponytail: one Kubernetes watch per held request; a shared reflector keyed by environment is the upgrade if many laptops connect.
+    let wp = WatchParams::default().fields(&format!("metadata.name={name}")).timeout(50);
+    // A watch that cannot open, errors or ends early holds until the deadline instead: answering
+    // at once would turn the client's immediate re-ask into a hot loop. The re-read answers every case.
+    let envs: Api<crd::Environment> = Api::all(kube(&s)?.clone());
+    let _ = tokio::time::timeout(Duration::from_secs(55), async {
+        if let Ok(st) = envs.watch(&wp, &rv).await {
+            let mut st = Box::pin(st);
+            while let Ok(Some(ev)) = st.try_next().await {
+                if let WatchEvent::Added(_) | WatchEvent::Modified(_) | WatchEvent::Deleted(_) = ev {
+                    return;
+                }
+            }
+        }
+        std::future::pending::<()>().await
+    })
+    .await;
+    // A deleted object answers whatever `get_env` does (404).
+    let (tag, r) = read_env(&s, &caller_id, &id).await?;
+    if super::me::answers_now(seen, &tag) {
+        return Ok(r);
+    }
+    let mut r = StatusCode::NOT_MODIFIED.into_response();
+    if let Ok(v) = tag.parse() {
+        r.headers_mut().insert(axum::http::header::ETAG, v);
+    }
+    Ok(r)
 }
 
 pub(crate) async fn start_env(

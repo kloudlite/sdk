@@ -76,7 +76,7 @@ fn wakes(x: &crd::SpaceEnvironment, caller: &Caller) -> bool {
 }
 
 /// A client with no tag, or a different one, is answered without waiting.
-fn answers_now(if_none_match: Option<&str>, tag: &str) -> bool {
+pub(super) fn answers_now(if_none_match: Option<&str>, tag: &str) -> bool {
     if_none_match != Some(tag)
 }
 

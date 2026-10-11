@@ -87,7 +87,7 @@ pub use workspaces::keys_changed;
 
 use environments::{
     get_builder, get_my_builder, list_builders, start_builder, stop_builder,
-    clear_intercept, clone_env, create_env, delete_env, get_env, list_env, restore_env,
+    clear_intercept, clone_env, create_env, delete_env, get_env, watch_env, list_env, restore_env,
     patch_env_services, restore_env_in_place, set_intercept, start_env, stop_env,
 };
 use bench::{bench_session, bench_teams, create_bench, get_bench, start_bench, stop_bench};
@@ -114,6 +114,7 @@ pub const ENVIRONMENT_ID_ROUTES: &[&str] = &[
     "/v1/environments/{id}/restore-in-place",
     "/v1/environments/{id}/intercepts",
     "/v1/environments/{id}/intercepts/{service}",
+    "/v1/environments/{id}/watch",
 ];
 
 /// (method, axum path pattern). The pod's audience; everything else refuses a bench-tool caller.
@@ -239,6 +240,7 @@ mod route_tests {
         "/v1/teams/{slug}/members/{email}/delete-now",
         "/v1/teams/{slug}/removals",
         "/v1/me/environments/watch",
+        "/v1/environments/{id}/watch",
         "/v1/bench",
         "/v1/bench/teams",
         "/v1/bench/start",
@@ -429,6 +431,7 @@ pub fn router(state: Arc<ApiState>) -> Router {
         // Before `/{id}`: `restore` is a verb, not an environment id.
         .route("/v1/environments/restore", post(restore_env))
         .route("/v1/environments/{id}", get(get_env).delete(delete_env).patch(patch_env_services))
+        .route("/v1/environments/{id}/watch", get(watch_env))
         .route("/v1/environments/{id}/start", post(start_env))
         .route("/v1/environments/{id}/stop", post(stop_env))
         .route("/v1/environments/{id}/clone", post(clone_env))
