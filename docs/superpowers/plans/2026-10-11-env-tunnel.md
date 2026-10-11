@@ -8,11 +8,11 @@ the bench pod.
 
 **Architecture:** A root launchd daemon in `kl-connect` runs boringtun on a `utun` device and sends
 each datagram, length-framed, through `wss://{gateway}/net/{bench}`. The gateway pipes the bytes to
-the bench pod's new `net` container (`bins/bench-net`, TCP 7792), which runs one boringtun peer per
-stream, writes to a TUN device and MASQUERADEs out of `eth0`. The daemon polls every 10 s and keeps
+the bench pod's new `net` container (`bins/bench-net`, TCP 7792), which runs one boringtun peer and one
+userspace TCP/IP stack (`ipstack`) per stream and opens an ordinary pod socket for every connection. The daemon polls every 10 s and keeps
 a marked block in `/etc/hosts` equal to the environment's services.
 
-**Tech Stack:** Rust (tokio, boringtun, tun, x25519), axum gateway, k8s-openapi pod render,
+**Tech Stack:** Rust (tokio, boringtun, ipstack, tun on the laptop, x25519), axum gateway, k8s-openapi pod render,
 Node 24 (`bench/sessions/main.ts`), launchd.
 
 **Spec:** `docs/superpowers/specs/2026-10-11-env-tunnel-design.md`
@@ -26,11 +26,12 @@ Node 24 (`bench/sessions/main.ts`), launchd.
 - macOS only on the laptop (launchd). Plist `/Library/LaunchDaemons/io.kloudlite.kl-connect.plist`.
 - Framing: 2-byte big-endian length, then payload; length 0 or a short read closes the stream.
 - Handshake: laptop sends its 32-byte public key; bench answers 32-byte public key + 4-byte peer
-  address from `100.96.0.0/16`, unique per open stream. Bench TUN `100.96.0.1/16`.
+  address from `100.96.0.0/16`, unique per open stream. `GATEWAY` `100.96.0.1` is the laptop utun's point-to-point peer.
 - Ports: `BENCH_NET_PORT` = 7792. Service CIDR `10.43.0.0/16`, cluster DNS `10.43.0.10`.
 - Poll 10 s. Reconnect backoff 1 s doubling to 30 s, new bench session each time.
 - `net.streams` in `/run/kl-net`, written every 5 s, stale after 15 s.
-- `NET_ADMIN` only on container `net`, never `sessions`. Fallback `privileged: true`, `net` only.
+- No capability, hostPath or sysctl anywhere: `net` runs the plain `hardened()` context under gVisor.
+- TCP and UDP only; ICMP is dropped. Inner MTU 1420 on both ends.
 - Hosts block markers: `# kl-connect begin env=<id> name=<name>` … `# kl-connect end`.
 - Commits: imperative sentence case, no tool attribution, no trailers.
 - Cargo on the laptop with `CARGO_TARGET_DIR=/Volumes/kdisk/target-env-tunnel`; never on the dev pod.
@@ -43,7 +44,7 @@ Node 24 (`bench/sessions/main.ts`), launchd.
 1. **A service name already in `/etc/hosts` outside the block** (e.g. `api`): left untouched,
    skipped, listed in `env-status.json`. Test in Task 7 (`a_name_defined_outside_is_skipped`).
 2. **A stream whose decrypted packet claims another stream's source address**: dropped, never
-   written to the TUN. Test in Task 3 (`a_packet_from_the_wrong_address_is_dropped`).
+   fed to the stack. Test in Task 3 (`a_packet_from_the_wrong_address_is_dropped`).
 3. **`/etc/hosts` without a trailing newline, or with CRLF**: block appended on its own line, the
    rest byte for byte. Test in Task 7 (`a_file_without_a_trailing_newline_keeps_its_last_line`).
 4. **Daemon killed mid-write**: temp file in `/etc` + rename, never a half-written `/etc/hosts`; a
@@ -63,8 +64,9 @@ Node 24 (`bench/sessions/main.ts`), launchd.
 | `crates/nettun/src/frame.rs` | `read_frame` / `write_frame` |
 | `crates/nettun/src/handshake.rs` | `Hello`, `Welcome`, `Pool` (address allocator) |
 | `crates/nettun/src/dns.rs` | one A query encode/decode (stdlib only) |
-| `bins/bench-net/src/main.rs` | TUN, NAT, listener, per-stream peers, `net.streams` |
-| `crates/workspaces/src/k8s/bench.rs` | `net` container, port, policy, volumes, sysctl |
+| `bins/bench-net/src/main.rs` | listener, per-stream peer + stack, sockets out, `net.streams` |
+| `bins/bench-net/src/link.rs` | packet device for `ipstack`, `admit`, `write_count` |
+| `crates/workspaces/src/k8s/bench.rs` | `net` container, port, policy, volume |
 | `bench/sessions/main.ts` | `streams()` in `isIdle` |
 | `bins/gateway/src/tunnel.rs` | `/net/{bench}` route |
 | `bins/kl-connect/src/env/{mod,cmd,hosts,daemon,launchd,tunnel}.rs` | CLI + daemon |
@@ -75,106 +77,8 @@ Node 24 (`bench/sessions/main.ts`), launchd.
 
 ### Task 1: k3s probe — which `net` form the runtime admits
 
-No code kept. Decides what Task 4 renders.
-
-**Files:**
-- Modify: `deploy/k3s/README.md` (new section "Kubelet args for the bench net container")
-- Modify: `docs/superpowers/specs/2026-10-11-env-tunnel-design.md` (one line under §5 recording the form)
-
-**Interfaces:**
-- Produces: `FORM` = `narrow` or `privileged`, written in the spec line and the ledger. Task 4 reads it.
-
-- [ ] **Step 1: Find a k3s tenant kubeconfig and a space namespace with an environment**
-
-```bash
-ls ~/.kube/ | grep -i k3s
-KC=<the k3s tenant kubeconfig found above>
-kubectl --kubeconfig $KC get spaceenvironments -o wide
-kubectl --kubeconfig $KC get ns | grep -E '^(ws|env)-'
-```
-
-Pick a `ws-{owner}` namespace whose space has an environment `env-{hex}`; note one ClusterIP:port
-from `kubectl --kubeconfig $KC -n env-{hex} get svc`.
-
-- [ ] **Step 2: Check the kubelet admits the sysctl**
-
-```bash
-kubectl --kubeconfig $KC get nodes -o name | head -1
-ssh <node> 'ps -ef | grep -o "allowed-unsafe-sysctls=[^ ]*"; cat /etc/rancher/k3s/config.yaml'
-```
-
-If `net.ipv4.ip_forward` is absent, add to `/etc/rancher/k3s/config.yaml` on every agent node:
-
-```yaml
-kubelet-arg:
-  - "allowed-unsafe-sysctls=net.ipv4.ip_forward"
-```
-
-then `systemctl restart k3s-agent` (ask the owner before restarting any node that runs bench or
-workspace pods).
-
-- [ ] **Step 3: Run the narrow-form probe pod** in `ws-{owner}` (labels copied from that owner's
-bench pod so `space-env` admits it):
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata: { name: net-probe, namespace: ws-<owner>, labels: <bench pod labels> }
-spec:
-  securityContext: { sysctls: [{ name: net.ipv4.ip_forward, value: "1" }] }
-  containers:
-  - name: net
-    image: nicolaka/netshoot:v0.13
-    command: ["sleep", "3600"]
-    securityContext:
-      runAsNonRoot: false
-      runAsUser: 0
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] }
-    volumeMounts:
-    - { name: tun, mountPath: /dev/net/tun }
-    - { name: tmp, mountPath: /tmp }
-  volumes:
-  - { name: tun, hostPath: { path: /dev/net/tun, type: CharDevice } }
-  - { name: tmp, emptyDir: {} }
-```
-
-- [ ] **Step 4: Inside the pod, bring up TUN + MASQUERADE and reach the ClusterIP from a peer address**
-
-```bash
-kubectl --kubeconfig $KC -n ws-<owner> exec net-probe -- sh -c '
-  ip tuntap add dev kl0 mode tun && ip addr add 100.96.0.1/16 dev kl0 && ip link set kl0 up &&
-  XTABLES_LOCKFILE=/tmp/xtables.lock iptables -t nat -A POSTROUTING -s 100.96.0.0/16 -o eth0 -j MASQUERADE &&
-  cat /proc/sys/net/ipv4/ip_forward &&
-  ip netns add peer && ip link add v0 type veth peer name v1 && ip link set v1 netns peer &&
-  ip addr add 100.96.0.254/32 dev v0 2>/dev/null; echo setup-ok'
-```
-
-If `ip netns` is refused (needs SYS_ADMIN), instead prove forwarding by sourcing from the TUN
-address: `nc -z -s 100.96.0.1 <clusterIP> <port>`. Expected: `1` for ip_forward, `setup-ok`, and
-`nc` exit 0.
-
-- [ ] **Step 5: If any step was refused**, recreate the pod with `securityContext: { privileged: true }`
-on `net` only and repeat Step 4. Record which form worked (`narrow` / `privileged`) and every
-refusal line verbatim in the ledger.
-
-- [ ] **Step 6: Delete the probe pod; write the README section and the spec line**
-
-```bash
-kubectl --kubeconfig $KC -n ws-<owner> delete pod net-probe
-```
-
-README section text: the `kubelet-arg` YAML above, why (`net` container sets
-`net.ipv4.ip_forward` per pod), and the probe result. Spec §5 line:
-`Probe 2026-10-11: <FORM> form admitted on k3s (<refusal lines if any>).`
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add deploy/k3s/README.md docs/superpowers/specs/2026-10-11-env-tunnel-design.md
-git commit -m "Record which bench net form k3s admits"
-```
+Done (c964b4c6). Under gVisor no form gives kernel NAT or forwarding (spec §5 records the errors);
+the owner chose the userspace stack (2026-10-11). Nothing for Task 4 to read from it.
 
 ---
 
@@ -442,17 +346,21 @@ git commit -m "Add the tunnel wire format crate"
 
 ### Task 3: `bins/bench-net` — the bench end of the tunnel
 
+Userspace design (owner ruling 2026-10-11, "Userspace stack"; spec §5): no TUN, no NAT, no
+capability. Each stream terminates WireGuard and feeds its own `ipstack` userspace TCP/IP stack;
+every TCP connection / UDP flow the laptop opens becomes an ordinary socket from the bench pod.
+
 **Files:**
-- Create: `bins/bench-net/Cargo.toml`, `bins/bench-net/src/{main,peers}.rs`
+- Create: `bins/bench-net/Cargo.toml`, `bins/bench-net/src/{main,link}.rs`
 - Modify: root `Cargo.toml` (`members` and `default-members` gain `"bins/bench-net"`; workspace deps
-  `boringtun`, `tun`; x25519 comes from boringtun's re-export `boringtun::x25519`, no direct dep)
+  `boringtun`, `ipstack`; x25519 comes from boringtun's re-export `boringtun::x25519`, no direct dep)
 
 **Interfaces:**
 - Consumes: `kloudlite_nettun::{read_frame, write_frame, Hello, Welcome, Pool, GATEWAY, PREFIX}`.
 - Produces: binary `bench-net`; env `KL_NET_PORT` (default 7792), `KL_NET_STREAMS`
   (default `/run/kl-net/net.streams`); writes the open-stream count as decimal text every 5 s.
-  `peers::Peers` (`fn admit(&self, src: Ipv4Addr, stream: Ipv4Addr) -> bool` — the anti-inject rule,
-  `src == stream`).
+  `link::{admit, write_count, Link}`: `fn admit(src: Ipv4Addr, stream: Ipv4Addr) -> bool` (the
+  anti-inject rule, `src == stream`); `Link` is the packet device `ipstack` reads and writes.
 
 - [ ] **Step 1: Add deps and read their vendored source**
 
@@ -465,19 +373,27 @@ edition = "2024"
 [dependencies]
 kloudlite-nettun = { workspace = true }
 boringtun = { version = "0.6", default-features = false }
-tun = { version = "0.7", features = ["async"] }
+ipstack = "1.0.1"
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 ```
 
 Run `cargo fetch`, then read `~/.cargo/registry/src/*/boringtun-0.6*/src/noise/mod.rs` (`Tunn::new`,
-`encapsulate`, `decapsulate`, `update_timers`, `TunnResult`) and `~/.cargo/registry/src/*/tun-0.7*/src/`
-(`Configuration`, `create_as_async`, Linux + macOS). Every call below must match that source; where it
-differs, follow the source and note it in the report.
+`encapsulate`, `decapsulate`, `update_timers`, `TunnResult`) and
+`~/.cargo/registry/src/*/ipstack-1.0.1/src/{lib.rs,stream/tcp.rs,stream/udp.rs}`. Facts already
+read there: `IpStack::new(IpStackConfig, device)` takes any `AsyncRead + AsyncWrite + Unpin + Send +
+'static`; its loop does ONE `device.read` per IP packet into an `mtu`-sized buffer and ONE
+`write_all` per outgoing packet; `accept()` yields `IpStackStream::{Tcp, Udp, UnknownTransport,
+UnknownNetwork}`; `peer_addr()` is the destination the laptop dialled; `TcpConfig::timeout` defaults
+to 60 s idle. Every call below must match that source; where it differs, follow the source and note
+it in the report.
 
-- [ ] **Step 2: Write the failing test** (`peers.rs`)
+- [ ] **Step 2: Write the failing tests** (`link.rs`)
 
 ```rust
 #[test]
@@ -497,85 +413,133 @@ fn the_count_file_holds_the_number() {
     write_count(&p, 0).unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "0");
 }
-```
 
-(`tempfile` as a dev-dependency.)
+#[tokio::test]
+async fn the_link_moves_whole_packets_both_ways() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut link, inbound, mut outbound) = Link::new(4);
+    inbound.send(vec![1, 2, 3]).await.unwrap();
+    let mut buf = [0u8; 1500];
+    assert_eq!(link.read(&mut buf).await.unwrap(), 3);      // one read = one packet
+    assert_eq!(&buf[..3], &[1, 2, 3]);
+    link.write_all(&[9, 9]).await.unwrap();
+    assert_eq!(outbound.recv().await.unwrap(), vec![9, 9]); // one write = one packet
+    drop(inbound);
+    assert_eq!(link.read(&mut buf).await.unwrap(), 0);      // stream gone = EOF
+}
+```
 
 - [ ] **Step 3: Run, expect failure**
 
 Run: `CARGO_TARGET_DIR=/Volumes/kdisk/target-env-tunnel cargo test -p bench-net 2>&1 | tail -5`
 Expected: FAIL (`cannot find function admit`).
 
-- [ ] **Step 4: Implement `peers.rs`**
+- [ ] **Step 4: Implement `link.rs`**
 
 ```rust
-//! Per-stream state on the bench: which peer address a stream owns, and the open-stream count the
-//! sessions daemon reads to stay awake (`bench/sessions/main.ts` `streams()`).
-use std::{net::Ipv4Addr, path::Path};
+//! Per-stream plumbing on the bench: the packet device a stream's userspace stack (`ipstack`) runs
+//! on, the anti-inject rule, and the open-stream count the sessions daemon reads to stay awake
+//! (`bench/sessions/main.ts` `streams()`).
+use std::{io, net::Ipv4Addr, path::Path, pin::Pin, task::{Context, Poll}};
+use tokio::{io::{AsyncRead, AsyncWrite, ReadBuf}, sync::mpsc};
 
-/// A decrypted packet enters the TUN only when its source is the address this stream was given.
+/// A decrypted packet enters the stack only when its source is the address this stream was given.
 /// Without this one stream could speak as another (spec §3: "a stream cannot inject packets for
 /// another stream's address").
 pub fn admit(src: Ipv4Addr, stream: Ipv4Addr) -> bool { src == stream }
 
 /// Rename over, so the reader never sees a half-written number.
-pub fn write_count(p: &Path, n: usize) -> std::io::Result<()> {
+pub fn write_count(p: &Path, n: usize) -> io::Result<()> {
     let tmp = p.with_extension("tmp");
     std::fs::write(&tmp, n.to_string())?;
     std::fs::rename(tmp, p)
 }
+
+/// `ipstack`'s device: reads hand it one decrypted packet each, writes take one packet each for the
+/// stream to encrypt. A full outbound queue drops the packet, as a congested link would; TCP
+/// retransmits, and a stalled laptop cannot grow the bench's memory.
+pub struct Link { rx: mpsc::Receiver<Vec<u8>>, tx: mpsc::Sender<Vec<u8>> }
+
+impl Link {
+    /// (device, sender of inbound packets, receiver of outbound packets)
+    pub fn new(depth: usize) -> (Link, mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) {
+        let (in_tx, in_rx) = mpsc::channel(depth);
+        let (out_tx, out_rx) = mpsc::channel(depth);
+        (Link { rx: in_rx, tx: out_tx }, in_tx, out_rx)
+    }
+}
+
+impl AsyncRead for Link {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        match self.rx.poll_recv(cx) {
+            // ponytail: an over-MTU packet is truncated; the laptop utun MTU matches ours (Task 7)
+            Poll::Ready(Some(p)) => { let n = p.len().min(buf.remaining()); buf.put_slice(&p[..n]); Poll::Ready(Ok(())) }
+            Poll::Ready(None) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncWrite for Link {
+    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, b: &[u8]) -> Poll<io::Result<usize>> {
+        let _ = self.tx.try_send(b.to_vec());
+        Poll::Ready(Ok(b.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> { Poll::Ready(Ok(())) }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> { Poll::Ready(Ok(())) }
+}
 ```
 
-- [ ] **Step 5: Implement `main.rs`** — `//!` header (container `net` in the bench pod, why it is a
-separate container, the spec path, the probe's form). Flow:
+- [ ] **Step 5: Implement `main.rs`** — `//!` header (container `net` in the bench pod, plain
+hardened context, why userspace: the gVisor probe in spec §5, the spec path). Flow:
 
 ```rust
+const MTU: u16 = 1420; // WireGuard's usual inner MTU; the laptop utun uses the same (Task 7)
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().json().init();
     let port: u16 = std::env::var("KL_NET_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(7792);
     let count = std::env::var("KL_NET_STREAMS").unwrap_or_else(|_| "/run/kl-net/net.streams".into());
-    if std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward").map(|s| s.trim() != "1").unwrap_or(true) {
-        eprintln!("net.ipv4.ip_forward is not 1; the pod sysctl is missing (deploy/k3s/README.md)");
-        std::process::exit(1);
-    }
-    let mut cfg = tun::Configuration::default();
-    cfg.tun_name("kl0").address(GATEWAY).netmask((255, 255, 0, 0)).up();
-    let dev = tun::create_as_async(&cfg).expect("tun");
-    nat().expect("iptables MASQUERADE");
     let secret = boringtun::x25519::StaticSecret::random_from_rng(rand_core::OsRng);   // memory only
-    let public = x25519::PublicKey::from(&secret);
-    // routes: peer address -> sender of plaintext packets bound for that peer
-    let routes: Arc<Mutex<HashMap<Ipv4Addr, mpsc::Sender<Vec<u8>>>>> = Default::default();
+    let public = boringtun::x25519::PublicKey::from(&secret);
     let pool = Arc::new(Mutex::new(Pool::new()));
-    let (tun_rx, tun_tx) = split dev;                 // per tun 0.7 async API
-    let to_tun: mpsc::Sender<Vec<u8>> = spawn writer task over tun_tx;
-    spawn reader task: read packet from tun_rx, dst = Ipv4 header bytes 16..20, look up routes, try_send (drop if full);
-    spawn count task: every 5 s write_count(&count, routes.len());
+    let open = Arc::new(AtomicUsize::new(0));
+    spawn count task: every 5 s write_count(&count, open.load()) (log and continue on error);
     let l = TcpListener::bind(("0.0.0.0", port)).await.unwrap();
-    loop { let (s, _) = l.accept().await?; spawn stream(s, secret.clone(), public, pool, routes, to_tun) }
+    loop { let (s, _) = l.accept().await?; spawn stream(s, secret.clone(), public, pool.clone(), open.clone()) }
 }
 ```
 
 `stream()`:
 1. `read_frame` → `Hello::decode` (else close). `pool.take()` (None → close, log `net.full`).
+   `open += 1`.
 2. `write_frame(Welcome { key: public.to_bytes(), addr })`.
 3. `Tunn::new(secret, PublicKey::from(hello.key), None, Some(25), index, None)` (index = host part).
-4. Insert `(addr, plain_tx)` into routes.
+4. `let (link, inbound, mut outbound) = Link::new(256);` and
+   `let mut cfg = IpStackConfig::default(); cfg.mtu(MTU)?;` with `TcpConfig { timeout: 2 h, ..Default }`
+   via `with_tcp_config` (the 60 s default would cut idle database pools); `udp_timeout(60 s)`.
+   `let mut stack = IpStack::new(cfg, link);`
 5. `select!` loop:
    - frame in → `decapsulate(None, frame, out)`; `WriteToNetwork` → `write_frame` and keep calling
      `decapsulate(None, &[], out)` until `Done` (boringtun's queued-packet rule); `WriteToTunnelV4(p, src)`
-     → `if admit(src, addr) { to_tun.send(p) } else { tracing::warn!(%src, %addr, "net.inject") }`.
-   - plaintext from `plain_rx` → `encapsulate` → `write_frame`.
+     → `if admit(src, addr) { let _ = inbound.try_send(p.to_vec()) } else { tracing::warn!(%src, %addr, "net.inject") }`.
+     `WriteToTunnelV6` → drop.
+   - `outbound.recv()` → `encapsulate` → `write_frame`.
+   - `stack.accept()` →
+     - `Tcp(t)`: spawn `TcpStream::connect(t.peer_addr())` with a 10 s timeout, then
+       `tokio::io::copy_bidirectional(&mut t, &mut s)`; connect failure drops `t` (the laptop sees a
+       reset). Log `net.tcp` with `dst`, `ok`, bytes each way.
+     - `Udp(u)`: spawn `UdpSocket::bind("0.0.0.0:0")`, `connect(u.peer_addr())`, then pump datagrams
+       both ways (`u.read` → `sock.send`, `sock.recv` → `u.write_all`) until either side ends; one
+       read of `u` is one datagram (udp.rs). This carries DNS to `10.43.0.10:53`.
+     - `UnknownTransport`/`UnknownNetwork` (ICMP etc.): drop (spec: no ping).
    - 250 ms tick → `update_timers` → `WriteToNetwork` → `write_frame`; `Err(ConnectionExpired)` → close.
-6. On any exit: remove from routes, `pool.free(addr)`.
+6. On any exit: drop the stack (its task aborts on `Drop`, closing every socket it spawned via the
+   copies ending), `pool.free(addr)`, `open -= 1`. Hold each spawned copy's `JoinHandle` in a
+   `tokio::task::JoinSet` owned by the stream so they abort with it.
 
-`nat()`: runs
-`iptables -w -t nat -C POSTROUTING -s 100.96.0.0/16 -o eth0 -j MASQUERADE || iptables -w -t nat -A ...`
-with env `XTABLES_LOCKFILE=/tmp/xtables.lock` (read-only root; `/tmp` is the emptyDir). `-C` first so a
-container restart in the same pod network namespace does not stack duplicate rules.
-
-- [ ] **Step 6: Tests + clippy pass; build musl**
+- [ ] **Step 6: Tests + clippy pass**
 
 Run: `CARGO_TARGET_DIR=/Volumes/kdisk/target-env-tunnel cargo test -p bench-net 2>&1 | tail -3; cargo clippy -p bench-net --all-targets -- -D warnings 2>&1 | tail -3`
 Expected: PASS, clean. (The musl build runs in CI and Dagger; Task 8 wires it.)
@@ -594,12 +558,11 @@ git commit -m "Add the bench end of the environment tunnel"
 **Files:**
 - Modify: `crates/workspaces/src/k8s/bench.rs` (`BENCH_NET_PORT`, new `net_container`, policy port)
 - Modify: `crates/workspaces/src/k8s/workspace.rs` (`workspace_pod` bench branch: second container,
-  volumes `kl-net` emptyDir + `tun` hostPath, pod sysctl; `sessions` mounts `/run/kl-net` read-only)
+  volume `kl-net` emptyDir; `sessions` mounts `/run/kl-net` read-only)
 - Modify: `crates/workspaces/src/k8s/mod.rs` (re-export `BENCH_NET_PORT` beside `BENCH_TUI_PORT`)
 - Test: `crates/workspaces/src/k8s/tests/bench.rs`
 
 **Interfaces:**
-- Consumes: `FORM` from Task 1.
 - Produces: `pub const BENCH_NET_PORT: u16 = 7792;` (gateway uses it); container name `net`; env
   `KL_NET_PORT=7792`, `KL_NET_STREAMS=/run/kl-net/net.streams` on `net`; mount `/run/kl-net` in both.
 
@@ -607,32 +570,24 @@ git commit -m "Add the bench end of the environment tunnel"
 
 ```rust
 #[test]
-fn net_admin_reaches_the_net_container_only() {
+fn the_net_container_is_plainly_hardened() {
     let pod = bench_pod_for_test();             // new helper, see below
     let cs = &pod.spec.as_ref().unwrap().containers;
-    let caps = |name: &str| cs.iter().find(|c| c.name == name).unwrap()
-        .security_context.as_ref().unwrap().capabilities.as_ref().and_then(|c| c.add.clone()).unwrap_or_default();
-    assert_eq!(caps("net"), vec!["NET_ADMIN".to_string()]);
-    assert!(caps(BENCH_CONTAINER).is_empty());
     let net = cs.iter().find(|c| c.name == "net").unwrap();
+    // no capability, no privilege: the workspace pod fence admits it unchanged (spec §5)
+    assert_eq!(net.security_context, Some(crate::k8s::workspace::hardened()));
     assert_eq!(net.ports.as_ref().unwrap()[0].container_port, BENCH_NET_PORT as i32);
-    assert_eq!(net.security_context.as_ref().unwrap().read_only_root_filesystem, Some(true));
 }
 
 #[test]
-fn both_containers_share_the_streams_dir_and_net_gets_the_tun() {
+fn both_containers_share_the_streams_dir() {
     let pod = bench_pod_for_test();
     let spec = pod.spec.as_ref().unwrap();
     let mounts = |name: &str| spec.containers.iter().find(|c| c.name == name).unwrap()
         .volume_mounts.clone().unwrap_or_default().into_iter().map(|m| (m.mount_path, m.read_only.unwrap_or(false))).collect::<Vec<_>>();
     assert!(mounts("net").contains(&("/run/kl-net".into(), false)));
     assert!(mounts(BENCH_CONTAINER).contains(&("/run/kl-net".into(), true)));
-    assert!(mounts("net").iter().any(|(p, _)| p == "/dev/net/tun"));
-    assert!(!mounts(BENCH_CONTAINER).iter().any(|(p, _)| p == "/dev/net/tun"));
-    let tun = spec.volumes.as_ref().unwrap().iter().find(|v| v.name == "tun").unwrap();
-    assert_eq!(tun.host_path.as_ref().unwrap().type_.as_deref(), Some("CharDevice"));
-    let sysctls = spec.security_context.as_ref().unwrap().sysctls.clone().unwrap();
-    assert!(sysctls.iter().any(|s| s.name == "net.ipv4.ip_forward" && s.value == "1"));
+    assert!(spec.volumes.as_ref().unwrap().iter().all(|v| v.host_path.is_none() || v.name != "kl-net"));
 }
 
 #[test]
@@ -644,11 +599,12 @@ fn a_plain_workspace_has_no_net_container() {
 
 Add `bench_pod_for_test()` to the test file: the whole `Pod` from the same `workspace_pod(...)` call
 the existing `bench_container_for_test` helper makes (return the pod instead of picking the container).
+If `hardened()` is private, make it `pub(crate)`. If `ws_spec()` is not the name of the
+plain-workspace helper in `k8s/tests/`, use the one that file defines.
 
 Update the existing assertions: l.68 `sessions` ports stay `[BENCH_TERM_PORT, BENCH_TUI_PORT]`
 (the net port is on `net`); the policy test (l.160/172) port list becomes
-`[BENCH_TERM_PORT as i32, BENCH_TUI_PORT as i32, BENCH_NET_PORT as i32]`. If `ws_spec()` is not the
-name of the plain-workspace helper in `k8s/tests/`, use the one that file defines.
+`[BENCH_TERM_PORT as i32, BENCH_TUI_PORT as i32, BENCH_NET_PORT as i32]`.
 
 - [ ] **Step 2: Run, expect failure**
 
@@ -661,18 +617,11 @@ Expected: FAIL (`BENCH_NET_PORT` not found).
 
 ```rust
 /// `bench-net`'s listener: the environment tunnel (`docs/superpowers/specs/2026-10-11-env-tunnel-design.md`).
-/// A gateway hole beside `BENCH_TUI_PORT`, on its own container so `NET_ADMIN` never reaches `sessions`.
+/// A gateway hole beside `BENCH_TUI_PORT`, on its own container so a tunnel crash never restarts `sessions`.
 pub const BENCH_NET_PORT: u16 = 7792;
 pub const NET_CONTAINER: &str = "net";
 
 pub(super) fn net_container(image: &str) -> Container {
-    let mut sc = super::workspace::hardened();
-    // FORM from Task 1. narrow: root for TUN + iptables, NET_ADMIN only. privileged: replace the
-    // two lines below with `sc.privileged = Some(true); sc.allow_privilege_escalation = Some(true);`
-    sc.run_as_non_root = Some(false);
-    sc.run_as_user = Some(0);
-    sc.capabilities = Some(Capabilities { add: Some(vec!["NET_ADMIN".into()]), drop: Some(vec!["ALL".into()]) });
-    sc.read_only_root_filesystem = Some(true);
     Container {
         name: NET_CONTAINER.into(),
         image: Some(image.into()),
@@ -684,35 +633,34 @@ pub(super) fn net_container(image: &str) -> Container {
         ports: Some(vec![ContainerPort { container_port: BENCH_NET_PORT as i32, name: Some("net".into()), ..Default::default() }]),
         volume_mounts: Some(vec![
             VolumeMount { name: "kl-net".into(), mount_path: "/run/kl-net".into(), ..Default::default() },
-            VolumeMount { name: "tun".into(), mount_path: "/dev/net/tun".into(), ..Default::default() },
-            VolumeMount { name: "tmp".into(), mount_path: "/tmp".into(), ..Default::default() },
         ]),
         resources: Some(ResourceRequirements {
-            requests: Some([("cpu".into(), Quantity("10m".into())), ("memory".into(), Quantity("16Mi".into()))].into()),
-            limits: Some([("memory".into(), Quantity("64Mi".into()))].into()),
+            requests: Some([("cpu".into(), Quantity("10m".into())), ("memory".into(), Quantity("32Mi".into()))].into()),
+            limits: Some([("memory".into(), Quantity("256Mi".into()))].into()),
             ..Default::default()
         }),
-        security_context: Some(sc),
+        security_context: Some(super::workspace::hardened()),
         ..Default::default()
     }
 }
 ```
 
-The `tmp` mount: if `/tmp` is one emptyDir already mounted by `sessions`, give `net` its own
-emptyDir `net-tmp` instead so the two containers share nothing but `/run/kl-net`. `hardened()`
-fields: read it at `k8s/workspace.rs:320` and set only what differs. The `net` image is the bench
-image (same `bench` tuple's image string).
+`bench-net` writes only to `/run/kl-net` (the count file and its `.tmp`), so it needs no `/tmp`.
+The `net` image is the bench image (same `bench` tuple's image string). The memory limit covers
+per-stream stacks and socket buffers; ponytail: 256 Mi, raise if `net` is OOM-killed under load.
 
 `allow_gateway_bench`: add `{ "protocol": "TCP", "port": BENCH_NET_PORT as i32 }`.
 
 `bench_container`: add `VolumeMount { name: "kl-net", mount_path: "/run/kl-net", read_only: Some(true) }`.
 
 `workspace_pod` bench branch: push `net_container(image)`; volumes gain
-`Volume { name: "kl-net", empty_dir: Some(EmptyDirVolumeSource { medium: Some("Memory".into()), size_limit: Some(Quantity("1Mi".into())) }) }`
-and `Volume { name: "tun", host_path: Some(HostPathVolumeSource { path: "/dev/net/tun".into(), type_: Some("CharDevice".into()) }) }`;
-pod `security_context.sysctls = [Sysctl { name: "net.ipv4.ip_forward", value: "1" }]`, merged into the
-existing pod security context, not replacing it. Update `bench.rs`'s `//!` header: the 2026-09-25
-"no second container" ruling now has one exception, `net`, and why.
+`Volume { name: "kl-net", empty_dir: Some(EmptyDirVolumeSource { medium: Some("Memory".into()), size_limit: Some(Quantity("1Mi".into())) }) }`.
+Update `bench.rs`'s `//!` header: the 2026-09-25 "no second container" ruling now has one
+exception, `net`, and why (own lifecycle; no shell, no workspace; plain hardened context).
+
+Check the bench pod's egress: whatever NetworkPolicy lets the `sessions` container reach the space's
+environment must also cover `net` (same pod, so the same policy; confirm by reading `policies.rs`
+`space-env` and say so in the report).
 
 - [ ] **Step 4: Run tests + clippy**
 
@@ -723,7 +671,7 @@ Expected: PASS, clean.
 
 ```bash
 git add crates/workspaces/src/k8s
-git commit -m "Render the bench net container with NET_ADMIN on it alone"
+git commit -m "Render the bench net container"
 ```
 
 ---
@@ -858,7 +806,7 @@ git commit -m "Pipe the environment tunnel through the gateway to the bench"
 - Create: `bins/kl-connect/src/env/daemon.rs` (10 s loop, status file)
 - Modify: `bins/kl-connect/src/api.rs` (three space calls + environment GET)
 - Modify: `bins/kl-connect/src/main.rs` (`Cmd::Env { #[command(subcommand)] cmd: env::EnvCmd }`, `mod env;`)
-- Modify: `bins/kl-connect/Cargo.toml` (`kloudlite-nettun`, `boringtun`, `tun`, `rand_core` — same versions as Task 3; x25519 via `boringtun::x25519`)
+- Modify: `bins/kl-connect/Cargo.toml` (`kloudlite-nettun`, `boringtun`, `tun`, `rand_core` — boringtun/rand_core as in Task 3, `tun = { version = "0.7", features = ["async"] }`; x25519 via `boringtun::x25519`)
 
 **Interfaces:**
 - Consumes: `api::{Config, bench_session, SessionAnswer, client}`, `proxy::{gateway_url, connect, pump_io}`,
@@ -1175,9 +1123,8 @@ git commit -m "Connect the laptop to the space's environment through the bench"
 - Modify: `.github/workflows/image.yml:111` (`-p bench-net` in the musl build) and the `kl-musl`
   artifact path list (l.140-143) gains `target/x86_64-unknown-linux-musl/release/bench-net`
 - Modify: `deploy/bench/Dockerfile` (beside the `kl` COPY at l.38:
-  `COPY target/x86_64-unknown-linux-musl/release/bench-net /usr/local/bin/bench-net`; and
-  `iptables iproute2` in the existing `apt-get install` line, or a new one with `--no-install-recommends`
-  and `rm -rf /var/lib/apt/lists/*`)
+  `COPY target/x86_64-unknown-linux-musl/release/bench-net /usr/local/bin/bench-net`; no apt package:
+  the userspace stack needs no `iptables`/`iproute2`)
 - Modify: `deploy/dagger/src/index.ts` (~l.287-323, `imageBench` l.399: the same `-p bench-net` and copy)
 
 **Interfaces:**

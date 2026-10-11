@@ -1009,28 +1009,3 @@ Remove the old labels when convenient — they are read by nothing:
 ```sh
 KUBECONFIG=.local/k3s.yaml kubectl label node --all kloudlite.io/session- kloudlite.io/env- kloudlite.io/role-
 ```
-
-## Kubelet args for the bench net container
-
-The bench pod's `net` container sets `net.ipv4.ip_forward=1` through the pod `securityContext.sysctls`.
-`ip_forward` is an unsafe sysctl, so every agent node needs it allowed:
-
-```yaml
-# /etc/rancher/k3s/config.yaml
-kubelet-arg:
-  - "allowed-unsafe-sysctls=net.ipv4.ip_forward"
-```
-
-then `systemctl restart k3s-agent` (ask the owner first on a node running bench or workspace pods).
-
-Probe 2026-10-11 (node `env-0`, scratch namespace, `runtimeClassName: gvisor` as the bench runs, pod and
-namespace deleted afterwards). A: NET_ADMIN only, no hostPath, pod sysctl `ip_forward=1`: admitted and running;
-`/dev/net/tun` already exists in the sandbox (no MKNOD needed) and `ip tuntap add` + `100.96.0.1/16` comes up.
-Not working in any form: `iptables -t nat ... MASQUERADE` fails with `iptables: Failed to initialize nft:
-Protocol not supported` (`iptables-legacy`: `can't initialize iptables table `nat': Table does not exist`,
-also when privileged), and the pod sysctl is not applied (`ip_forward` reads 0; `sysctl -w` is
-`Permission denied` unless privileged). B (NET_ADMIN + hostPath `/dev/net/tun`) breaks the TUN
-(`ioctl(TUNSETIFF): Not a tty`). So the `net` container does its NAT and forwarding in userspace on the TUN and
-needs only NET_ADMIN; the `allowed-unsafe-sysctls` arg above is not needed for it (env-0 already admitted it).
-`kloudlite-workspace-pod-fence` still needs a NET_ADMIN carve-out for the `net` container. Under runc the narrow
-form with iptables MASQUERADE also worked. `ip netns add` is refused either way (read-only `/var/run/netns`).
