@@ -2,8 +2,8 @@ import { TextAttributes } from "@opentui/core";
 import { theme } from "../theme.ts";
 
 const k = (n: number) => (n < 1000 ? String(n) : n < 500_000 ? `${Math.round(n / 1000)}k` : `${Math.round(n / 100_000) / 10}M`);
-/** `84k / 184k ctx`; `?` while pi has no count (right after compaction). */
-export const formatContext = (c: { tokens: number | null; window: number }) => `${c.tokens === null ? "?" : k(c.tokens)} / ${k(c.window)} ctx`;
+/** `84k ctx`; `?` while pi has no count (right after compaction). The window is left out: it depends on the model. */
+export const formatContext = (c: { tokens: number | null }) => `${c.tokens === null ? "?" : k(c.tokens)} ctx`;
 
 /** Bottom bar: connected environment left; tokens, hints right. */
 export function HintBar({
