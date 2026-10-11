@@ -44,11 +44,12 @@ test("codemode sessions advertise the codemode skill, ", async () => {
   s.dispose();
 });
 
-test("systemAppends: kloudlite always, codemode only when on", async () => {
+test("systemAppends: kloudlite and caveman always, codemode only when on", async () => {
   const { systemAppends } = await import("./index.ts");
-  expect(systemAppends(false)).toHaveLength(1);
+  expect(systemAppends(false)).toHaveLength(2);
   expect(systemAppends(false)[0]).toContain("name: kloudlite");
-  expect(systemAppends(true)).toHaveLength(2);
+  expect(systemAppends(false)[1]).toContain("name: caveman");
+  expect(systemAppends(true)).toHaveLength(3);
 });
 
 test("systemAppends: each role gets exactly its own role skill", async () => {
@@ -56,11 +57,11 @@ test("systemAppends: each role gets exactly its own role skill", async () => {
   const roles = ["main", "workspace"] as const;
   for (const role of roles) {
     const texts = systemAppends(false, role);
-    expect(texts).toHaveLength(2);
-    expect(texts[1]).toContain(`name: ${role}-session`);
+    expect(texts).toHaveLength(3);
+    expect(texts[2]).toContain(`name: ${role}-session`);
     for (const other of roles.filter((r) => r !== role)) expect(texts.join("\n")).not.toContain(`name: ${other}-session`);
   }
-  expect(systemAppends(true, "main")).toHaveLength(3);
+  expect(systemAppends(true, "main")).toHaveLength(4);
 });
 
 function harness(execute: (id: string, params: any, signal: any, onUpdate: any) => Promise<any>) {

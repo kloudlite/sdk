@@ -14,7 +14,7 @@ import type { Api, AuthInteraction, AuthType, Credential, Model } from "@earendi
 import type { Registry } from "@kloudlite-tui/tools";
 import { budgeted, budgetExtension } from "./budget.ts";
 import { orphansExtension } from "./orphans.ts";
-import { CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
+import { CAVEMAN_SKILL, CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
 
 export { btwPrompt, piBtw } from "./btw.ts";
 
@@ -400,9 +400,9 @@ export function dropSessions(ws: string): void {
     if (d === own || d.startsWith(`${own}_`)) rmSync(join(CONFIG_DIR, "sessions", d), { recursive: true, force: true });
 }
 
-/** Skill texts inlined into every pi session's system prompt: kloudlite, the role's, codemode's only while it is a tool. */
+/** Skill texts inlined into every pi session's system prompt: kloudlite, caveman, the role's, codemode's only while it is a tool. */
 export function systemAppends(codemode?: boolean, role?: Role): string[] {
-  return [KLOUDLITE_SKILL, ...(role ? [roleSkill(role)] : []), ...(codemode ? [CODEMODE_SKILL] : [])].map((d) => readFileSync(join(d, "SKILL.md"), "utf8"));
+  return [KLOUDLITE_SKILL, CAVEMAN_SKILL, ...(role ? [roleSkill(role)] : []), ...(codemode ? [CODEMODE_SKILL] : [])].map((d) => readFileSync(join(d, "SKILL.md"), "utf8"));
 }
 
 export async function createSession({
