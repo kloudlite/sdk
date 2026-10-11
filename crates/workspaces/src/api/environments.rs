@@ -58,8 +58,18 @@ fn env_doc(e: &crd::Environment, pushed: &HashSet<String>) -> Environment {
             .map(ConditionDoc::from),
         intercepts: e.spec.intercepts.clone(),
         // The other half of the pair: the wish above, what the agent observed here. Empty until
-        // a controller has written a status at all.
-        service_status: st.map(|s| s.service_status.clone()).unwrap_or_default(),
+        // a controller has written a status at all. `proxy` is always present here, `none` for a
+        // service nobody intercepts: a session that polled for `proxy == "ready"` after releasing
+        // an intercept waited on a field that was gone and spun out its whole loop (2026-10-11).
+        service_status: st
+            .map(|s| {
+                let mut v = s.service_status.clone();
+                for x in &mut v {
+                    x.proxy.get_or_insert_with(|| "none".into());
+                }
+                v
+            })
+            .unwrap_or_default(),
         id,
     }
 }
@@ -1229,10 +1239,19 @@ mod tests {
                 proxy: Some("starting".into()),
                 unreachable_since: Some(1_700_000_000),
                 failing: false,
+            }, crd::ServiceStatus {
+                name: "db".into(),
+                ready: true,
+                message: None,
+                intercepted_by: None,
+                proxy: None,
+                unreachable_since: None,
+                failing: false,
             }],
             ..Default::default()
         });
         let j = serde_json::to_value(super::env_doc(&e, &Default::default())).expect("doc serializes");
+        assert_eq!(j["service_status"][1]["proxy"], "none", "a poll on proxy must always have a field to read");
         let st = &j["service_status"][0];
         assert_eq!(st["interceptedBy"], "ws-1");
         assert_eq!(st["unreachableSince"], 1_700_000_000);

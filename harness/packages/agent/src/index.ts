@@ -144,7 +144,7 @@ const CODEMODE_NOTE =
   "(4) To show the user a table, list or report, build it in the script. Pass it to `tools.display({ markdown })`. The displayed text stays readable to you for follow-ups. Reply in one line. Do not retype what was displayed. " +
   "(5) `tools.searchTools(...)` and `tools.describeTool(...)` are asynchronous. Always use `await` with them. " +
   "(6) The shell is `tools.bash` in the main session and `tools.exec` in workspace and subagent sessions. Call the one that the tool list has. Do not guess. " +
-  "(7) A poll loop exits as soon as the condition holds. It has a bounded count. It checks `services[].ready` (or `service_status[].ready`). It does not use a regex over the spec. A failed tool call throws. Do not poll after a write that you did not check. " +
+  "(7) A poll loop exits as soon as the condition holds. It has a bounded count. It checks `services[].ready` (or `service_status[].ready`). It does not use a regex over the spec. It waits with `await tools.sleep({ seconds })`, never a shell sleep. A failed tool call throws. Do not poll after a write that you did not check. " +
   "The codemode skill has worked examples.";
 
 // Markdown the running script asked to show, by root tool call id (nested ids are `<parent>/<n>`).
@@ -179,9 +179,37 @@ function displayTool() {
   };
 }
 
+// A poll used to sleep through `exec sleep 3`: a shell process per wait and a row per wait in the
+// TUI (2026-10-11, twenty of them in one blog-app script). Capped so a typo cannot park a script.
+const SLEEP_CAP_SECS = 30;
+
+export function sleepTool() {
+  return {
+    name: "sleep",
+    label: "Sleep",
+    exposure: "codemode" as const,
+    description: `Wait between polls. Use this, never a shell sleep. At most ${SLEEP_CAP_SECS} seconds per call.`,
+    parameters: {
+      type: "object",
+      properties: { seconds: { type: "number", description: `Seconds to wait, 0 to ${SLEEP_CAP_SECS}.` } },
+      required: ["seconds"],
+    } as any,
+    execute: async (_id: string, params: { seconds: number }, signal?: AbortSignal) => {
+      const secs = Number(params.seconds);
+      if (!(secs >= 0 && secs <= SLEEP_CAP_SECS)) throw new Error(`sleep: seconds must be 0 to ${SLEEP_CAP_SECS}`);
+      await new Promise<void>((done, fail) => {
+        const t = setTimeout(done, secs * 1000);
+        signal?.addEventListener("abort", () => (clearTimeout(t), fail(new Error("sleep: aborted"))), { once: true });
+      });
+      return { content: [{ type: "text" as const, text: `slept ${secs}s` }], details: {} };
+    },
+  };
+}
+
 export function withCodemodeExtras(factory: ReturnType<typeof createCodemodeExtension>): typeof factory {
   return (pi: any) => {
     pi.registerTool(displayTool());
+    pi.registerTool(sleepTool());
     return factory(
       new Proxy(pi, {
         get: (t, k) =>

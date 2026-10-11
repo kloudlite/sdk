@@ -24,16 +24,30 @@ export function foldRetry(entries: Entry[], next: Entry): Entry[] {
 export const foldRetries = (entries: Entry[]): Entry[] => entries.reduce<Entry[]>(foldRetry, []);
 
 /**
- * Codemode inner calls arrive as their own tool entries (ids `<parent>/<n>`). A run of consecutive
- * inner calls with the same name and summary collapses into the latest, counted in `repeats`.
+ * Codemode inner calls arrive as their own tool entries (ids `<parent>/<n>`). An inner call with the
+ * same name and summary as an earlier one of the same script folds into that row, counted in
+ * `repeats`, so a poll loop (`env_get`, `sleep`, `env_get`, ...) is one row per call shape, not
+ * forty (2026-10-11).
  */
 export function foldRepeats(entries: Entry[]): Entry[] {
   const out: Entry[] = [];
+  // `<parent>|<name>|<summary>` -> index in `out`
+  const seen = new Map<string, number>();
   for (const e of entries) {
-    const p = out[out.length - 1];
-    if (p && isTool(e) && isTool(p) && e.id?.includes("/") && p.id?.includes("/") && p.name === e.name && p.summary === e.summary) {
-      out[out.length - 1] = { ...e, id: p.id, repeats: (p.repeats ?? 1) + 1 };
-    } else out.push(e);
+    const slash = isTool(e) ? (e.id?.lastIndexOf("/") ?? -1) : -1;
+    if (!isTool(e) || slash < 0) {
+      out.push(e);
+      continue;
+    }
+    const key = `${e.id!.slice(0, slash)}|${e.name}|${e.summary}`;
+    const i = seen.get(key);
+    if (i === undefined) {
+      seen.set(key, out.length);
+      out.push(e);
+    } else {
+      const p = out[i] as Tool;
+      out[i] = { ...e, id: p.id, repeats: (p.repeats ?? 1) + 1 };
+    }
   }
   return out;
 }
