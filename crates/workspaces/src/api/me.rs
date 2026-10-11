@@ -105,7 +105,7 @@ pub(crate) async fn list_my_environments(
 /// beat. The client sends the `ETag` it last saw as `If-None-Match`: a different selection is
 /// answered now (200 + new tag); the same one is held until a `SpaceEnvironment` of the caller's
 /// changes, then re-read (200 if the selection moved, 304 if not). The server gives up after
-/// 50 s with 304 because the nginx ingress read timeout is 60 s; the client just asks again.
+/// 50 s with 304, under the 60 s read timeout most proxies default to (our ingress allows 600 s); the client just asks again.
 pub(crate) async fn watch_my_environments(
     State(s): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -123,19 +123,22 @@ pub(crate) async fn watch_my_environments(
         return Ok(spaces_response(docs, &tag));
     }
     // ponytail: one Kubernetes watch per held request; a shared reflector keyed by owner is the upgrade if many laptops connect.
-    let wp = WatchParams::default().labels(&owner_selector(&caller)).timeout(50);
-    // Every way out of the wait (event, error, 410 for a stale version, end, timeout) falls
-    // through to a re-list, which is the correct answer to all of them.
-    let _ = tokio::time::timeout(Duration::from_secs(55), async {
-        let Ok(mut st) = spaces(&s)?.watch(&wp, &rv).await.map(Box::pin) else { return Ok::<(), Response>(()) };
-        while let Ok(Some(ev)) = st.try_next().await {
-            match ev {
-                WatchEvent::Added(x) | WatchEvent::Modified(x) | WatchEvent::Deleted(x) if wakes(&x, &caller) => break,
-                WatchEvent::Error(_) => break,
-                _ => {}
+    let wp = WatchParams::default().labels(&owner_selector(&caller)).timeout(45);
+    // Only a change of the caller's own ends the wait early. A watch that cannot open, errors or
+    // ends early holds until the deadline instead: answering at once would turn the client's
+    // immediate re-ask into a hot loop against the api. The re-list below answers every case.
+    let _ = tokio::time::timeout(Duration::from_secs(50), async {
+        if let Ok(st) = spaces(&s)?.watch(&wp, &rv).await {
+            let mut st = Box::pin(st);
+            while let Ok(Some(ev)) = st.try_next().await {
+                if let WatchEvent::Added(x) | WatchEvent::Modified(x) | WatchEvent::Deleted(x) = ev {
+                    if wakes(&x, &caller) {
+                        return Ok::<(), Response>(());
+                    }
+                }
             }
         }
-        Ok(())
+        std::future::pending().await
     })
     .await;
     let (docs, _) = my_spaces(&s, &caller).await?;
