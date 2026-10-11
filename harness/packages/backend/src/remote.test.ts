@@ -97,6 +97,17 @@ test("btw returns its string over the wire", async () => {
   expect(await h.btw("why?")).toBe("answer to why?");
 });
 
+test("compact carries its instructions over the wire", async () => {
+  const b = fake();
+  const base = b.session;
+  const seen: unknown[] = [];
+  b.session = async (k: string, o: SessionOpts) => ({ ...(await base(k, o)), compact: async (i?: string) => void seen.push(i) }) as any;
+  const { remote } = wired(b);
+  const h = await remote.session("k", { initial: { model: { provider: "p", id: "m" } }, tools: [] });
+  await h.compact("keep the plan");
+  expect(seen).toEqual(["keep the plan"]);
+});
+
 test("message updates cross as deltas and arrive as pi's whole message", async () => {
   let fire!: (e: any) => void;
   const b: any = fake();

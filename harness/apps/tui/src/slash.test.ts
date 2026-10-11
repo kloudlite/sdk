@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { menuItems } from "./slash.ts";
+import { commands, menuItems } from "./slash.ts";
 
 const ctx = {
   models: [] as { provider: string; id: string; hint: string }[],
@@ -65,4 +65,8 @@ test("naming a setting lists only its values", () => {
     "/settings thinking show",
     "/settings thinking hide",
   ]);
+});
+
+test("/compact is offered", () => {
+  expect(commands.some((c) => c.name === "/compact")).toBe(true);
 });
