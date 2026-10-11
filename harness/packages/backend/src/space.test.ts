@@ -45,6 +45,13 @@ test("lists the user's workspaces and the team's environments, reads clone paren
         { id: "e2", name: "dev", owner: "acme", state: "running", services: [] },
       ]);
     if (url === "http://api/v1/me/environments") return json([{ team: "acme", environment: "e2" }]);
+    // the list carries no `restored_to`; only the single doc does
+    if (url === "http://api/v1/environments/e2") return json({ id: "e2", restored_to: "s1", restore_requested_at: "2026-10-11T10:00:00Z" });
+    if (url === "http://api/v1/volumes/e2/history")
+      return json([
+        { id: "s2", message: "newest", createdAt: "2026-10-11T09:00:00Z", parent: "s1" },
+        { id: "s1", message: "seed-data", createdAt: "2026-10-11T08:00:00Z", parent: null },
+      ]);
     if (url.endsWith("/v1/workspaces/w1/tools")) return json({ address: "10.0.0.1:7788", token: "POD-TOKEN" });
     if (url.endsWith("/v1/workspaces/c1/tools")) return new Response("boom", { status: 503 }); // pod down
     if (url === "http://10.0.0.1:7788/tools/process_list")
@@ -69,6 +76,8 @@ test("lists the user's workspaces and the team's environments, reads clone paren
   expect(w1!.processes![0]!.logs).toHaveLength(30);
   expect(w1!.processes![0]!.logs.at(-1)).toEqual({ text: "l29" });
   expect(w1!.processes![1]!.logs).toHaveLength(30); // an exited process is read too, once
+  expect(v.environments[1]!.snapshot).toBe("seed-data"); // the restored record, not the newest
+  expect(v.environments[0]!.snapshot).toBeUndefined(); // not the connected one
   expect(v.environments[0]!.services).toEqual([{ name: "api", ports: [8080], interceptedBy: "w1" }, { name: "db", ports: [5432], interceptedBy: undefined }]);
   expect(JSON.stringify(v)).not.toContain("TOKEN");
   expect(urls.some((u) => u.includes("w3/tools"))).toBe(false);
