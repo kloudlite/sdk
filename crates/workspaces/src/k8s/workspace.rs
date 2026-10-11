@@ -653,7 +653,10 @@ pub fn workspace_pod(
         // (`prelude()`), not a sidecar.
         match bench {
             Some((image, idle, provider_url)) => {
-                vec![bench_container(ws_id, spec, image, idle, ctx.api_url, ctx.registry_host, provider_url)]
+                vec![
+                    bench_container(ws_id, spec, image, idle, ctx.api_url, ctx.registry_host, provider_url),
+                    net_container(image),
+                ]
             }
             None => vec![workspace_container()],
         }
@@ -688,6 +691,12 @@ pub fn workspace_pod(
                         ..Default::default()
                     },
                 );
+                // `bench-net`'s stream count; Memory so it never touches the node disk.
+                v.push(Volume {
+                    name: NET_VOLUME.to_string(),
+                    empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource { medium: Some("Memory".into()), size_limit: Some(Quantity("1Mi".into())) }),
+                    ..Default::default()
+                });
                 // `sshd`'s login, projected the same way an ordinary workspace pod's `default_image`
                 // branch above does — not duplicated when that branch already added it.
                 if !default_image {

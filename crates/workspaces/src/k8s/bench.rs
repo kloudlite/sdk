@@ -19,6 +19,13 @@
 //! CONTAINER now (`status.containerStatuses[name=sessions]`), not a pod phase: idle keeps serving
 //! and reports through the readiness probe (`sessions --ping` against the idle tracking `/idle`
 //! exposes), a stale/never-up service fails the probe and the kubelet never marks it ready.
+//!
+//! One exception to "ONE container" (environment tunnel, 2026-10-11): `net` runs `bench-net`,
+//! the tunnel into the attached environment. It has its own lifecycle so a tunnel crash never
+//! restarts `sessions`, and it holds no shell, no workspace and no home, so the 2026-09-25
+//! reasons for a single container (engine keys, a shell beside them) do not apply. Its security
+//! context is the plain `hardened()` one, no capability added. It shares only the `kl-net`
+//! emptyDir with `sessions` (stream count, read-only there).
 
 use super::*;
 use k8s_openapi::api::core::v1::{EnvVarSource, ExecAction, ObjectFieldSelector};
@@ -30,12 +37,41 @@ pub const BENCH_TERM_PORT: u16 = 7681;
 /// 7790 is the workspace ttyd, so the daemon takes the next one. The gateway token is its only
 /// lock; `allow_gateway_bench` is what keeps every other pod off it.
 pub const BENCH_TUI_PORT: u16 = 7791;
+/// `bench-net`'s listener: the environment tunnel (`docs/superpowers/specs/2026-10-11-env-tunnel-design.md`).
+/// A gateway hole beside `BENCH_TUI_PORT`, on its own container so a tunnel crash never restarts `sessions`.
+pub const BENCH_NET_PORT: u16 = 7792;
+pub const NET_CONTAINER: &str = "net";
+/// The emptyDir both containers mount: `bench-net` writes its stream count there.
+pub const NET_VOLUME: &str = "kl-net";
+pub const NET_DIR: &str = "/run/kl-net";
 /// The container every session's agent runs in. Named `sessions` since 2026-09-17 (spec §2.2): a
 /// bench pod has no shell and no workspace container at all (owner ruling 2026-09-25) — it is
 /// the ONLY container, so "the bench container" now means the whole pod.
 pub const BENCH_CONTAINER: &str = "sessions";
 pub const BENCH_TOOL_PATH: &str = "/etc/kloudlite/bench-tool";
 
+
+/// The `net` container: `bench-net` from the bench image. It writes only under `NET_DIR`
+/// (the count file and its `.tmp`), so it needs no `/tmp`.
+// ponytail: 256 Mi covers per-stream stacks and socket buffers; raise if `net` is OOM-killed under load.
+pub(super) fn net_container(image: &str) -> Container {
+    let env = |n: &str, v: String| EnvVar { name: n.into(), value: Some(v), ..Default::default() };
+    Container {
+        name: NET_CONTAINER.into(),
+        image: Some(image.into()),
+        command: Some(vec!["/usr/local/bin/bench-net".into()]),
+        env: Some(vec![env("KL_NET_PORT", BENCH_NET_PORT.to_string()), env("KL_NET_STREAMS", format!("{NET_DIR}/net.streams"))]),
+        ports: Some(vec![ContainerPort { container_port: BENCH_NET_PORT as i32, name: Some("net".into()), ..Default::default() }]),
+        volume_mounts: Some(vec![VolumeMount { name: NET_VOLUME.into(), mount_path: NET_DIR.into(), ..Default::default() }]),
+        resources: Some(ResourceRequirements {
+            requests: Some([("cpu".into(), Quantity("10m".into())), ("memory".into(), Quantity("32Mi".into()))].into()),
+            limits: Some([("memory".into(), Quantity("256Mi".into()))].into()),
+            ..Default::default()
+        }),
+        security_context: Some(hardened()),
+        ..Default::default()
+    }
+}
 
 /// Where a bench keeps its sessions, locks and per-workspace state, relative to the home. A dot name so it is out of the way, and `deploy/workspace-image/gitignore-global`
 /// ignores it globally — the person's repo lives in the same tree and must never see it.
@@ -121,6 +157,7 @@ pub fn bench_container(
             VolumeMount { name: "user-key".to_string(), mount_path: USER_KEY_PATH.to_string(), read_only: Some(true), ..Default::default() },
             VolumeMount { name: "bench-tool".to_string(), mount_path: BENCH_TOOL_PATH.to_string(), read_only: Some(true), ..Default::default() },
             VolumeMount { name: "tmp".to_string(), mount_path: "/tmp".to_string(), ..Default::default() },
+            VolumeMount { name: NET_VOLUME.into(), mount_path: NET_DIR.into(), read_only: Some(true), ..Default::default() },
             // The same `/etc/resolv.conf` the workspace container mounts: the bench runs the
             // person's tools, so it must resolve an attached environment's services by bare name
             // exactly as their shell does. The volume IS the file, so no subPath.
@@ -186,6 +223,7 @@ pub fn allow_gateway_bench(namespace: &str, id: &str) -> NetworkPolicy {
                     "ports": [
                         { "protocol": "TCP", "port": BENCH_TERM_PORT as i32 },
                         { "protocol": "TCP", "port": BENCH_TUI_PORT as i32 },
+                        { "protocol": "TCP", "port": BENCH_NET_PORT as i32 },
                     ],
                 }],
             }))
