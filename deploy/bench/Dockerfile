@@ -36,7 +36,8 @@ RUN f=$(find /opt/kl/harness/node_modules -path '*claude-agent-sdk-linux-x64/cla
 # CI job that builds this image and downloaded as the kl-musl artifact. A bench builds/pushes like
 # any workspace.
 COPY target/x86_64-unknown-linux-musl/release/kl /usr/local/bin/kl
-RUN chmod 0755 /usr/local/bin/kl
+COPY target/x86_64-unknown-linux-musl/release/bench-net /usr/local/bin/bench-net
+RUN chmod 0755 /usr/local/bin/kl /usr/local/bin/bench-net
 
 # The `sessions` node service: `/idle` on 127.0.0.1:8917, answers `--ping`.
 COPY bench/sessions/package.json bench/sessions/package-lock.json /opt/kl/sessions/

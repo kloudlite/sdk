@@ -99,12 +99,12 @@ export class Kloudlite {
       .withExec(["cargo", "build", "--profile", "dev-image", "--locked", "--bins"])
       .withExec([
         "cargo", "build", "--profile", "dev-image", "--locked",
-        "-p", "kl", "-p", "kloudlite-intercept-proxy", "--target", "x86_64-unknown-linux-musl",
+        "-p", "kl", "-p", "bench-net", "-p", "kloudlite-intercept-proxy", "--target", "x86_64-unknown-linux-musl",
       ])
       // /work/target is a cache mount, and a cache mount is never part of the container's
       // snapshot — Container.file() on it fails with "cannot retrieve path from cache" (run 4).
       // The binaries have to be copied onto the container's own filesystem first.
-      .withExec(["sh", "-c", "mkdir -p /out/musl && cp /work/target/dev-image/kloudlite /work/target/dev-image/kloudlite-api /work/target/dev-image/kloudlite-worker /work/target/dev-image/kloudlite-agent /work/target/dev-image/kloudlite-gateway /work/target/dev-image/kloudlite-builder-gate /work/target/dev-image/kloudlite-controller /work/target/dev-image/kloudlite-slo /work/target/dev-image/kl-connect /out/ && cp /work/target/x86_64-unknown-linux-musl/dev-image/kl /work/target/x86_64-unknown-linux-musl/dev-image/kloudlite-intercept-proxy /out/musl/"])
+      .withExec(["sh", "-c", "mkdir -p /out/musl && cp /work/target/dev-image/kloudlite /work/target/dev-image/kloudlite-api /work/target/dev-image/kloudlite-worker /work/target/dev-image/kloudlite-agent /work/target/dev-image/kloudlite-gateway /work/target/dev-image/kloudlite-builder-gate /work/target/dev-image/kloudlite-controller /work/target/dev-image/kloudlite-slo /work/target/dev-image/kl-connect /out/ && cp /work/target/x86_64-unknown-linux-musl/dev-image/kl /work/target/x86_64-unknown-linux-musl/dev-image/bench-net /work/target/x86_64-unknown-linux-musl/dev-image/kloudlite-intercept-proxy /out/musl/"])
   }
 
   // Dockerfile `server` stage: three binaries, one unprivileged user, git/ssh/curl for the
@@ -313,6 +313,7 @@ export class Kloudlite {
         "f=$(find /opt/kl/harness/node_modules -path '*claude-agent-sdk-linux-x64/claude' -type f | head -n1) " +
         '&& ln -s "$f" /usr/local/bin/claude && test -x /usr/local/bin/claude'])
       .withFile("/usr/local/bin/kl", built.file("/out/musl/kl"), { permissions: 0o755 })
+      .withFile("/usr/local/bin/bench-net", built.file("/out/musl/bench-net"), { permissions: 0o755 })
       .withDirectory("/opt/kl/sessions", source.directory("bench/sessions"))
       .withDirectory("/opt/kl/term", source.directory("bench/term"))
       .withExec(["install", "-m", "0755", "/opt/kl/term/xclip", "/usr/local/bin/xclip"])
