@@ -132,9 +132,14 @@ person wrote.
   listens on TCP 7792, and runs one `boringtun` peer per stream, routing by peer address. A stream
   that closes drops its peer.
 - Pod restart: streams drop, the daemon reconnects, the handshake exchanges new keys.
-- The bench idles and wakes as today. An open tunnel does not count as bench activity:
-  `ponytail:` a laptop using only the tunnel lets the bench idle; the daemon's next session mint
-  wakes it. Count tunnel traffic toward `/idle` if that wake delay bites.
+- **An open tunnel keeps the bench awake** (owner, 2026-10-11: "I want the bench to be awake as
+  long as there is connection"). `bench-net` writes its open-stream count to `net.streams` in an
+  `emptyDir` mounted at `/run/kl-net` in both `net` and `sessions`, every 5 s, the same shape as
+  the daemon's `~/.kl/host.busy`. `bench/sessions/main.ts` reads it beside `busy()` (older than
+  15 s counts 0, a dead `net` holds nothing open): idle = no clients, no running turn, no tunnel.
+  The laptop daemon keeps its stream open while connected, so a connected laptop never lets the
+  bench idle; `env disconnect` (or the laptop going away) closes the stream and the bench idles
+  `bench_idle_secs` later as today.
 
 ## Errors
 
@@ -145,6 +150,7 @@ person wrote.
 | 403 / 404 (access lost, environment or space gone) | tear down, `env-status.json` says why | removed |
 | Space has no environment | tear down | removed |
 | Bench restarted | stream drops, reconnects | kept |
+| Laptop asleep / offline | stream drops; bench idles `bench_idle_secs` later | kept |
 | Daemon killed | launchd restarts it; first pass rewrites everything | rewritten |
 
 ## Testing
@@ -156,7 +162,8 @@ person wrote.
 - Unit: hosts block rewrite (lines outside untouched; idempotent; a name defined outside is
   skipped; removal leaves the file as before the first write); framing (split and joined reads,
   zero length closes); handshake (addresses unique per stream, freed on close); bench pod
-  rendering keeps `NET_ADMIN` on `net` only (`k8s/tests.rs` style); policy carries 7792.
+  rendering keeps `NET_ADMIN` on `net` only (`k8s/tests.rs` style); policy carries 7792; the idle
+  probe stays awake while `net.streams` is fresh and non-zero, and ignores a stale one.
 - Gateway: `/net/{bench}` beside the `/tui/` tests (same refusals).
 - End to end: probe `env.tunnel.reach` (`deploy/slo.md` catalogue entry): connect, then
   `nc -z <service> <port>` by bare name from the laptop.
