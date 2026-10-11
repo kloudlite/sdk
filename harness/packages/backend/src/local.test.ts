@@ -35,10 +35,19 @@ test("fs wraps git.ts", async () => {
 });
 
 test("only destructive house actions ask", () => {
-  const destructive = ["workspace_delete", "worktree_drop", "env_delete", "env_restore_in_place", "service_remove", "volume_delete", "snapshot_delete"];
-  expect(DESTRUCTIVE.size).toBe(7);
+  const destructive = ["workspace_delete", "worktree_drop", "env_delete", "env_restore_in_place", "service_remove", "volume_delete", "snapshot_delete", "repo_delete", "branch_delete", "image_tag_delete", "image_delete"];
+  expect(DESTRUCTIVE.size).toBe(11);
   for (const n of destructive) expect(mustAsk(n)).toBe(true);
   for (const n of ["write", "edit", "patch", "read", "exec", "bash", "web_fetch", "workspace_stop", "env_stop", "container_build", "container_push", "packages_remove", "service_update", "intercept"]) expect(mustAsk(n)).toBe(false);
+});
+
+test("the repo and image deletes carry a required because", () => {
+  for (const n of ["repo_delete", "branch_delete", "image_tag_delete", "image_delete"]) {
+    const t = platformTools("main").find((x) => x.name === n)!;
+    const asked: any = asking(t).inputSchema;
+    expect(asked.required).toContain("because");
+    expect(asked.properties.because).toBeDefined();
+  }
 });
 
 test("pod edit ({old,new}) has no local diff; pi edit still does", () => {
