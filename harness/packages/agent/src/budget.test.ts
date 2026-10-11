@@ -30,7 +30,7 @@ test("context cuts the outgoing copy, never the stored message", () => {
   const r = hooks.context!({ messages: [big, small] });
   expect(r.messages[0].content[0].text.length).toBeLessThan(MESSAGE_CAP);
   expect(r.messages[0].content[0].text).toContain("[cut: 100000 characters");
-  expect((big.content as { text: string }[])[0]!.text.length).toBe(100_000);
+  expect((big as unknown as { content: { text: string }[] }).content[0]!.text.length).toBe(100_000);
   expect(r.messages[1]).toBe(small);
 });
 
