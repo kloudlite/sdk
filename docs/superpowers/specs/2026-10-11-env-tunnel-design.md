@@ -141,6 +141,8 @@ person wrote.
   bench idle; `env disconnect` (or the laptop going away) closes the stream and the bench idles
   `bench_idle_secs` later as today.
 
+Probe 2026-10-11 (gVisor, as the bench runs): form A (NET_ADMIN only, no hostPath, pod sysctl) is admitted and gives a working TUN (`/dev/net/tun` is provided by the sandbox; `ip tuntap` + 100.96.0.1/16 up, no MKNOD needed), but NO form gives MASQUERADE: `iptables` fails with `Failed to initialize nft: Protocol not supported` and `iptables-legacy` with `can't initialize iptables table `nat': Table does not exist` even when privileged, and the pod `ip_forward` sysctl reads 0 (only privileged may `sysctl -w` it). B (hostPath tun) breaks the TUN (`ioctl(TUNSETIFF): Not a tty`). So `net` must NAT and forward in userspace on the TUN (no iptables, no ip_forward) with NET_ADMIN only, and the fence needs a NET_ADMIN carve-out for the `net` container. Under runc the narrow form with iptables MASQUERADE also worked.
+
 ## Errors
 
 | Condition | Daemon | Hosts block |
