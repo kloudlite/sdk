@@ -1470,7 +1470,7 @@ export function App({
             normal={prefs.vim === "on" && keyMode === "normal" && !palette && !cmdMode}
             vim={prefs.vim === "on"}
             busy={busy}
-            tokens={session.tokens}
+            context={session.context}
             queued={session.queued.length}
             active={environment?.name ?? ""}
             inWorkspace={focus > 0}

@@ -256,6 +256,12 @@ export function shareable(base: SessionHandle, onZero: () => void): { view: () =
  * every subscriber (`session_closed`): a dispose drops the agent's listeners and no `agent_end`
  * follows, which left workspace_ask waiting forever on a turn that was gone.
  */
+/** Context now against the window pi compacts at; undefined when pi has no model/window. */
+const contextOf = (agent: any): SessionState["context"] => {
+  const u = agent.getContextUsage?.();
+  return u && { tokens: u.tokens, window: u.contextWindow };
+};
+
 export function baseHandle(
   agent: any,
   key: string,
@@ -273,7 +279,10 @@ export function baseHandle(
       }
     }
   };
-  const pushState = () => emit(state);
+  const pushState = () => {
+    state.context = contextOf(agent);
+    emit(state);
+  };
   /** `reopen` tells every view the session lives on (rebuilt): reattach, don't treat it as gone. */
   const close = async (reopen = false) => {
     if (closed) return;
@@ -298,8 +307,7 @@ export function baseHandle(
     if (event.type === "queue_update") {
       state.queued = { steering: [...(event.steering ?? [])], followUp: [...(event.followUp ?? [])] };
       pushState();
-    } else if (event.type === "message_end" && event.message?.role === "assistant") {
-      state.tokens += event.message.usage?.totalTokens ?? 0;
+    } else if ((event.type === "message_end" && event.message?.role === "assistant") || event.type === "compaction_end") {
       pushState();
     }
     if (event.type === "agent_end") hooks.onEnd();
@@ -449,7 +457,7 @@ export class LocalBackend implements Backend {
     this.#seeds.set(key, `${seed}\n\n`);
     this.#notices.set(key, `fresh session after task ${done.id}: ${done.title}`);
     const st = this.#state.get(key);
-    if (st) (st.tokens = 0), (st.queued = { steering: [], followUp: [] });
+    if (st) (st.context = undefined), (st.queued = { steering: [], followUp: [] });
     await this.#rebuild(key, true, true).catch(() => {});
     this.#changed();
   }
@@ -652,7 +660,7 @@ export class LocalBackend implements Backend {
       model: { provider: want.provider, id: want.id },
       ...initial,
       queued: { steering: [], followUp: [] },
-      tokens: prev?.tokens ?? 0,
+      context: contextOf(agent),
     };
     this.#state.set(key, state);
     const handle: ReturnType<typeof baseHandle> = baseHandle(agent, key, {
@@ -721,7 +729,7 @@ export class LocalBackend implements Backend {
       if (this.#busy.has(key)) await this.#live.get(key)?.abort();
       await this.#rebuild(key, true, true);
       const st = this.#state.get(key);
-      if (st) (st.tokens = 0), (st.queued = { steering: [], followUp: [] });
+      if (st) (st.context = undefined), (st.queued = { steering: [], followUp: [] });
       this.#changed();
     },
     watch: async (cb: (list: LiveSessionMeta[]) => void) => {

@@ -54,7 +54,7 @@ export function upsertById(entries: Entry[], e: Entry): Entry[] {
 export function applyState(s: SessionState) {
   return {
     model: s.model,
-    tokens: s.tokens,
+    context: s.context,
     queued: [
       ...s.queued.steering.map((text) => ({ text, kind: "steer" as const })),
       ...s.queued.followUp.map((text) => ({ text, kind: "followUp" as const })),

@@ -138,8 +138,8 @@ export type SessionState = {
   autoCompact: boolean;
   codemode: boolean;
   queued: { steering: string[]; followUp: string[] };
-  /** Assistant tokens so far; 0 after clear. */
-  tokens: number;
+  /** Context now against the model's window; tokens null right after compaction until the next reply. */
+  context?: { tokens: number | null; window: number };
 };
 
 export type SessionOpts = {

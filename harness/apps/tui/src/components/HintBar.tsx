@@ -1,10 +1,14 @@
 import { TextAttributes } from "@opentui/core";
 import { theme } from "../theme.ts";
 
+const k = (n: number) => (n < 1000 ? String(n) : n < 500_000 ? `${Math.round(n / 1000)}k` : `${Math.round(n / 100_000) / 10}M`);
+/** `84k / 184k ctx`; `?` while pi has no count (right after compaction). */
+export const formatContext = (c: { tokens: number | null; window: number }) => `${c.tokens === null ? "?" : k(c.tokens)} / ${k(c.window)} ctx`;
+
 /** Bottom bar: connected environment left; tokens, hints right. */
 export function HintBar({
   busy,
-  tokens,
+  context,
   queued,
   permMode,
   active,
@@ -15,7 +19,7 @@ export function HintBar({
   onHint,
 }: {
   busy: boolean;
-  tokens: number;
+  context?: { tokens: number | null; window: number };
   queued: number;
   /** Permission mode; only shown when it is not "default". */
   permMode?: string;
@@ -57,7 +61,7 @@ export function HintBar({
         )}
       </box>
       <box flexDirection="row" gap={2} flexShrink={1} overflow="hidden">
-        <text selectable={false} fg={theme.muted}>{tokens.toLocaleString()} tok</text>
+        {context && <text selectable={false} fg={theme.muted}>{formatContext(context)}</text>}
         {normal ? (
           <>
             <box onMouseDown={click("type")}><text selectable={false} fg={theme.fg}>i <span fg={theme.muted}>type</span></text></box>

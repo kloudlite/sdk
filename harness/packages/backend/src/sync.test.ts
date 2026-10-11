@@ -45,7 +45,7 @@ test("open returns the session state", async () => {
   const [m] = await models();
   const local = new LocalBackend({ create: fake });
   const h = await (await pair(local)).session("w1", { initial: { model: { provider: m.provider, id: m.id }, codemode: false, autoCompact: true, thinkingLevel: "low" }, fresh: true, tools: [] });
-  expect(h.state).toMatchObject({ type: "session_state", codemode: false, autoCompact: true, thinkingLevel: "low", tokens: 0, queued: { steering: [], followUp: [] } });
+  expect(h.state).toMatchObject({ type: "session_state", codemode: false, autoCompact: true, thinkingLevel: "low", queued: { steering: [], followUp: [] } });
   await h.dispose();
 }, 20000);
 
@@ -74,7 +74,7 @@ test("A's /clear: B gets session_closed reopen, and B's reopen is empty", async 
 
 test("idle dispose says reopen false", async () => {
   // a disposed view has already unsubscribed, so check the agent's own handle
-  const state: any = { type: "session_state", model: { provider: "p", id: "m" }, thinkingLevel: "low", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] }, tokens: 0 };
+  const state: any = { type: "session_state", model: { provider: "p", id: "m" }, thinkingLevel: "low", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } };
   const h = baseHandle({ messages: [], subscribe: () => () => {}, dispose() {} }, "k", { busy: new Set(), onEnd() {}, onDispose() {}, state });
   const closed: any[] = [];
   h.subscribe((e) => e.type === "session_closed" && closed.push(e));
