@@ -23,6 +23,12 @@ test("consecutive identical codemode inner calls collapse into the latest with a
   expect(out.map((e: any) => [e.id, e.repeats])).toEqual([["p", undefined], ["p/1", 3], ["p/4", undefined]]);
 });
 
+test("an alternating poll folds into one row per call shape, kept in first-seen order", () => {
+  const poll = [1, 2, 3].flatMap((n) => [tool(`p/${2 * n - 1}`, "env_get", "ok", "e1"), tool(`p/${2 * n}`, "sleep", "ok", "3s")]);
+  const out = foldRepeats([tool("p", "codemode", "running"), ...poll, tool("q/1", "env_get", "ok", "e1")]);
+  expect(out.map((e: any) => [e.id, e.repeats])).toEqual([["p", undefined], ["p/1", 3], ["p/2", 3], ["q/1", undefined]]);
+});
+
 test("the reload fold replaces a failed row once its status is known", () => {
   const out = foldRetries([tool("1", "bash", "error"), tool("2", "bash", "ok")]);
   expect(out.length).toBe(1);

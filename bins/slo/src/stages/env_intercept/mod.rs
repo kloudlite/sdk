@@ -487,7 +487,7 @@ fn intercepted_by(doc: &Value, svc: &str) -> Option<String> {
     service_status(doc, svc)?.get("interceptedBy")?.as_str().map(str::to_string)
 }
 
-/// `starting` | `ready` | `failed`, as the environment's controller last recorded it.
+/// `starting` | `ready` | `failed` as the environment's controller last recorded it, `none` when not intercepted.
 fn proxy_state(doc: &Value, svc: &str) -> Option<String> {
     service_status(doc, svc)?.get("proxy")?.as_str().map(str::to_string)
 }

@@ -60,13 +60,14 @@ A lifecycle call returns before the work is done. To wait for the result, write 
 5. For a service, examine `services[].ready` or `service_status[].ready`. Do not use a regex on the spec.
 6. Use the id (`ws-…` or `env-…`) in the call. Do not use the name.
 7. Before the loop, make sure that the write call passed. A failed tool call throws.
+8. Wait with `await tools.sleep({ seconds })` (at most 30). Do not run `sleep` in a shell.
 
 ```js
 // Wait until a workspace is up
 for (let i = 0; i < 60; i++) {
   const ws = JSON.parse(await tools.workspace_get({ workspace: "ws-23d55aca095079c4" }));
   if (ws.state === "ready" || ws.state === "error" || ws.state === "deleted") return ws.state;
-  await tools.bash({ command: "sleep 5" });
+  await tools.sleep({ seconds: 5 });
 }
 return "still not ready after 60 tries";
 ```

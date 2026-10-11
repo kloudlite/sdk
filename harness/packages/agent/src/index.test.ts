@@ -128,3 +128,16 @@ test("dropSessions removes a workspace's sessions, keeps others", async () => {
   const ours = new Set(["ws-a", "ws-a:x1", "ws-a:agent-12", "ws-ab", "ws-ab:y", "main", "main:ws-a"]);
   expect(listSessions().map((m: any) => m.key).filter((k: string) => ours.has(k)).sort()).toEqual(["main", "main:ws-a", "ws-ab", "ws-ab:y"]);
 });
+
+test("sleep waits, refuses out-of-range seconds, and stops on abort", async () => {
+  const { sleepTool } = await import("./index.ts");
+  const t = sleepTool();
+  expect(t.exposure).toBe("codemode");
+  expect((await t.execute("x", { seconds: 0 })).content[0]!.text).toBe("slept 0s");
+  await expect(t.execute("x", { seconds: 31 })).rejects.toThrow("0 to 30");
+  await expect(t.execute("x", { seconds: -1 })).rejects.toThrow("0 to 30");
+  const ac = new AbortController();
+  const p = t.execute("x", { seconds: 30 }, ac.signal);
+  ac.abort();
+  await expect(p).rejects.toThrow("aborted");
+});
