@@ -988,10 +988,9 @@ export function App({
     if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
       const instructions = trimmed.slice(8).trim();
       const key = activeKey;
-      // pi's compaction_end already shows a failure, so the catch only keeps the rejection from going unhandled
       ensureAgent(key)
         .then((a) => (a.busy ? append(key, { kind: "info", text: "a turn is running; /compact after it ends" }) : a.compact(instructions || undefined)))
-        .catch(() => {});
+        .catch((e) => append(key, { kind: "error", text: String(e?.message ?? e) }));
       return;
     }
     if (trimmed === "/clear") {
