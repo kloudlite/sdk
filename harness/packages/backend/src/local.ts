@@ -34,7 +34,7 @@ import { toolDiff } from "./diff.ts";
 import { podfs } from "./podfs.ts";
 import { space as spaceView } from "./space.ts";
 import { mcpServer } from "./mcp.ts";
-import { boardTools, readBoards, taskTools, tasksFile } from "./tasks.ts";
+import { boardText, boardTools, readBoards, readTasks, taskTools, tasksFile } from "./tasks.ts";
 import { messagesFile, readMessages } from "./messages.ts";
 import { PROTOCOL } from "./wire.ts";
 import type { Backend, BenchEvent, CatalogModel, Decision, PermMode, PermissionRequest, Hello, LiveSessionMeta, SessionEvent, SessionHandle, SessionOpts, SessionState, SpaceView, ThinkingLevel } from "./index.ts";
@@ -259,8 +259,8 @@ export function shareable(base: SessionHandle, onZero: () => void): { view: () =
 export function baseHandle(
   agent: any,
   key: string,
-  hooks: { busy: Set<string>; onEnd(): void; onDispose(): void; onChange?(): void; state: SessionState; rebuild?(): Promise<void> },
-): SessionHandle & { close(reopen: boolean): Promise<void> } {
+  hooks: { busy: Set<string>; onEnd(): void; onDispose(): void; onChange?(): void; state: SessionState; rebuild?(): Promise<void>; seed?(): string | undefined },
+): SessionHandle & { close(reopen: boolean): Promise<void>; notice(text: string): void } {
   const subs = new Set<(e: SessionEvent) => void>();
   let closed = false;
   const state = hooks.state;
@@ -321,7 +321,12 @@ export function baseHandle(
     get state() {
       return state;
     },
-    prompt: async (text, o) => agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${text}` : text, o),
+    // the seed of a fresh restart rides on the first prompt only (hooks.seed hands it out once)
+    prompt: async (text, o) => {
+      const body = hooks.seed?.() ?? "";
+      return agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${body}${text}` : `${body}${text}`, o);
+    },
+    notice: (text) => emit({ type: "session_notice", text }),
     steer: async (text, images) => agent.steer(text, images),
     followUp: async (text, images) => agent.followUp(text, images),
     clearQueue: async () => void agent.clearQueue(),
@@ -381,9 +386,18 @@ export class LocalBackend implements Backend {
   /** Per key, outlives the agent: a rebuild reads it back. Never deleted on dispose; `fresh` replaces it. */
   #state = new Map<string, SessionState>();
   readonly #create: typeof createSession;
-  constructor(o: { create?: typeof createSession } = {}) {
+  readonly #archive: typeof clearSessionHistory;
+  /** Board directory; undefined is `~/.kl/tasks`. A test seam. */
+  readonly #tasks?: string;
+  constructor(o: { create?: typeof createSession; archive?: typeof clearSessionHistory; tasks?: string } = {}) {
     this.#create = o.create ?? createSession;
+    this.#archive = o.archive ?? clearSessionHistory;
+    this.#tasks = o.tasks;
   }
+  /** Per key: the text a fresh restart puts before the next prompt, handed out once. */
+  #seeds = new Map<string, string>();
+  /** Per key: the notice line for the view that reopens after a fresh restart. */
+  #notices = new Map<string, string>();
   /** Keys to rebuild at their next `agent_end` (an opener needed a different build mid-turn). */
   #rebuildAtEnd = new Set<string>();
   /** Per key chain: opens and rebuilds run one at a time. */
@@ -404,14 +418,35 @@ export class LocalBackend implements Backend {
   }
 
   /** Dispose the live agent so every view reopens it; the next open rebuilds from #state. `force`
-   * skips the busy refusal (clear aborts first). */
-  #rebuild(key: string, force = false): Promise<void> {
+   * skips the busy refusal (clear aborts first). `archive` moves the session files away inside the
+   * same serial step, so the reopening views (queued behind it) always build onto an empty dir. */
+  #rebuild(key: string, force = false, archive = false): Promise<void> {
     return this.#serial(key, async () => {
       if (!force && this.#busy.has(key)) throw new Error("a turn is running");
       const live = this.#live.get(key);
       this.#built.delete(key);
       await live?.close(true);
+      if (archive) this.#archive(key);
     });
+  }
+
+  /** A task went to done in the turn that just ended and nothing else runs: archive the session and
+   * start a new one, seeded with the board and the done summaries. Subagents end with their task. */
+  async #restartFresh(key: string, before: Set<string>) {
+    if (sessionKind(key).kind === "subagent" || this.#busy.has(key)) return;
+    const ts = readTasks(tasksFile(key, this.#tasks));
+    const done = ts.filter((t) => t.state === "done" && !before.has(t.id)).at(-1);
+    if (!done || ts.some((t) => t.state === "running")) return;
+    const recent = ts.filter((t) => t.state === "done" && t.summary).slice(-10)
+      .map((t) => `${t.id} ${t.title}: ${t.summary}${t.verified ? ` (verified: ${t.verified})` : ""}`);
+    // ponytail: only the board and done summaries carry over; queued/blocked talk is dropped; seed lives in memory, lost on a daemon restart
+    const seed = `[fresh session after task ${done.id}]\n${[boardText(ts), ...recent].join("\n")}`.slice(0, 8000);
+    this.#seeds.set(key, `${seed}\n\n`);
+    this.#notices.set(key, `fresh session after task ${done.id}: ${done.title}`);
+    const st = this.#state.get(key);
+    if (st) (st.tokens = 0), (st.queued = { steering: [], followUp: [] });
+    await this.#rebuild(key, true, true).catch(() => {});
+    this.#changed();
   }
   /** Permission mode for every TUI; per daemon process, so a restart resets it. */
   #mode: PermMode = "default";
@@ -517,6 +552,7 @@ export class LocalBackend implements Backend {
       lend: (k, ws) => ws.forEach((t) => this.#words(k).add(t)),
       cards: this.#cards,
       changed: () => this.#changed(),
+      tasks: this.#tasks,
     };
   }
 
@@ -617,6 +653,11 @@ export class LocalBackend implements Backend {
     const handle: ReturnType<typeof baseHandle> = baseHandle(agent, key, {
       busy: this.#busy,
       state,
+      seed: () => {
+        const s = this.#seeds.get(key);
+        this.#seeds.delete(key);
+        return s;
+      },
       onEnd: () => void setTimeout(() => this.#settle(key), 0),
       onChange: () => this.#changed(),
       rebuild: () => this.#rebuild(key),
@@ -631,9 +672,19 @@ export class LocalBackend implements Backend {
         queueMicrotask(() => this.#changed());
       },
     });
+    // the notice goes out a tick after the open returns: the view subscribes and restores its
+    // transcript (which replaces the lines) first
+    const note = this.#notices.get(key);
+    this.#notices.delete(key);
+    if (note) setTimeout(() => handle.notice(note), 0);
+    let doneBefore = new Set<string>();
     handle.subscribe((e) => {
-      if (e.type === "agent_start") this.#words(key).start();
-      else if (e.type === "agent_end") {
+      if (e.type === "agent_start") {
+        this.#words(key).start();
+        doneBefore = new Set(readTasks(tasksFile(key, this.#tasks)).filter((t) => t.state === "done").map((t) => t.id));
+      } else if (e.type === "agent_end") {
+        const before = doneBefore;
+        setTimeout(() => void this.#restartFresh(key, before), 0);
         this.#words(key).end();
         this.#space.poke();
       } else if ((e as any).type === "tool_execution_end") {
@@ -663,8 +714,7 @@ export class LocalBackend implements Backend {
       // abort first if mid-turn (as the TUI's /clear did), close the agent, then archive: every view
       // reopens against the emptied history
       if (this.#busy.has(key)) await this.#live.get(key)?.abort();
-      await this.#rebuild(key, true);
-      await clearSessionHistory(key);
+      await this.#rebuild(key, true, true);
       const st = this.#state.get(key);
       if (st) (st.tokens = 0), (st.queued = { steering: [], followUp: [] });
       this.#changed();

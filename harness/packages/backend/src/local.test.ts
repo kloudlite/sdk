@@ -6,7 +6,7 @@ import { LocalBackend, DESTRUCTIVE, asking, baseHandle, mustAsk, roleCard, strip
 import { toolDiff } from "./diff.ts";
 import { Cards } from "./cards.ts";
 import { PROTOCOL } from "./wire.ts";
-import { readBoards, readTasks } from "./tasks.ts";
+import { addTask, readBoards, readTasks, tasksFile, updateTask } from "./tasks.ts";
 import { POD_TOOLS, platformTools } from "@kloudlite-tui/tools";
 
 test("hello carries what the TUI reads at boot", async () => {
@@ -389,3 +389,70 @@ test("the MCP door serves every platform and pod tool with no `because`, plus ma
   expect((tools.find((t) => t.name === "exec")!.inputSchema as any).required).toContain("workspace");
   expect(names).not.toContain("question");
 });
+
+// A fake agent whose prompt() records what it was sent; a turn is agent_start, a board change, agent_end.
+async function freshRig(key: string) {
+  const tasks = mkdtempSync(join(tmpdir(), "kl-fresh-"));
+  const { models } = await import("@kloudlite-tui/agent");
+  const m = models.getModels().find((x: any) => x.provider !== "anthropic") as any;
+  const log: string[] = [];
+  const subs = new Set<(e: any) => void>();
+  const create = (async () => {
+    log.push("create");
+    return { agent: {}, messages: [], subscribe: (cb: any) => (subs.add(cb), () => void subs.delete(cb)), setThinkingLevel() {}, dispose() {}, prompt: async (t: string) => void log.push(`prompt:${t}`) };
+  }) as any;
+  const b = new LocalBackend({ create, archive: ((k: string) => void log.push(`archive:${k}`)) as any, tasks });
+  const o: any = { initial: { model: { provider: m.provider, id: m.id } }, tools: [], permission: async () => ({}) };
+  const file = tasksFile(key, tasks);
+  const turn = async (change: () => void) => {
+    const h = await b.session(key, { ...o, fresh: true });
+    subs.forEach((s) => s({ type: "agent_start" }));
+    change();
+    subs.forEach((s) => s({ type: "agent_end", messages: [] }));
+    await new Promise((r) => setTimeout(r, 30));
+    return h;
+  };
+  return { b, o, key, file, log, turn };
+}
+
+test("a turn that marks a task done with nothing running archives, rebuilds, and seeds the next prompt once", async () => {
+  const r = await freshRig("main");
+  addTask(r.file, { title: "first" });
+  await r.turn(() => void updateTask(r.file, "T1", { state: "done", summary: "added x in y.ts", verified: "bun test: pass" }));
+  const next = await r.b.session(r.key, r.o);
+  const notices: string[] = [];
+  next.subscribe((e: any) => e.type === "session_notice" && notices.push(e.text));
+  await next.prompt("go on");
+  await next.prompt("again");
+  // archive runs after the old agent closed and before the new one was created
+  expect(r.log.filter((l) => l === "create").length).toBe(2);
+  expect(r.log.indexOf("archive:main")).toBeGreaterThan(r.log.indexOf("create"));
+  expect(r.log.indexOf("archive:main")).toBeLessThan(r.log.lastIndexOf("create"));
+  const sent = r.log.filter((l) => l.startsWith("prompt:"));
+  expect(sent[0]).toContain("[fresh session after task T1]");
+  expect(sent[0]).toContain("T1 first: added x in y.ts (verified: bun test: pass)");
+  expect(sent[0]!.endsWith("go on")).toBe(true);
+  expect(sent[1]).not.toContain("fresh session");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(notices).toEqual(["fresh session after task T1: first"]);
+  await next.dispose();
+}, 20000);
+
+test("a done task while another is running does not restart", async () => {
+  const r = await freshRig("main");
+  addTask(r.file, { title: "a" });
+  addTask(r.file, { title: "b" });
+  await r.turn(() => {
+    updateTask(r.file, "T2", { state: "running" });
+    updateTask(r.file, "T1", { state: "done", summary: "s", verified: "v" });
+  });
+  expect(r.log.filter((l) => l === "create").length).toBe(1);
+  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
+}, 20000);
+
+test("a subagent session never restarts", async () => {
+  const r = await freshRig("w7:agent-ab12");
+  addTask(r.file, { title: "a" });
+  await r.turn(() => void updateTask(r.file, "T1", { state: "done", summary: "s", verified: "v" }));
+  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
+}, 20000);
