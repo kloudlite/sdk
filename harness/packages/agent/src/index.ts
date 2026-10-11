@@ -309,7 +309,7 @@ export function loginProvider(
  */
 type SessionMeta = { key: string; name?: string; description?: string; updated: number };
 
-function sessionDir(key: string): string {
+export function sessionDir(key: string): string {
   return join(CONFIG_DIR, "sessions", key.replace(/[^\w.-]/g, "_"));
 }
 
@@ -374,8 +374,10 @@ export function clearSessionHistory(key: string): void {
   }
   const archive = join(dir, "archive");
   mkdirSync(archive, { recursive: true });
+  // Originals behind retrieve ids are only worth keeping while the session lives.
+  rmSync(join(dir, "results"), { recursive: true, force: true });
   for (const name of entries) {
-    if (name === "archive" || name === "meta.json") continue;
+    if (name === "archive" || name === "meta.json" || name === "results") continue;
     try {
       renameSync(join(dir, name), join(archive, `${Date.now()}-${name}`));
     } catch {}
@@ -454,7 +456,7 @@ export async function createSession({
     // rules prepended to its description (CODEMODE_NOTE) now carry that.
     extensionFactories: [
       { name: "orphans", factory: orphansExtension },
-      { name: "budget", factory: budgetExtension },
+      { name: "budget", factory: budgetExtension(dir) },
       ...(codemode ? [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" })) }] : []),
     ],
     appendSystemPrompt: systemAppends(codemode, role),

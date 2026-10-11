@@ -141,3 +141,15 @@ test("sleep waits, refuses out-of-range seconds, and stops on abort", async () =
   ac.abort();
   await expect(p).rejects.toThrow("aborted");
 });
+
+test("clearSessionHistory removes stored results", async () => {
+  process.env.KLOUDLITE_CONFIG_DIR ??= mkdtempSync(join(tmpdir(), "kl-cfg-"));
+  const { clearSessionHistory, sessionDir } = await import("./index.ts");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const dir = sessionDir("clear-results");
+  mkdirSync(join(dir, "results"), { recursive: true });
+  writeFileSync(join(dir, "results", "0123456789ab"), "x");
+  clearSessionHistory("clear-results");
+  expect(existsSync(join(dir, "results"))).toBe(false);
+  expect(existsSync(join(dir, "archive", "results"))).toBe(false);
+});
