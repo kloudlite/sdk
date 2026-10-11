@@ -1,0 +1,5 @@
+[test]
+# the tui suites need its preload (boot + temp config dir); a run from here must find it too
+preload = ["./apps/tui/src/test-setup.ts"]
+# the plugin's hook tests import `claude-code/testing`, which only `claude plugin test laptop-plugin/plugin` provides
+pathIgnorePatterns = ["laptop-plugin/**"]

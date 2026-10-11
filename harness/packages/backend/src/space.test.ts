@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { envCurrent, type Snap } from "./space.ts";
+import { envCurrent, space, type Snap } from "./space.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +61,7 @@ test("lists the user's workspaces and the team's environments, reads clone paren
     return json({ error: "nope" }, 404);
   }) as any;
 
-  const v = await new LocalBackend().space();
+  const v = await space(); // the platform view alone: LocalBackend adds boards and messages from the real ~/.kl
   expect(v.available).toBe(true);
   expect(v.connected).toBe("e2");
   expect(v.workspaces.map((w) => w.id)).toEqual(["w1", "c1", "w3"]); // not the bench, not another person's
