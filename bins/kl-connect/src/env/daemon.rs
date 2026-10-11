@@ -11,6 +11,7 @@ use super::{hosts, tunnel};
 use crate::api::{self, Error, Space};
 use boringtun::x25519::StaticSecret;
 use std::os::unix::fs::MetadataExt;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -34,6 +35,8 @@ struct Daemon {
     /// Lives for the daemon's life; the bench session, not this key, is the authentication.
     secret: StaticSecret,
     current: Option<(Space, tunnel::Up)>,
+    /// The names last written to /etc/hosts; a lookup that misses keeps its old address.
+    last: Vec<(String, Ipv4Addr)>,
     backoff: Duration,
 }
 
@@ -42,6 +45,7 @@ pub async fn run(home: PathBuf) -> Result<(), String> {
         home,
         secret: StaticSecret::random_from_rng(rand_core::OsRng),
         current: None,
+        last: vec![],
         backoff: Duration::from_secs(1),
     };
     loop {
@@ -135,7 +139,13 @@ impl Daemon {
         };
         let names: Vec<String> = doc.services.iter().map(|s| s.name.clone()).collect();
         let id = doc.id.clone();
-        let entries = tokio::task::spawn_blocking(move || tunnel::resolve(&names, &id)).await.map_err(|e| e.to_string())?;
+        let asked = names.clone();
+        let fresh = tokio::task::spawn_blocking(move || tunnel::resolve(&asked, &id)).await.map_err(|e| e.to_string())?;
+        if fresh.is_empty() && !names.is_empty() {
+            return fail(self, "cluster DNS did not answer over the tunnel".into(), &doc.id);
+        }
+        let entries = merge(&names, &fresh, &self.last);
+        self.last = entries.clone();
         let block = hosts::Block { env: doc.id.clone(), name: doc.name.clone(), entries };
         let cur = std::fs::read_to_string(HOSTS).map_err(|e| format!("read {HOSTS}: {e}"))?;
         let (text, skipped) = hosts::render(&cur, Some(&block));
@@ -161,6 +171,7 @@ impl Daemon {
             up.down().await;
         }
         if remove_hosts {
+            self.last.clear();
             if let Ok(cur) = std::fs::read_to_string(HOSTS) {
                 let (t, _) = hosts::render(&cur, None);
                 if t != cur && hosts::install(Path::new(HOSTS), &t).is_ok() {
@@ -169,6 +180,13 @@ impl Daemon {
             }
         }
     }
+}
+
+/// One address per service in the doc: the fresh answer, else the one written last time. A service
+/// gone from the doc is dropped (a real change, not a miss).
+fn merge(names: &[String], fresh: &[(String, Ipv4Addr)], last: &[(String, Ipv4Addr)]) -> Vec<(String, Ipv4Addr)> {
+    let find = |v: &[(String, Ipv4Addr)], n: &String| v.iter().find(|(m, _)| m == n).map(|(_, ip)| *ip);
+    names.iter().filter_map(|n| find(fresh, n).or_else(|| find(last, n)).map(|ip| (n.clone(), ip))).collect()
 }
 
 fn read_team(dir: &Path) -> Option<String> {
@@ -200,6 +218,16 @@ fn rfc3339(t: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_miss_keeps_the_last_address_and_a_removed_service_goes() {
+        let ip = |d| Ipv4Addr::new(10, 43, 0, d);
+        let n = |s: &str| s.to_string();
+        let last = vec![(n("a"), ip(1)), (n("b"), ip(2)), (n("gone"), ip(9))];
+        let fresh = vec![(n("a"), ip(5))];
+        let got = merge(&[n("a"), n("b"), n("new")], &fresh, &last);
+        assert_eq!(got, vec![(n("a"), ip(5)), (n("b"), ip(2))]);
+    }
 
     #[test]
     fn timestamps_are_rfc3339_utc() {

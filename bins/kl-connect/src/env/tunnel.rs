@@ -177,22 +177,32 @@ fn env_namespace(id: &str) -> String {
 }
 
 /// Each service's A record through cluster DNS (over the tunnel). A name that does not resolve
-/// (a service with no ports has no ClusterIP Service) is left out rather than failing the pass.
+/// (a service with no ports has no ClusterIP Service, or the lookup was lost) is left out rather
+/// than failing the pass; the caller keeps its last address. Each name gets two tries of 2 s, and
+/// a late reply to an earlier query is read and dropped (id mismatch) instead of eating the next.
 pub fn resolve(names: &[String], env_id: &str) -> Vec<(String, Ipv4Addr)> {
     let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") else { return vec![] };
-    let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
     let ns = env_namespace(env_id);
     let mut out = vec![];
     let mut buf = [0u8; 1500];
     for (i, n) in names.iter().enumerate() {
         let id = i as u16;
         let q = dns::a_query(id, &format!("{n}.{ns}.svc.cluster.local"));
-        if sock.send_to(&q, CLUSTER_DNS).is_err() {
-            continue;
-        }
-        if let Ok(len) = sock.recv(&mut buf) {
-            if let Some(ip) = dns::a_answer(id, &buf[..len]) {
-                out.push((n.clone(), ip));
+        'tries: for _ in 0..2 {
+            if sock.send_to(&q, CLUSTER_DNS).is_err() {
+                continue;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
+                    break;
+                }
+                let Ok(len) = sock.recv(&mut buf) else { break };
+                if let Some(ip) = dns::a_answer(id, &buf[..len]) {
+                    out.push((n.clone(), ip));
+                    break 'tries;
+                }
             }
         }
     }
