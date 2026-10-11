@@ -132,7 +132,7 @@ export const register: Register = on => {
       )
     }
     const section = (title: string, count: number, body: unknown) => (
-      <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column">
         <Box gap={1}>
           <Text bold dimColor>{title}</Text>
           <Text dimColor>{`· ${count}`}</Text>
