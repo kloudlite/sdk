@@ -306,6 +306,18 @@ pub async fn clear_space(cfg: &crate::config::Config, team: &str) -> Result<(), 
     }
 }
 
+/// `GET /v1/environments?owner={team}`: the team's environments, for resolving a name to an id.
+pub async fn environments(cfg: &crate::config::Config, team: &str) -> Result<Vec<EnvDoc>, Error> {
+    let r = client()
+        .get(format!("{}/v1/environments", cfg.api))
+        .query(&[("owner", team)])
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    json(r).await
+}
+
 pub async fn environment(cfg: &crate::config::Config, id: &str) -> Result<EnvDoc, Error> {
     let r = client()
         .get(format!("{}/v1/environments/{}", cfg.api, path_segment(id)))

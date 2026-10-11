@@ -84,11 +84,33 @@ async fn connect(env: &str, team: Option<&str>) -> Result<(), String> {
     }
     let cfg = config::load()?;
     let team = team.map(str::to_string).unwrap_or_else(|| cfg.username.clone());
-    api::set_space(&cfg, &team, env).await.map_err(|e| e.to_string())?;
+    let envs = api::environments(&cfg, &team).await.map_err(|e| e.to_string())?;
+    let id = pick(&envs, env, &team)?;
+    api::set_space(&cfg, &team, &id).await.map_err(|e| e.to_string())?;
     let p = env_file();
     config::write_atomic(&p, &serde_json::json!({ "team": team }).to_string())?; // 0600 at create
     println!("connected {env} (team {team}); names appear in a few seconds");
     Ok(())
+}
+
+/// People type the name they see (`blog`); the space stores the id. An id always wins, then a
+/// unique name; names are not unique within a team, so two matches is a refusal naming both ids.
+fn pick(envs: &[api::EnvDoc], arg: &str, team: &str) -> Result<String, String> {
+    if let Some(e) = envs.iter().find(|e| e.id == arg) {
+        return Ok(e.id.clone());
+    }
+    match envs.iter().filter(|e| e.name == arg).collect::<Vec<_>>()[..] {
+        [e] => Ok(e.id.clone()),
+        [] => Err(format!(
+            "no environment {arg} in team {team}; have: {}",
+            envs.iter().map(|e| format!("{} ({})", e.name, e.id)).collect::<Vec<_>>().join(", ")
+        )),
+        ref many => Err(format!(
+            "{} environments are named {arg} in team {team}; pass the id: {}",
+            many.len(),
+            many.iter().map(|e| e.id.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
 }
 
 async fn disconnect() -> Result<(), String> {
@@ -134,4 +156,23 @@ fn status() -> Result<(), String> {
     println!("error: {}", text("error"));
     println!("at: {}", text("at"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick;
+
+    fn envs(v: &[(&str, &str)]) -> Vec<crate::api::EnvDoc> {
+        v.iter().map(|(id, name)| serde_json::from_value(serde_json::json!({ "id": id, "name": name })).unwrap()).collect()
+    }
+
+    #[test]
+    fn picks_by_id_then_unique_name_and_refuses_the_rest() {
+        let e = envs(&[("env-1", "blog"), ("env-2", "shop"), ("env-3", "shop"), ("blog", "x")]);
+        assert_eq!(pick(&e, "env-1", "t").unwrap(), "env-1");
+        assert_eq!(pick(&e, "blog", "t").unwrap(), "blog", "an id beats a name");
+        assert_eq!(pick(&envs(&[("env-1", "blog")]), "blog", "t").unwrap(), "env-1");
+        assert!(pick(&e, "shop", "t").unwrap_err().contains("env-2, env-3"));
+        assert!(pick(&e, "nope", "t").unwrap_err().contains("blog (env-1)"));
+    }
 }

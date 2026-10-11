@@ -45,6 +45,7 @@ pub fn install() -> Result<(), String> {
     );
     let bin = std::env::current_exe().and_then(|p| p.canonicalize()).map_err(|e| e.to_string())?;
     let _ = launchctl(&["bootout", &format!("system/{LABEL}")]); // reinstall replaces
+    gone()?;
     copy_bin(&bin, Path::new(BIN))?;
     std::fs::write(PLIST, plist(Path::new(BIN), &home)).map_err(|e| format!("write {PLIST}: {e}"))?;
     launchctl(&["bootstrap", "system", PLIST])
@@ -80,6 +81,18 @@ pub fn uninstall() -> Result<(), String> {
         super::hosts::flush();
     }
     Ok(())
+}
+
+/// `bootout` returns before launchd has let go of the old job; a `bootstrap` in that window fails
+/// with "5: Input/output error" (seen on a reinstall). Wait until `print` no longer finds it.
+fn gone() -> Result<(), String> {
+    for _ in 0..50 {
+        if launchctl(&["print", &format!("system/{LABEL}")]).is_err() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(format!("system/{LABEL} still loaded 5 s after bootout; run `sudo launchctl bootout system/{LABEL}` and retry"))
 }
 
 fn launchctl(args: &[&str]) -> Result<(), String> {
