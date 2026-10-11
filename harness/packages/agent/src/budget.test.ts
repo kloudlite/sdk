@@ -15,8 +15,8 @@ test("giant tool result becomes head + note + tail under the cap", () => {
   expect(out.startsWith("a".repeat(12_000))).toBe(true);
   expect(out.endsWith("z".repeat(12_000))).toBe(true);
   expect(out).toContain("[cut: 4624000 characters, middle dropped.");
-  // Only content is returned: structuredContent and isError pass through unchanged.
-  expect(r.structuredContent).toBeUndefined();
+  // structuredContent is handed back (pi drops it otherwise); isError is left to pass through.
+  expect(r.structuredContent).toEqual({ k: 1 });
   expect(r.isError).toBeUndefined();
 });
 

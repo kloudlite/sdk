@@ -62,7 +62,8 @@ export function capMessages(messages: AgentMessage[], cap = MESSAGE_CAP): AgentM
 export const budgetExtension: ExtensionFactory = (pi) => {
   pi.on("tool_result", (e) => {
     const content = cutParts(e.content, TOOL_CAP);
-    return content === e.content ? undefined : { content };
+    // pi drops structuredContent when content is replaced without it; codemode reads it, so hand it back.
+    return content === e.content ? undefined : { content, structuredContent: e.structuredContent };
   });
   pi.on("context", (e) => {
     const m = capMessages(e.messages);
