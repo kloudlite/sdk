@@ -259,6 +259,18 @@ spec:
                 name: kloudlite-api
                 port:
                   number: 80
+          # The image tools (`image_list`, `image_tags`, `image_visibility`, `image_tag_delete`,
+          # `image_delete`) call the api's `/api/{owner}/images` and `/api/{owner}/{image}/image*`
+          # routes, which have no `/v1` twin. Exactly those five shapes, so the app's own `/api/*`
+          # (auth, health, metrics, repos) still reaches Next.js; left out, the agent saw a 404 in
+          # HTML (2026-10-12).
+          - path: /api/[^/]+/(images|[^/]+/image(tags|tagdelete|delete|visibility))$
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: kloudlite-api
+                port:
+                  number: 80
           - path: /
             pathType: Prefix
             backend:
