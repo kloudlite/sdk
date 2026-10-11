@@ -119,7 +119,11 @@ person wrote.
 - **Container `net`**, a second container in the bench pod (`crates/workspaces/src/k8s/bench.rs`),
   running the new binary `bins/bench-net` from the bench image. It is a separate container so
   `NET_ADMIN` never reaches the `sessions` container, where agent sessions and user code run.
-  Security context: `hardened()` plus `NET_ADMIN`, read-only root filesystem, no mounts but `/tmp`.
+  Security context: `hardened()` plus `NET_ADMIN`, read-only root filesystem; mounts `/tmp` and
+  hostPath `/dev/net/tun` (`type: CharDevice`). The pod sets sysctl `net.ipv4.ip_forward=1`, which
+  k3s admits through the kubelet's `allowed-unsafe-sysctls` (node config, `deploy/k3s/README.md`).
+  The cluster is ours (owner, 2026-10-11: "we have permission"): if the probe shows the runtime
+  refusing either, `net` runs `privileged: true` instead; still only `net`, never `sessions`.
   This is a second container beside the one the 2026-09-25 ruling allows ("no shell sidecar, no
   workspace container on a bench pod"); it carries no shell and no workspace, and exists only to
   keep the capability out of `sessions`.
@@ -147,7 +151,8 @@ person wrote.
 
 - Probe first, before any other task: on k3s, a hand-run container with `NET_ADMIN`, a TUN device
   and one `MASQUERADE` rule, in a space namespace, reaches a ClusterIP of the space's environment
-  from a peer address. If this fails, the design stops and returns to the owner.
+  from a peer address. The probe tries the narrow form (NET_ADMIN, `/dev/net/tun` hostPath, the
+  sysctl) first and records which form worked; that form is what `bench.rs` renders.
 - Unit: hosts block rewrite (lines outside untouched; idempotent; a name defined outside is
   skipped; removal leaves the file as before the first write); framing (split and joined reads,
   zero length closes); handshake (addresses unique per stream, freed on close); bench pod
