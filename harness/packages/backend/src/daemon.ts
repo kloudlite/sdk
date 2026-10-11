@@ -55,6 +55,19 @@ export function listenTcp(backend: Backend, port: number, hostname = "0.0.0.0"):
   });
 }
 
+/** Live count of a server's open connections. A laptop `kl-connect mcp` or kl-tui holds one 7791
+ * connection for its whole life but runs no turn between calls; without this the idle clock reads
+ * it as nobody and the agent deletes the pod under it (2026-10-10: "Connection closed" 12 s after
+ * the plugin connected). */
+export function openConnections(server: Server): () => number {
+  let open = 0;
+  server.on("connection", (s) => {
+    open++;
+    s.once("close", () => open--);
+  });
+  return () => open;
+}
+
 if (import.meta.main) {
   // one stray rejection must not take every session on the bench down with it
   process.on("unhandledRejection", (e) => console.error("unhandled rejection", e));
@@ -64,13 +77,13 @@ if (import.meta.main) {
   const b = new LocalBackend();
   await host(b, sockPath());
   // 7791 = BENCH_TUI_PORT (crates/workspaces/src/k8s/bench.rs); env only so a laptop run can move it
-  await listenTcp(b, Number(process.env.KL_HOST_TUI_PORT ?? 7791));
-  // The idle clock (bench/sessions/main.ts) cannot see a turn whose client left; this file is how
-  // it does. Rewritten on a beat so a dead daemon's last count goes stale instead of pinning the pod.
+  const tcp = openConnections(await listenTcp(b, Number(process.env.KL_HOST_TUI_PORT ?? 7791)));
+  // The idle clock (bench/sessions/main.ts) cannot see a turn whose client left, nor a laptop
+  // client on 7791 (its process scan finds only local bun clients); this file is how it does. Rewritten on a beat so a dead daemon's last count goes stale instead of pinning the pod.
   const busyFile = join(homedir(), ".kl", "host.busy");
   const beat = () => {
     try {
-      writeFileSync(busyFile, String(b.busyCount));
+      writeFileSync(busyFile, String(b.busyCount + tcp()));
     } catch (e) {
       console.error("host.busy", e);
     }
