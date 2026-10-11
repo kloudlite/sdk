@@ -216,3 +216,7 @@ If the backend tells you that it cannot start or intercept the service, stop. Te
 2. Use `workspace_tasks` to see which step of the workspace failed.
 
 Do not repair the failure yourself. Do not ask a different workspace to pull, copy or fetch around the failure.
+
+## Done tasks
+
+Mark a task done only after its check passes. Give the summary and the check in the same `task_update`.

@@ -237,3 +237,7 @@ Main asks: `[from main session] add a comments API`.
 1. At the start, read the Setup section of `AGENTS.md` in the repo.
 2. Install the missing packages that this section gives.
 3. When you install a new package, add it to `AGENTS.md`.
+
+## Done tasks
+
+Mark a task done only after its check passes. Give the summary and the check in the same `task_update`.
