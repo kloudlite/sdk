@@ -13,10 +13,13 @@
 // every kl tool call, the subagents' included; one that names a `workspace` marks it working until
 // the call ends plus `GRACE_MS`.
 import type { Register } from 'claude-code'
-import { activity, environments, mark, workspaces, type Env, type Row, type Service } from './panel'
+import { activity, envCurrent, environments, mark, snapName, workspaces, type Env, type Row, type Service, type Snap } from './panel'
 import { register as tools } from './tools'
 
 const PANE = 'kloudlite'
+// The snapshot line costs two calls per environment (`env_get` carries `restored_to`, the list does
+// not; `volume_history` holds the records), so it refreshes on its own slower beat.
+const SNAP_MS = 15_000
 
 const state = {
   ws: [] as Row[],
@@ -26,6 +29,8 @@ const state = {
   busy: false,
   open: false,
   calls: new Map<string, { inFlight: number; lastEnd: number }>(), // keyed by the `workspace` argument
+  snaps: new Map<string, string>(), // environment id -> the snapshot its disk is based on
+  snapAt: 0,
 }
 
 export const register: Register = on => {
@@ -72,6 +77,28 @@ export const register: Register = on => {
         ])
         state.ws = workspaces(text(ws))
         state.envs = environments(text(envs), state.ws)
+        if (Date.now() - state.snapAt > SNAP_MS) {
+          state.snapAt = Date.now()
+          const snaps = new Map<string, string>()
+          await Promise.all(
+            state.envs.filter(x => x.volume).map(async x => {
+              try {
+                const [doc, hist] = await Promise.all([
+                  $.mcp.call(kl.server, 'env_get', { env: x.id }),
+                  $.mcp.call(kl.server, 'volume_history', { volume: x.id }),
+                ])
+                const d = JSON.parse(text(doc))
+                const at = envCurrent(JSON.parse(text(hist)) as Snap[], d?.restored_to ?? null, d?.restore_requested_at ?? null)
+                if (at) snaps.set(x.id, snapName(at))
+              } catch {
+                // ponytail: a failed read keeps the last answer; the line is a hint, the lists are the pane
+                const old = state.snaps.get(x.id)
+                if (old) snaps.set(x.id, old)
+              }
+            }),
+          )
+          state.snaps = snaps
+        }
         state.error = ''
         state.at = new Date().toTimeString().slice(0, 8)
       } catch (err: any) {
@@ -115,6 +142,15 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {row(x, true)}
+          {state.snaps.has(x.id) ? (
+            <Box gap={1} paddingLeft={2}>
+              <Text dimColor>from snapshot</Text>
+              <Box flexShrink={1}>
+                <Text color="suggestion" wrap="truncate-end">{state.snaps.get(x.id)}</Text>
+              </Box>
+              {x.state === 'running' ? <Text color="warning">+ live changes</Text> : null}
+            </Box>
+          ) : null}
           {x.services.map((s: Service, i) => (
             <Box gap={1}>
               <Text dimColor>{i === x.services.length - 1 ? '└' : '├'}</Text>
