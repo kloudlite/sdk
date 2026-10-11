@@ -518,6 +518,7 @@ export const CATALOGUE: [string, string, string, string, string, string][] = [
   ["env.intercept.remap", "Environments", "The intercepted service answers on its own port while the workspace listens on another", "99.9 %", "hourly", "6 · Environment"],
   ["env.intercept.peer", "Environments", "A second space following the same environment reaches the intercepted service", "95 % ≤ 120000 ms", "hourly", "6 · Environment"],
   ["env.intercept.bench", "Environments", "The probe owner's bench reaches the intercepted service", "95 % ≤ 120000 ms", "hourly", "6 · Environment"],
+  ["env.tunnel.reach", "Environments", "kl-connect env connect, then nc -z <service> <port> by bare name from the laptop", "99 %", "hourly", "6 · Environment"],
   ["env.intercept.proxy.restart", "Environments", "Killing the intercepting workspace's pod does not interrupt delivery beyond the pod's own restart, and no proxy is recreated", "95 % ≤ 180000 ms", "hourly", "6 · Environment"],
   ["env.intercept.release", "Environments", "Releasing the intercept brings the real service back, removes the proxy and leaves no grant behind", "95 % ≤ 180000 ms", "hourly", "6 · Environment"],
   ["env.intercept.udp.refused", "Environments", "An intercept of a UDP port is refused", "99.9 %", "hourly", "6 · Environment"],
