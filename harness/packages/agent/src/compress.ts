@@ -276,7 +276,7 @@ export async function compressWithModel(dir: string, text: string, query = ""): 
     });
     if (!res.ok) return c;
     const body = (await res.json()) as { compressed: string; original_tokens: number; compressed_tokens: number };
-    if (typeof body.compressed !== "string" || body.compressed_tokens >= body.original_tokens * 0.8) return c; // same size gate as the rules
+    if (typeof body.compressed !== "string" || body.compressed_tokens >= body.original_tokens) return c; // any shrink, as headroom: retrieve undoes the loss
     const hash = remember(dir, text);
     return {
       text: body.compressed + marker(text.length, body.compressed.length, hash),

@@ -67,6 +67,21 @@ test("kompress: a good reply is used for plain text and the original is retrieva
   }
 });
 
+test("kompress: any shrink is used, no shrink falls back to rules", async () => {
+  const d = dir();
+  let reply = { compressed: "shorter", original_tokens: 1029, compressed_tokens: 874 };
+  const srv = Bun.serve({ port: 0, fetch: () => Response.json(reply) });
+  process.env.KL_KOMPRESS_URL = `http://localhost:${srv.port}`;
+  try {
+    expect((await compressWithModel(d, PLAIN)).strategy).toBe("kompress");
+    reply = { compressed: "same", original_tokens: 1029, compressed_tokens: 1029 };
+    expect((await compressWithModel(d, PLAIN)).strategy).not.toBe("kompress");
+  } finally {
+    srv.stop(true);
+    delete process.env.KL_KOMPRESS_URL;
+  }
+});
+
 test("kompress: 500 and unset URL fall back to rules", async () => {
   const d = dir();
   const rules = compress(d, PLAIN);
