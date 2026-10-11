@@ -109,7 +109,7 @@ fn a_bench_pod_carries_its_one_container_and_the_tool_secret_optional() {
     assert_eq!(p.metadata.labels.as_ref().unwrap()[KIND_LABEL], "bench");
     let spec = p.spec.unwrap();
     let names: Vec<&str> = spec.containers.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["sessions"], "a bench pod is the sessions container, nothing else (owner ruling 2026-09-25: no shell)");
+    assert_eq!(names, ["sessions", "net"], "a bench pod is sessions plus the tunnel's own container, no shell (owner ruling 2026-09-25)");
     assert_eq!(spec.restart_policy.as_deref(), Some("Always"));
 
     let v = spec.volumes.as_ref().unwrap().iter().find(|v| v.name == "bench-tool").expect("volume");
@@ -126,7 +126,7 @@ fn a_bench_pod_carries_its_one_container_and_the_tool_secret_optional() {
     assert_eq!(m("bench-tool").read_only, Some(true));
     assert_eq!(m("user-key").read_only, Some(true));
     // No second container: no shell beside it, no sidecar home mount.
-    assert_eq!(spec.containers.len(), 1);
+    assert_eq!(spec.containers.len(), 2);
     assert_eq!(c.readiness_probe.as_ref().unwrap().period_seconds, Some(2));
     // What the SCHEDULER packs against: a node process, not a second workspace. The two
     // containers together used to request 4 CPU, and a second bench on an 8-core node sat
@@ -169,6 +169,44 @@ fn only_the_gateway_may_reach_a_bench_workspace_pod() {
         Some(IntOrString::Int(n)) => Some(n),
         _ => None,
     }).collect();
-    assert_eq!(ports, [BENCH_TERM_PORT as i32, BENCH_TUI_PORT as i32]);
+    assert_eq!(ports, [BENCH_TERM_PORT as i32, BENCH_TUI_PORT as i32, BENCH_NET_PORT as i32]);
     assert_eq!(rule.from.as_ref().unwrap().len(), 1);
+}
+
+
+fn bench_pod_for_test() -> k8s_openapi::api::core::v1::Pod {
+    workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, ""))).unwrap()
+}
+
+#[test]
+fn the_net_container_is_plainly_hardened() {
+    let pod = bench_pod_for_test();
+    let cs = &pod.spec.as_ref().unwrap().containers;
+    let net = cs.iter().find(|c| c.name == "net").unwrap();
+    // no capability, no privilege: the workspace pod fence admits it unchanged
+    assert_eq!(net.security_context, Some(crate::k8s::workspace::hardened()));
+    assert_eq!(net.ports.as_ref().unwrap()[0].container_port, BENCH_NET_PORT as i32);
+    let sessions = cs.iter().find(|c| c.name == BENCH_CONTAINER).unwrap();
+    assert_eq!(net.image, sessions.image);
+}
+
+#[test]
+fn both_containers_share_the_streams_dir() {
+    let pod = bench_pod_for_test();
+    let spec = pod.spec.as_ref().unwrap();
+    let mounts = |name: &str| {
+        spec.containers.iter().find(|c| c.name == name).unwrap().volume_mounts.clone().unwrap_or_default().into_iter()
+            .map(|m| (m.mount_path, m.read_only.unwrap_or(false))).collect::<Vec<_>>()
+    };
+    assert!(mounts("net").contains(&("/run/kl-net".into(), false)));
+    assert!(mounts(BENCH_CONTAINER).contains(&("/run/kl-net".into(), true)));
+    let vols = spec.volumes.as_ref().unwrap();
+    assert_eq!(vols.iter().filter(|v| v.name == "kl-net").count(), 1);
+    assert!(vols.iter().all(|v| v.host_path.is_none() || v.name != "kl-net"));
+}
+
+#[test]
+fn a_plain_workspace_has_no_net_container() {
+    let pod = workspace_pod(&ws_spec(), "ws-1", "ws-1", &ctx(), None, None).unwrap();
+    assert!(pod.spec.unwrap().containers.iter().all(|c| c.name != "net"));
 }
