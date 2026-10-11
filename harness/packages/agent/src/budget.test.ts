@@ -1,27 +1,44 @@
 import { expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MESSAGE_CAP, TOOL_CAP, budgetExtension, budgeted } from "./budget.ts";
 
-// Capture the handlers the extension registers, as pi would call them.
+// Capture the handlers and tools the extension registers, as pi would call them.
+const dir = mkdtempSync(join(tmpdir(), "kl-budget-"));
 const hooks: Record<string, (e: any) => any> = {};
-budgetExtension({ on: (n: string, h: (e: any) => any) => void (hooks[n] = h) } as never);
+let tool: any;
+budgetExtension(dir)({
+  on: (n: string, h: (e: any) => any) => void (hooks[n] = h),
+  registerTool: (t: unknown) => void (tool = t),
+} as never);
+const result = (toolName: string, text: string, extra = {}) =>
+  hooks.tool_result!({ toolName, content: [{ type: "text", text }], ...extra });
+const ask = async (p: object) => (await tool.execute("1", p)).content[0].text as string;
 
-test("giant tool result becomes head + note + tail under the cap", () => {
+test("giant tool result becomes head + note + tail under the cap", async () => {
   const text = "a".repeat(12_000) + "x".repeat(4_600_000) + "z".repeat(12_000);
-  const r = hooks.tool_result!({ content: [{ type: "text", text }], structuredContent: { k: 1 }, isError: true });
+  const r = await result("exec", text, { structuredContent: { k: 1 }, isError: true });
   const out = r.content[0].text as string;
   expect(out.length).toBeLessThan(TOOL_CAP);
   expect(out.startsWith("a".repeat(12_000))).toBe(true);
   expect(out.endsWith("z".repeat(12_000))).toBe(true);
-  expect(out).toContain("[cut: 4624000 characters, middle dropped.");
+  expect(out).toContain("[cut: 4624000 characters, middle dropped. Call retrieve with id ");
+  const id = /id ([0-9a-f]{12})/.exec(out)![1]!;
+  expect((await ask({ id, offset: 12_000, limit: 5 }))).toBe("xxxxx");
   // structuredContent is handed back (pi drops it otherwise); isError is left to pass through.
   expect(r.structuredContent).toEqual({ k: 1 });
   expect(r.isError).toBeUndefined();
 });
 
-test("small tool result is untouched", () => {
-  expect(hooks.tool_result!({ content: [{ type: "text", text: "ok" }] })).toBeUndefined();
+test("small tool result is untouched", async () => {
+  expect(await result("exec", "ok")).toBeUndefined();
+});
+
+test("read results are verbatim", async () => {
+  expect(await result("read", "r".repeat(100_000))).toBeUndefined();
 });
 
 test("context cuts the outgoing copy, never the stored message", () => {
