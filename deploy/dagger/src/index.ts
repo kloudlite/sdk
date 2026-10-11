@@ -316,6 +316,8 @@ export class Kloudlite {
       .withExec(["chmod", "0755", "/etc/kl/sv/sessions/run", "/etc/kl/sv/kl-host/run", "/etc/kl/sv/ttyd/run", "/etc/kl/sv/term/run"])
       // Private TMPDIR, same as deploy/bench/Dockerfile.
       .withEnvVariable("TMPDIR", "/tmp/kl")
+      // Region's Kompress model, same as deploy/bench/Dockerfile; unreachable = rules only.
+      .withEnvVariable("KL_KOMPRESS_URL", "http://kloudlite-kompress.kloudlite-system.svc:8787")
       // `groupdel tty`: see deploy/bench/Dockerfile (ttyd's ptys as kl).
       .withExec(["sh", "-c",
         "usermod -l kl -d /home/kl node && groupmod -n kl node && groupdel tty " +
