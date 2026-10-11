@@ -26,7 +26,7 @@ bench already reaches it: `space-env` / `space-{ns}` (`k8s/policies.rs`) admit e
 space into the environment's namespace.
 
 ```
-laptop utun ── boringtun ── wss /net/{bench} ── gateway pipe ── bench pod :7792 ── boringtun ── TUN ── NAT ── env services
+laptop utun ── boringtun ── wss /net/{bench} ── gateway pipe ── bench pod :7792 ── boringtun ── userspace TCP/IP ── pod sockets ── env services
 ```
 
 ## Constraints
@@ -117,20 +117,20 @@ person wrote.
 ### 5. Bench pod (cluster side)
 
 - **Container `net`**, a second container in the bench pod (`crates/workspaces/src/k8s/bench.rs`),
-  running the new binary `bins/bench-net` from the bench image. It is a separate container so
-  `NET_ADMIN` never reaches the `sessions` container, where agent sessions and user code run.
-  Security context: `hardened()` plus `NET_ADMIN`, read-only root filesystem; mounts `/tmp` and
-  hostPath `/dev/net/tun` (`type: CharDevice`). The pod sets sysctl `net.ipv4.ip_forward=1`, which
-  k3s admits through the kubelet's `allowed-unsafe-sysctls` (node config, `deploy/k3s/README.md`).
-  The cluster is ours (owner, 2026-10-11: "we have permission"): if the probe shows the runtime
-  refusing either, `net` runs `privileged: true` instead; still only `net`, never `sessions`.
-  This is a second container beside the one the 2026-09-25 ruling allows ("no shell sidecar, no
-  workspace container on a bench pod"); it carries no shell and no workspace, and exists only to
-  keep the capability out of `sessions`.
-- **The binary**: at start creates a TUN device (`100.96.0.1/16`), enables forwarding, adds one
-  `MASQUERADE` rule for `100.96.0.0/16` out of `eth0`, generates its key pair (memory only),
-  listens on TCP 7792, and runs one `boringtun` peer per stream, routing by peer address. A stream
-  that closes drops its peer.
+  running the new binary `bins/bench-net` from the bench image, with the plain `hardened()` security
+  context: no added capability, no hostPath, no sysctl, gVisor like the rest of the pod, so the
+  workspace pod fence needs no exception. It is a separate container for its own lifecycle (a crash
+  restarts `net` alone, never the agent sessions) and so `sessions/main.ts` spawns nothing new. This
+  is a second container beside the one the 2026-09-25 ruling allows ("no shell sidecar, no workspace
+  container on a bench pod"); it carries no shell and no workspace.
+- **The binary** carries the traffic in userspace (owner, 2026-10-11: "Userspace stack"): no TUN
+  device, no kernel forwarding, no iptables. It generates its key pair (memory only), listens on TCP
+  7792 and, per stream, runs one `boringtun` peer feeding a userspace TCP/IP stack (`ipstack`). Every
+  TCP connection or UDP flow the laptop opens becomes an ordinary socket from the bench pod to the
+  same destination address and port, bytes copied both ways. The pod's own IP is the source, so the
+  `space-env` policies admit it exactly as they admit the bench today. A decrypted packet whose source
+  is not the stream's peer address is dropped. ICMP is not carried (no ping). A stream that closes
+  drops its stack and every socket it opened.
 - Pod restart: streams drop, the daemon reconnects, the handshake exchanges new keys.
 - **An open tunnel keeps the bench awake** (owner, 2026-10-11: "I want the bench to be awake as
   long as there is connection"). `bench-net` writes its open-stream count to `net.streams` in an
@@ -141,7 +141,11 @@ person wrote.
   bench idle; `env disconnect` (or the laptop going away) closes the stream and the bench idles
   `bench_idle_secs` later as today.
 
-Probe 2026-10-11 (gVisor, as the bench runs): form A (NET_ADMIN only, no hostPath, pod sysctl) is admitted and gives a working TUN (`/dev/net/tun` is provided by the sandbox; `ip tuntap` + 100.96.0.1/16 up, no MKNOD needed), but NO form gives MASQUERADE: `iptables` fails with `Failed to initialize nft: Protocol not supported` and `iptables-legacy` with `can't initialize iptables table `nat': Table does not exist` even when privileged, and the pod `ip_forward` sysctl reads 0 (only privileged may `sysctl -w` it). B (hostPath tun) breaks the TUN (`ioctl(TUNSETIFF): Not a tty`). So `net` must NAT and forward in userspace on the TUN (no iptables, no ip_forward) with NET_ADMIN only, and the fence needs a NET_ADMIN carve-out for the `net` container. Under runc the narrow form with iptables MASQUERADE also worked.
+Probe 2026-10-11 (gVisor, as the bench runs): the kernel path is closed. A TUN comes up with
+`NET_ADMIN`, but NAT is impossible in every form (`iptables: Failed to initialize nft: Protocol not
+supported`; `iptables-legacy`: nat table does not exist, also privileged), the pod `ip_forward`
+sysctl is not applied, and a hostPath `/dev/net/tun` breaks the TUN (`ioctl(TUNSETIFF): Not a tty`).
+Hence the userspace stack above.
 
 ## Errors
 
@@ -157,14 +161,12 @@ Probe 2026-10-11 (gVisor, as the bench runs): form A (NET_ADMIN only, no hostPat
 
 ## Testing
 
-- Probe first, before any other task: on k3s, a hand-run container with `NET_ADMIN`, a TUN device
-  and one `MASQUERADE` rule, in a space namespace, reaches a ClusterIP of the space's environment
-  from a peer address. The probe tries the narrow form (NET_ADMIN, `/dev/net/tun` hostPath, the
-  sysctl) first and records which form worked; that form is what `bench.rs` renders.
+- Probe (done 2026-10-11, recorded in section 5): the gVisor runtime admits no kernel NAT, which
+  set the userspace stack.
 - Unit: hosts block rewrite (lines outside untouched; idempotent; a name defined outside is
   skipped; removal leaves the file as before the first write); framing (split and joined reads,
   zero length closes); handshake (addresses unique per stream, freed on close); bench pod
-  rendering keeps `NET_ADMIN` on `net` only (`k8s/tests.rs` style); policy carries 7792; the idle
+  rendering gives `net` the plain hardened context and no capability (`k8s/tests.rs` style); policy carries 7792; the idle
   probe stays awake while `net.streams` is fresh and non-zero, and ignores a stale one.
 - Gateway: `/net/{bench}` beside the `/tui/` tests (same refusals).
 - End to end: probe `env.tunnel.reach` (`deploy/slo.md` catalogue entry): connect, then
@@ -176,3 +178,4 @@ Probe 2026-10-11 (gVisor, as the bench runs): form A (NET_ADMIN only, no hostPat
 - More than one connected environment.
 - Reaching workspaces or pods by pod IP; only services.
 - UDP services are carried but not probed.
+- ICMP (ping).
