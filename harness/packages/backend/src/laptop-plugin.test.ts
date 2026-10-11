@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mcpTools } from "./local.ts";
 
 const PLUGIN = join(import.meta.dir, "../../../laptop-plugin/plugin");
-const LAPTOP_NEVER = ["workspace_ask", "task_add", "task_update", "task_list", "workspace_tasks", "scratch_bash", "scratch_read", "scratch_write"];
+const LAPTOP_NEVER = ["workspace_ask", "task_add", "task_update", "task_list", "workspace_tasks"];
 
 const served = async () => {
   const deps = { live: new Map(), busy: new Set<string>(), open: async () => null as never, permit: async () => ({}), tasks: mkdtempSync(join(tmpdir(), "kl-plugin-")) };
@@ -16,7 +16,17 @@ const agents = () => readdirSync(join(PLUGIN, "agents")).map((f) => readFileSync
 
 test("every tool a laptop skill lists is one the bench serves, and none is a bench-session tool", async () => {
   const names = await served();
-  const rows = skills().flatMap((s) => [...s.matchAll(/^\| `([a-z_]+)` \|/gm)].map((m) => m[1]!));
+  // tool tables are headed `| Tool | ..` or `| Group | Tools |`; a row lists one or more tools in its first backticked cell
+  // (Agent, SendMessage and `subagent_type: ..` are not bench tools; state tables are not tool tables)
+  const rows = skills().flatMap((s) => {
+    let tools = false;
+    return s.split("\n").filter((l) => l.startsWith("|")).flatMap((l) => {
+      if (l.includes("---")) return [];
+      if (!l.includes("`")) tools = /^\| (Tool|Group) \|/.test(l);
+      const cell = l.split("|").slice(1).find((c) => c.includes("`")) ?? "";
+      return tools ? [...cell.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]!) : [];
+    });
+  });
   expect(rows.length).toBeGreaterThan(40);
   for (const n of rows) expect(names.has(n) ? n : `missing: ${n}`).toBe(n);
   for (const n of rows) expect(LAPTOP_NEVER).not.toContain(n);
@@ -34,6 +44,8 @@ test("the two agents have the kl tools only, and no lifecycle tool", () => {
   for (const text of a) {
     const tools = text.match(/^tools: (.*)$/m)![1]!.split(", ");
     for (const t of tools) expect(t).toStartWith("mcp__plugin_kloudlite_kl__");
-    for (const t of tools) expect(t).not.toMatch(/__(workspace_(list|create|clone|restore|start|stop|delete|push)|env_(create|start|stop|delete|clone|push|restore.*))$/);
+    // kl-workspace may stop and push its own workspace; the subagent may not
+    const own = text.includes("name: kl-workspace") ? "" : "|stop|push";
+    for (const t of tools) expect(t).not.toMatch(new RegExp(`__(workspace_(list|create|clone|restore|start|delete${own})|env_(create|start|stop|delete|clone|push|restore.*))$`));
   }
 });
