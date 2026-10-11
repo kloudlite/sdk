@@ -30,6 +30,12 @@ pub fn dir() -> PathBuf {
         .join("kl-connect")
 }
 
+/// The config dir of an explicit home. The root daemon cannot use `dir()`: its own `HOME` and
+/// `XDG_CONFIG_HOME` are root's, and the login it serves is the person's.
+pub fn dir_in(home: &std::path::Path) -> PathBuf {
+    home.join(".config").join("kl-connect")
+}
+
 pub fn path() -> PathBuf {
     dir().join("config.json")
 }
@@ -47,9 +53,17 @@ pub fn known_hosts() -> PathBuf {
 pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub fn load() -> Result<Config, String> {
-    let p = path();
+    read(&path())
+}
+
+/// `load` for the daemon: the login under `home`, not under whoever the process runs as.
+pub fn load_from(home: &std::path::Path) -> Result<Config, String> {
+    read(&dir_in(home).join("config.json"))
+}
+
+fn read(p: &std::path::Path) -> Result<Config, String> {
     let s =
-        std::fs::read_to_string(&p).map_err(|_| "not logged in — run `kl-connect login`".to_string())?;
+        std::fs::read_to_string(p).map_err(|_| "not logged in — run `kl-connect login`".to_string())?;
     serde_json::from_str(&s).map_err(|e| format!("{}: {e}", p.display()))
 }
 
