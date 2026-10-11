@@ -59,7 +59,7 @@ A tool with the mark **card** shows a permission card to the person before it ru
 | `exec` with `detach: true` | Start a process that continues to run, for example the service, a dev server or a watcher. The tool returns a process id. |
 | `process_list`, `process_output`, `process_write`, `process_kill` | List the processes that run, read their output (the last 4 MiB), write to their stdin, or stop them. |
 | `watch`, `watch_poll`, `watch_stop` | Wait for a change to files or events. Use these tools, not a poll loop with `exec`. |
-| `container_build` **card**, `container_push` **card** | Build an image of your service on the builder of the owner, and push it to the Kloudlite registry (`tags: ["name:tag"]`). Or give an image a new tag. Only when the person publishes or pushes the component; while you develop, use `intercept`, not a build. The `kl` command is not on the PATH in `exec`. Use these tools. |
+| `container_build` **card**, `container_push` **card** | Build an image of your service on the builder of the owner, and push it to the Kloudlite registry (`tags: ["name:tag"]`). Or give an image a new tag. Use these tools only when the person tells you to publish an image. While you develop, use `intercept`. The `kl` command is not on the PATH in `exec`. Use these tools. |
 
 **Your workspace on the platform.** These tools work on your workspace and its default environment. You cannot give a different workspace.
 

@@ -65,7 +65,7 @@ Use one workspace for each component, for example frontend, backend, worker or t
 - Example: `{"name": "mongodb", "image": "mongo:7", "ports": [27017], "mounts": [{"folder": "mongo-data", "path": "/data/db"}]}`.
 - If you find a service that persists data and has no mount, add the mount with `service_update` and report it.
 
-**Service image.** When you add a service, you select its image. For standard software, use a public image. For code that you own, do not build an image while you develop. Run the code in your workspace and `intercept` the service (refer to "Intercept"). Build the real image only when the person publishes or pushes the component. Then use the `container_build` tool:
+**Service image.** When you add a service, you select its image. For standard software, use a public image. For code that you own, do not build an image while you develop. Run the code in your workspace. Then `intercept` the service (refer to "Intercept"). Build an image only when the person tells you to publish it to the registry. Then use the `container_build` tool:
 
 - Give `tags: ["name:tag"]`.
 - The build context is your working directory.
@@ -158,4 +158,4 @@ The permission card is the confirmation. Do not ask the person again in text.
 
 **Packages and setup.** At the start, each workspace session reads the Setup section of `AGENTS.md` in the repo. Then it installs the missing packages that this section gives. When you install a new package, add it to `AGENTS.md`. The setup requirements of a repo are in that repo.
 
-**Service images.** For standard software, use any image. For code that you own, develop with an intercept, never with a new image for each change. Use `container_build` and `container_push` only when the person publishes or pushes the component.
+**Service images.** For standard software, use any image. For code that you own, do not build an image for each change. Use an intercept while you develop. Use `container_build` and `container_push` only when the person tells you to publish an image.
