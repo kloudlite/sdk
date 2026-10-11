@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, AuthInteraction, AuthType, Credential, Model } from "@earendil-works/pi-ai";
 import type { Registry } from "@kloudlite-tui/tools";
+import { orphansExtension } from "./orphans.ts";
 import { CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
 
 export { btwPrompt, piBtw } from "./btw.ts";
@@ -421,7 +422,10 @@ export async function createSession({
     // loop, or filtering large output; one action is one direct call (owner ruling 2026-10-08).
     // An earlier "on" never fired codemode because nothing said when; the codemode skill and the
     // rules prepended to its description (CODEMODE_NOTE) now carry that.
-    ...(codemode ? { extensionFactories: [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" })) }] } : {}),
+    extensionFactories: [
+      { name: "orphans", factory: orphansExtension },
+      ...(codemode ? [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" })) }] : []),
+    ],
     appendSystemPrompt: systemAppends(codemode, role),
   });
   await resourceLoader.reload();
