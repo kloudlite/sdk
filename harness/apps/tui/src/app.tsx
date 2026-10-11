@@ -792,6 +792,9 @@ export function App({
       case "session_state":
         setSessions((map) => patchSession(map, key, applyState(event)));
         break;
+      case "session_notice":
+        append(key, { kind: "info", text: event.text });
+        break;
       case "compaction_start":
         append(key, { kind: "info", text: "compacting context…" });
         break;
