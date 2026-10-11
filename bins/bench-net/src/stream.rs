@@ -6,7 +6,7 @@ use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use ipstack::{IpStack, IpStackConfig, IpStackStream, TcpConfig};
 use kloudlite_nettun::{Hello, Pool, Welcome, read_frame, write_frame};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -33,10 +33,26 @@ pub async fn run(
         return;
     };
     open.fetch_add(1, Ordering::Relaxed);
+    // A guard, not code after `serve`: a panic in this task must still free the slot.
+    let _slot = Slot { pool, open, addr };
     let r = serve(s, hello, secret, public, addr, buf).await;
-    pool.lock().unwrap().free(addr);
-    open.fetch_sub(1, Ordering::Relaxed);
     tracing::info!(%addr, result = ?r, "net.stream.end");
+}
+
+struct Slot {
+    pool: Arc<Mutex<Pool>>,
+    open: Arc<AtomicUsize>,
+    addr: Ipv4Addr,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        // ponytail: a poisoned pool lock leaks the address; the pod restarts on that anyway.
+        if let Ok(mut p) = self.pool.lock() {
+            p.free(self.addr);
+        }
+        self.open.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 async fn serve(
@@ -134,8 +150,22 @@ async fn feed(
     }
 }
 
+/// The cluster's service range, the only thing a laptop may reach through the bench: the pod's
+/// own loopback, node and metadata addresses are not the laptop's to dial.
+const SERVICE_CIDR: (Ipv4Addr, u8) = (Ipv4Addr::new(10, 43, 0, 0), 16);
+
+fn allowed(dst: SocketAddr) -> bool {
+    let IpAddr::V4(ip) = dst.ip() else { return false };
+    let (net, bits) = SERVICE_CIDR;
+    u32::from(ip) >> (32 - bits) == u32::from(net) >> (32 - bits)
+}
+
 async fn tcp_job(mut t: ipstack::IpStackTcpStream) {
     let dst = t.peer_addr();
+    if !allowed(dst) {
+        tracing::info!(%dst, ok = false, reason = "outside service range", "net.tcp");
+        return; // dropping `t` resets the laptop's connection
+    }
     let conn = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(dst)).await;
     let Ok(Ok(mut s)) = conn else {
         tracing::info!(%dst, ok = false, "net.tcp");
@@ -149,6 +179,10 @@ async fn tcp_job(mut t: ipstack::IpStackTcpStream) {
 /// One read of `u` is one datagram (udp.rs); this carries DNS to the cluster resolver.
 async fn udp_job(mut u: ipstack::IpStackUdpStream) {
     use tokio::io::AsyncReadExt;
+    if !allowed(u.peer_addr()) {
+        tracing::info!(dst = %u.peer_addr(), ok = false, reason = "outside service range", "net.udp");
+        return;
+    }
     let Ok(sock) = UdpSocket::bind("0.0.0.0:0").await else { return };
     if sock.connect(u.peer_addr()).await.is_err() {
         return;
@@ -164,6 +198,20 @@ async fn udp_job(mut u: ipstack::IpStackUdpStream) {
                 Ok(n) => { if u.write_all(&b[..n]).await.is_err() { return } }
                 Err(_) => return,
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_service_range_is_dialled() {
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert!(allowed(a("10.43.0.10:53")) && allowed(a("10.43.255.1:80")));
+        for s in ["127.0.0.1:8917", "10.42.0.5:80", "169.254.169.254:80", "8.8.8.8:53", "[::1]:80"] {
+            assert!(!allowed(a(s)), "{s}");
         }
     }
 }

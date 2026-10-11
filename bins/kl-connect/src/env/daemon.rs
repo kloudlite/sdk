@@ -1,7 +1,8 @@
 //! The root daemon's loop (spec section 2): every 10 s read what the person chose, make the tunnel
-//! and `/etc/hosts` match it, and say what happened in `env-status.json`. No socket: the CLI and the
-//! daemon share `env.json` (the wish) and `env-status.json` (the report) under the person's config
-//! dir, because the daemon runs as root with root's `HOME` and must be told whose home to serve.
+//! and `/etc/hosts` match it, and say what happened in `env-status.json`. No socket: the CLI writes
+//! `env.json` (the wish) under the person's config dir, which the daemon only READS (it runs as root
+//! with root's `HOME` and is told whose home to serve); the report goes to `super::STATUS` under
+//! /var/run, because root never writes inside a directory the user controls.
 //!
 //! Which failures keep the hosts block and which remove it is the spec's error table: transient
 //! trouble (api, gateway, bench waking or restarted, laptop offline) keeps the last good names so a
@@ -10,7 +11,6 @@
 use super::{hosts, tunnel};
 use crate::api::{self, Error, Space};
 use boringtun::x25519::StaticSecret;
-use std::os::unix::fs::MetadataExt;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -72,12 +72,12 @@ impl Daemon {
 
     fn status(&self, st: Status) {
         let st = Status { at: now_rfc3339(), ..st };
-        let p = self.dir().join("env-status.json");
-        // 0600 from write_atomic; chowned so the person's `env status` (not root) can read it.
-        if crate::config::write_atomic(&p, &serde_json::to_string_pretty(&st).unwrap()).is_ok() {
-            if let Ok(m) = std::fs::metadata(&self.home) {
-                let _ = std::os::unix::fs::chown(&p, Some(m.uid()), None);
-            }
+        let dir = Path::new(super::STATUS).parent().unwrap();
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o755));
+        // 0644 via install's default: names only, no secrets. Temp + rename like /etc/hosts.
+        if let Err(e) = hosts::install(Path::new(super::STATUS), &serde_json::to_string_pretty(&st).unwrap()) {
+            eprintln!("kl-connect env: status: {e}");
         }
     }
 
@@ -90,7 +90,7 @@ impl Daemon {
         };
         let cfg = match crate::config::load_from(&self.home) {
             Ok(c) => c,
-            Err(e) => return fail(self, e, ""),
+            Err(e) => return self.logged_out(e).await,
         };
         let Some(team) = read_team(&self.dir()) else {
             self.tear_down(true).await;
@@ -104,6 +104,7 @@ impl Daemon {
                 self.status(Status { state: "gone".into(), error: format!("{c}: {m}"), ..Default::default() });
                 return Ok(());
             }
+            Err(Error::Unauthorized) => return self.logged_out(Error::Unauthorized.to_string()).await,
             Err(e) => return fail(self, e.to_string(), ""),
         };
         let Some(space) = space else {
@@ -135,6 +136,7 @@ impl Daemon {
                 self.status(Status { environment: space.environment.clone(), state: "gone".into(), error: format!("{c}: {m}"), ..Default::default() });
                 return Ok(());
             }
+            Err(Error::Unauthorized) => return self.logged_out(Error::Unauthorized.to_string()).await,
             Err(e) => return fail(self, e.to_string(), &space.environment),
         };
         let names: Vec<String> = doc.services.iter().map(|s| s.name.clone()).collect();
@@ -148,7 +150,13 @@ impl Daemon {
         self.last = entries.clone();
         let block = hosts::Block { env: doc.id.clone(), name: doc.name.clone(), entries };
         let cur = std::fs::read_to_string(HOSTS).map_err(|e| format!("read {HOSTS}: {e}"))?;
-        let (text, skipped) = hosts::render(&cur, Some(&block));
+        let (text, skipped) = match hosts::render(&cur, Some(&block)) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status(Status { environment: doc.id, state: "error".into(), error: e.clone(), ..Default::default() });
+                return Err(e);
+            }
+        };
         if text != cur {
             if let Err(e) = hosts::install(Path::new(HOSTS), &text) {
                 return fail(self, e, &doc.id);
@@ -166,6 +174,14 @@ impl Daemon {
         Ok(())
     }
 
+    /// No login to act for: names would point at an environment the person can no longer reach.
+    /// Not an `Err`: the next beat checks again, without backoff.
+    async fn logged_out(&mut self, e: String) -> Result<(), String> {
+        self.tear_down(true).await;
+        self.status(Status { state: "logged out".into(), error: e, ..Default::default() });
+        Ok(())
+    }
+
     async fn tear_down(&mut self, remove_hosts: bool) {
         if let Some((_, up)) = self.current.take() {
             up.down().await;
@@ -173,9 +189,10 @@ impl Daemon {
         if remove_hosts {
             self.last.clear();
             if let Ok(cur) = std::fs::read_to_string(HOSTS) {
-                let (t, _) = hosts::render(&cur, None);
-                if t != cur && hosts::install(Path::new(HOSTS), &t).is_ok() {
-                    hosts::flush();
+                if let Ok((t, _)) = hosts::render(&cur, None) {
+                    if t != cur && hosts::install(Path::new(HOSTS), &t).is_ok() {
+                        hosts::flush();
+                    }
                 }
             }
         }

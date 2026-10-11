@@ -114,9 +114,13 @@ async fn run(
                         TunnResult::WriteToNetwork(d) => {
                             if let Err(e) = write_frame(&mut wr, d).await { return format!("stream write: {e}") }
                         }
-                        TunnResult::WriteToTunnelV4(p, _) => {
-                            // `send` adds the 4-byte address-family header utun wants.
-                            let _ = dev.send(p).await;
+                        TunnResult::WriteToTunnelV4(p, src) => {
+                            // Only the cluster's services may talk back; the bench side is not trusted
+                            // to hand the laptop packets from anywhere else.
+                            if in_service_range(src) {
+                                // `send` adds the 4-byte address-family header utun wants.
+                                let _ = dev.send(p).await;
+                            } // else dropped (kl-connect has no tracing dep; the drop is the whole effect)
                             break;
                         }
                         _ => break,
@@ -180,6 +184,10 @@ fn env_namespace(id: &str) -> String {
 /// (a service with no ports has no ClusterIP Service, or the lookup was lost) is left out rather
 /// than failing the pass; the caller keeps its last address. Each name gets two tries of 2 s, and
 /// a late reply to an earlier query is read and dropped (id mismatch) instead of eating the next.
+fn in_service_range(a: Ipv4Addr) -> bool {
+    a.octets()[..2] == [10, 43]
+}
+
 pub fn resolve(names: &[String], env_id: &str) -> Vec<(String, Ipv4Addr)> {
     let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") else { return vec![] };
     let ns = env_namespace(env_id);

@@ -60,6 +60,10 @@ pub async fn run(cmd: &EnvCmd, top_team: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Written by the root daemon, outside the person's home: root never writes where the user can
+/// plant a symlink. World-readable; it holds environment and service names only.
+pub const STATUS: &str = "/var/run/kl-connect/env-status.json";
+
 fn env_file() -> PathBuf {
     config::dir().join("env.json")
 }
@@ -67,6 +71,16 @@ fn env_file() -> PathBuf {
 async fn connect(env: &str, team: Option<&str>) -> Result<(), String> {
     if !Path::new(launchd::PLIST).exists() {
         return Err("the daemon is not installed: run `sudo kl-connect env daemon install` first".into());
+    }
+    // The daemon reads env.json from the plain home; a redirected dir would be a wish nobody sees.
+    let home = std::env::var("HOME").map_err(|e| format!("HOME: {e}"))?;
+    let (dir_in, dir) = (config::dir_in(Path::new(&home)), config::dir());
+    if dir_in != dir {
+        return Err(format!(
+            "the daemon reads {}; KL_CONFIG_DIR/XDG_CONFIG_HOME point kl-connect at {} — unset them for env connect",
+            dir_in.display(),
+            dir.display()
+        ));
     }
     let cfg = config::load()?;
     let team = team.map(str::to_string).unwrap_or_else(|| cfg.username.clone());
@@ -84,15 +98,26 @@ async fn disconnect() -> Result<(), String> {
         .ok()
         .and_then(|v| v.get("team").and_then(|t| t.as_str().map(str::to_string)))
         .ok_or_else(|| format!("{}: no team", p.display()))?;
-    let cfg = config::load()?;
-    api::clear_space(&cfg, &team).await.map_err(|e| e.to_string())?;
+    // Logged out or token expired: the wish file still goes, so the daemon tears down on its next beat.
+    let cleared = match config::load() {
+        Ok(cfg) => match api::clear_space(&cfg, &team).await {
+            Ok(()) => true,
+            Err(api::Error::Unauthorized) => false,
+            Err(e) => return Err(e.to_string()),
+        },
+        Err(_) => false,
+    };
     std::fs::remove_file(&p).map_err(|e| e.to_string())?;
-    println!("disconnected (team {team})");
+    if cleared {
+        println!("disconnected (team {team})");
+    } else {
+        println!("disconnected locally (team {team}); the space still names the environment — run kl-connect login and disconnect again to clear it");
+    }
     Ok(())
 }
 
 fn status() -> Result<(), String> {
-    let p = config::dir().join("env-status.json");
+    let p = PathBuf::from(STATUS);
     let s = std::fs::read_to_string(&p).map_err(|_| "no status yet: is the daemon installed and a connection made?".to_string())?;
     let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| format!("{}: {e}", p.display()))?;
     let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
