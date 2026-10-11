@@ -1,7 +1,7 @@
 [workspace]
 members = [
     ".",
-    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace",
+    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun",
     "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo",
 ]
 # This root package is ALSO the workspace root ([workspace] + [package] in one file), which makes
@@ -11,7 +11,7 @@ members = [
 # (the deploy image's build command) keeps working unchanged.
 default-members = [
     ".",
-    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace",
+    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun",
     "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo",
 ]
 resolver = "2"
@@ -161,6 +161,7 @@ repository = "https://github.com/kloudlite/rustic-git"
 
 [dev-dependencies]
 kloudlite-core = { path = "crates/core" }
+kloudlite-nettun = { path = "crates/nettun" }
 kloudlite-storage = { path = "crates/storage" }
 kloudlite-gitbase = { path = "crates/gitbase" }
 kloudlite-pulls = { path = "crates/pulls", features = ["check"] }
