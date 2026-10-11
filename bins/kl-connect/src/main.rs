@@ -12,6 +12,7 @@ mod config;
 mod env;
 mod login;
 mod mcp;
+mod mode;
 mod proxy;
 mod sshconfig;
 mod ws;
@@ -76,6 +77,20 @@ enum Cmd {
     BenchProxy {
         team: Option<String>,
     },
+    /// kl mode hooks for the laptop `kloudlite` Claude Code plugin: one hook JSON on stdin
+    #[command(hide = true)]
+    Mode {
+        #[command(subcommand)]
+        cmd: ModeCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModeCmd {
+    /// PreToolUse: deny a local tool while kl mode is on
+    Gate,
+    /// UserPromptSubmit: switch kl mode on `/kloudlite:on|off`
+    Prompt,
 }
 
 #[derive(Subcommand)]
@@ -145,6 +160,19 @@ async fn run(cmd: &Cmd, team: Option<&str>) -> Result<(), String> {
         },
         Cmd::Env { cmd } => env::run(cmd, team).await,
         Cmd::BenchProxy { team } => bench::proxy(team.as_deref()).await,
-        Cmd::Mcp { team } => mcp::mcp(team.as_deref()).await,
+        Cmd::Mcp { team } => mcp::mcp(team.as_deref().filter(|t| !t.is_empty())).await,
+        Cmd::Mode { cmd } => mode::run(matches!(cmd, ModeCmd::Gate)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_team_is_none() {
+        let cli = Cli::try_parse_from(["kl-connect", "mcp", ""]).unwrap();
+        let Some(Cmd::Mcp { team }) = cli.cmd else { panic!() };
+        assert_eq!(team.as_deref().filter(|t| !t.is_empty()), None);
     }
 }
