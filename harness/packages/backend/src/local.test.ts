@@ -471,3 +471,8 @@ test("a task the backend closes without a summary (an answered ask) does not res
   await r.turn(() => void updateTask(r.file, "T1", { state: "done" }));
   expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
 }, 20000);
+
+test("compact drops pi's rejection, which compaction_end already reported", async () => {
+  const h = handleOf({ subscribe: () => () => {}, messages: [], compact: async () => { throw new Error("Nothing to compact (session too small)"); }, dispose() {} }, "main");
+  await h.compact();
+});

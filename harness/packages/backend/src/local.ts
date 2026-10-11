@@ -331,7 +331,9 @@ export function baseHandle(
     followUp: async (text, images) => agent.followUp(text, images),
     clearQueue: async () => void agent.clearQueue(),
     btw: (q) => piBtw(agent, q),
-    compact: async (instructions) => void (await agent.compact(instructions || undefined)),
+    // pi reports every compact() failure (too small, cancelled, model error) in compaction_end before it
+    // throws, so the rejection is dropped here; what still rejects is the wire or the handle, and the TUI shows that.
+    compact: async (instructions) => void (await agent.compact(instructions || undefined).catch(() => {})),
     abort: async () => agent.abort(),
     dispose: () => close(false),
     close,
