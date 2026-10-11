@@ -6,6 +6,7 @@
 // per connection and ends it with the connection, and a turn outlives its client.
 import http from "node:http";
 import fs from "node:fs";
+import { openStreams } from "./streams.ts";
 
 const PORT = 8917;
 const IDLE_SECS = Number(process.env.KL_BENCH_IDLE_SECS ?? 300);
@@ -24,6 +25,17 @@ function busy(): number {
     return Number(fs.readFileSync(BUSY, "utf8")) || 0;
   } catch {
     return 0; // no daemon yet
+  }
+}
+
+const NET_STREAMS = process.env.KL_NET_STREAMS ?? "/run/kl-net/net.streams";
+
+// Open tunnel streams reported by the bench-net container: a connected laptop keeps the bench awake.
+function streams(): number {
+  try {
+    return openStreams(fs.readFileSync(NET_STREAMS, "utf8"), fs.statSync(NET_STREAMS).mtimeMs, Date.now());
+  } catch {
+    return 0; // no net container
   }
 }
 
@@ -53,7 +65,7 @@ function clients(): number {
 // to within that window for the idle-shutdown probe to behave.
 let idleSince: number | null = null;
 setInterval(() => {
-  const isIdle = clients() === 0 && busy() === 0;
+  const isIdle = clients() === 0 && busy() === 0 && streams() === 0;
   if (isIdle) {
     if (idleSince === null) idleSince = Date.now();
   } else {
@@ -62,7 +74,7 @@ setInterval(() => {
 }, 5000);
 
 function idleBody() {
-  return { clients: clients(), busy: busy(), idleSince };
+  return { clients: clients(), busy: busy(), streams: streams(), idleSince };
 }
 
 const server = http.createServer(async (req, res) => {

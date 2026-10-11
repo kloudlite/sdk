@@ -412,6 +412,7 @@ pub const CATALOGUE: &[Slo] = &[
     // whose ingress admitted only the environment's.
     Slo { id: "env.intercept.peer", feature: "Environments", sli: "A second space following the same environment reaches the intercepted service", target: p95(120_000), suite: Suite::Hourly, stage: "6 · Environment" },
     Slo { id: "env.intercept.bench", feature: "Environments", sli: "The probe owner's bench reaches the intercepted service", target: p95(120_000), suite: Suite::Hourly, stage: "6 · Environment" },
+    Slo { id: "env.tunnel.reach", feature: "Environments", sli: "kl-connect env connect, then nc -z <service> <port> by bare name from the laptop", target: avail(99.0), suite: Suite::Hourly, stage: "6 · Environment" },
     // The uid assertion is the whole claim of a proxy over baked-in addressing: the workspace's pod
     // comes back with a new IP and the SAME proxy keeps serving.
     Slo { id: "env.intercept.proxy.restart", feature: "Environments", sli: "Killing the intercepting workspace's pod does not interrupt delivery beyond the pod's own restart, and no proxy is recreated", target: p95(180_000), suite: Suite::Hourly, stage: "6 · Environment" },

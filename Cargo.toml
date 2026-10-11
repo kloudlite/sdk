@@ -1,8 +1,8 @@
 [workspace]
 members = [
     ".",
-    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace",
-    "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo",
+    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun",
+    "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo", "bins/bench-net",
 ]
 # This root package is ALSO the workspace root ([workspace] + [package] in one file), which makes
 # a bare `cargo build`/`cargo test` here default to building only `.` — a lib with no `[[bin]]`
@@ -11,8 +11,8 @@ members = [
 # (the deploy image's build command) keeps working unchanged.
 default-members = [
     ".",
-    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace",
-    "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo",
+    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun",
+    "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo", "bins/bench-net",
 ]
 resolver = "2"
 
@@ -150,6 +150,9 @@ axum-server = { version = "0.8", default-features = false, features = ["tls-rust
 tokio-tungstenite = "0.29"
 # The `kl` CLI's argument parser.
 clap = { version = "4", features = ["derive"] }
+# The bench end of the environment tunnel (bins/bench-net).
+boringtun = { version = "0.7", default-features = false }
+ipstack = "1.0.1"
 
 [package]
 name = "kloudlite-tests"
@@ -161,6 +164,7 @@ repository = "https://github.com/kloudlite/rustic-git"
 
 [dev-dependencies]
 kloudlite-core = { path = "crates/core" }
+kloudlite-nettun = { path = "crates/nettun" }
 kloudlite-storage = { path = "crates/storage" }
 kloudlite-gitbase = { path = "crates/gitbase" }
 kloudlite-pulls = { path = "crates/pulls", features = ["check"] }

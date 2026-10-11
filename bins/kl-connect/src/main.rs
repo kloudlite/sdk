@@ -9,6 +9,7 @@ mod api;
 mod bench;
 mod builder;
 mod config;
+mod env;
 mod login;
 mod mcp;
 mod proxy;
@@ -65,6 +66,11 @@ enum Cmd {
     Mcp {
         team: Option<String>,
     },
+    /// Reach the connected environment's services by name from this laptop
+    Env {
+        #[command(subcommand)]
+        cmd: env::EnvCmd,
+    },
     /// kl-tui's pipe for `kl-connect [team]`: pump stdio to the bench daemon through the gateway
     #[command(hide = true)]
     BenchProxy {
@@ -115,7 +121,7 @@ async fn main() {
     let cli = Cli::parse();
     let r = match &cli.cmd {
         None => bench::bench(cli.team.as_deref(), cli.start, cli.region.as_deref()).await,
-        Some(cmd) => run(cmd).await,
+        Some(cmd) => run(cmd, cli.team.as_deref()).await,
     };
     if let Err(e) = r {
         eprintln!("kl-connect: {e}");
@@ -123,7 +129,7 @@ async fn main() {
     }
 }
 
-async fn run(cmd: &Cmd) -> Result<(), String> {
+async fn run(cmd: &Cmd, team: Option<&str>) -> Result<(), String> {
     match cmd {
         Cmd::Login { api } => login::login(api.clone()).await,
         Cmd::Logout => login::logout().await,
@@ -137,6 +143,7 @@ async fn run(cmd: &Cmd) -> Result<(), String> {
         Cmd::Builder { cmd } => match cmd {
             BuilderCmd::Status { team } => builder::status(team.as_deref()).await,
         },
+        Cmd::Env { cmd } => env::run(cmd, team).await,
         Cmd::BenchProxy { team } => bench::proxy(team.as_deref()).await,
         Cmd::Mcp { team } => mcp::mcp(team.as_deref()).await,
     }

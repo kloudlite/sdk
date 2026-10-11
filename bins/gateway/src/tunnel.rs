@@ -41,6 +41,8 @@ pub struct Gateway {
     pub term_port: u16,
     /// `BENCH_TUI_PORT` everywhere real; a test points it at a local echo listener.
     pub tui_port: u16,
+    /// `BENCH_NET_PORT` everywhere real; a test points it at a local echo listener.
+    pub net_port: u16,
     /// Spent session ids → their expiry. A token is a CONNECT token: replaying one is either a
     /// bug or an attack, and both are refused the same way.
     // ponytail: per-replica, so a replayed token could still connect to a different replica within
@@ -60,7 +62,7 @@ pub struct Gateway {
 }
 
 impl Gateway {
-    pub fn new(jwt: Jwt, region: String, kube: kube::Client, ssh_port: u16, term_port: u16, tui_port: u16) -> Gateway {
+    pub fn new(jwt: Jwt, region: String, kube: kube::Client, ssh_port: u16, term_port: u16, tui_port: u16, net_port: u16) -> Gateway {
         Gateway {
             jwt,
             region,
@@ -68,6 +70,7 @@ impl Gateway {
             ssh_port,
             term_port,
             tui_port,
+            net_port,
             used: Mutex::new(HashMap::new()),
             per_ws: Mutex::new(HashMap::new()),
             per_owner: Mutex::new(HashMap::new()),
@@ -199,6 +202,7 @@ pub fn app(gw: Arc<Gateway>) -> Router {
         )
         .route("/tunnel/{ws}", get(tunnel))
         .route("/tui/{bench}", get(tui_tunnel))
+        .route("/net/{bench}", get(net_tunnel))
         .merge(crate::term::routes())
         .layer(axum::middleware::from_fn_with_state("gateway", kloudlite_core::metrics::http_metrics))
         .with_state(gw)
@@ -210,7 +214,7 @@ async fn tunnel(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    connect(gw, ws, headers, upgrade, false).await
+    connect(gw, ws, headers, upgrade, None).await
 }
 
 /// The laptop kl-tui's direct path: the bench daemon's TCP listener instead of sshd. Bench tokens
@@ -222,18 +226,31 @@ async fn tui_tunnel(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    connect(gw, bench, headers, upgrade, true).await
+    let port = gw.tui_port;
+    connect(gw, bench, headers, upgrade, Some(port)).await
 }
 
-async fn connect(gw: Arc<Gateway>, ws: String, headers: HeaderMap, upgrade: WebSocketUpgrade, tui: bool) -> Response {
+/// The environment tunnel's door: same bench token and pipe as `/tui/`, aimed at the bench's `net`
+/// container instead of the TUI daemon.
+async fn net_tunnel(
+    State(gw): State<Arc<Gateway>>,
+    Path(bench): Path<String>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let port = gw.net_port;
+    connect(gw, bench, headers, upgrade, Some(port)).await
+}
+
+async fn connect(gw: Arc<Gateway>, ws: String, headers: HeaderMap, upgrade: WebSocketUpgrade, bench: Option<u16>) -> Response {
     // Every refusal below is the same 401 on purpose: which of the checks failed is the caller's
     // business only insofar as "get a new token", and saying more distinguishes a real workspace
     // from an invented one for someone holding a token for neither.
     let token = kloudlite_core::httpx::bearer_token(&headers).unwrap_or_default();
-    // Each door verifies ONE token kind: /tui/ bench tokens, /tunnel/ workspace ssh tokens. The
+    // Each door verifies ONE token kind: /tui/ and /net/ take bench tokens, /tunnel/ workspace ssh tokens. The
     // bench has no sshd, so a bench token never reaches the ssh verifier, and a workspace token
     // is never tried against the bench one.
-    let ticket = if tui {
+    let ticket = if bench.is_some() {
         gw.jwt.verify_bench_session(token).map(Ticket::Bench)
     } else {
         gw.jwt.verify_ssh_session(token).map(Ticket::Workspace)
@@ -249,7 +266,7 @@ async fn connect(gw: Arc<Gateway>, ws: String, headers: HeaderMap, upgrade: WebS
     };
     let target = match &ticket {
         Ticket::Workspace(_) => resolve(&gw.kube, &ws, gw.ssh_port).await,
-        Ticket::Bench(_) => resolve_bench(&gw.kube, &ws, gw.tui_port).await,
+        Ticket::Bench(_) => resolve_bench(&gw.kube, &ws, bench.unwrap_or(gw.tui_port)).await,
     };
     let target = match target {
         Ok(t) => t,
@@ -383,7 +400,7 @@ mod tests {
 
     fn gw() -> Arc<Gateway> {
         let (client, _) = kloudlite_workspaces::kube_test::mock_client(vec![]);
-        Arc::new(Gateway::new(Jwt::new("0123456789abcdef0123456789abcdef").unwrap(), "r".into(), client, 22, 7681, 7791))
+        Arc::new(Gateway::new(Jwt::new("0123456789abcdef0123456789abcdef").unwrap(), "r".into(), client, 22, 7681, 7791, 7792))
     }
 
     fn count(map: &Mutex<HashMap<String, usize>>, key: &str) -> usize {
