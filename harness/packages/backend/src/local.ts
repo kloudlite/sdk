@@ -223,6 +223,12 @@ function derive(src: SessionHandle, over: Partial<SessionHandle>): SessionHandle
   }) as SessionHandle;
 }
 
+/** Context now against the window pi compacts at; undefined when pi has no model/window. */
+const contextOf = (agent: any): SessionState["context"] => {
+  const u = agent.getContextUsage?.();
+  return u && { tokens: u.tokens, window: u.contextWindow };
+};
+
 /**
  * One agent per key per process, many views of it. The TUI and workspace_ask may hold one session
  * at once; a view going away must not end the other's turn, so views never dispose the agent:
@@ -256,12 +262,6 @@ export function shareable(base: SessionHandle, onZero: () => void): { view: () =
  * every subscriber (`session_closed`): a dispose drops the agent's listeners and no `agent_end`
  * follows, which left workspace_ask waiting forever on a turn that was gone.
  */
-/** Context now against the window pi compacts at; undefined when pi has no model/window. */
-const contextOf = (agent: any): SessionState["context"] => {
-  const u = agent.getContextUsage?.();
-  return u && { tokens: u.tokens, window: u.contextWindow };
-};
-
 export function baseHandle(
   agent: any,
   key: string,
@@ -457,7 +457,7 @@ export class LocalBackend implements Backend {
     this.#seeds.set(key, `${seed}\n\n`);
     this.#notices.set(key, `fresh session after task ${done.id}: ${done.title}`);
     const st = this.#state.get(key);
-    if (st) (st.context = undefined), (st.queued = { steering: [], followUp: [] });
+    if (st) st.queued = { steering: [], followUp: [] };
     await this.#rebuild(key, true, true).catch(() => {});
     this.#changed();
   }
@@ -729,7 +729,7 @@ export class LocalBackend implements Backend {
       if (this.#busy.has(key)) await this.#live.get(key)?.abort();
       await this.#rebuild(key, true, true);
       const st = this.#state.get(key);
-      if (st) (st.context = undefined), (st.queued = { steering: [], followUp: [] });
+      if (st) st.queued = { steering: [], followUp: [] };
       this.#changed();
     },
     watch: async (cb: (list: LiveSessionMeta[]) => void) => {
