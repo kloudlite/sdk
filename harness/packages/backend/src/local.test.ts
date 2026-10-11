@@ -456,3 +456,10 @@ test("a subagent session never restarts", async () => {
   await r.turn(() => void updateTask(r.file, "T1", { state: "done", summary: "s", verified: "v" }));
   expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
 }, 20000);
+
+test("a task the backend closes without a summary (an answered ask) does not restart", async () => {
+  const r = await freshRig("main");
+  addTask(r.file, { title: "ask w1" });
+  await r.turn(() => void updateTask(r.file, "T1", { state: "done" }));
+  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
+}, 20000);

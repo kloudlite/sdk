@@ -435,7 +435,9 @@ export class LocalBackend implements Backend {
   async #restartFresh(key: string, before: Set<string>) {
     if (sessionKind(key).kind === "subagent" || this.#busy.has(key)) return;
     const ts = readTasks(tasksFile(key, this.#tasks));
-    const done = ts.filter((t) => t.state === "done" && !before.has(t.id)).at(-1);
+    // only a task the agent closed through task_update (summary + verified): the backend closes asks
+    // on a reply, and the session still needs that reply's context
+    const done = ts.filter((t) => t.state === "done" && t.summary && t.verified && !before.has(t.id)).at(-1);
     if (!done || ts.some((t) => t.state === "running")) return;
     const recent = ts.filter((t) => t.state === "done" && t.summary).slice(-10)
       .map((t) => `${t.id} ${t.title}: ${t.summary}${t.verified ? ` (verified: ${t.verified})` : ""}`);
