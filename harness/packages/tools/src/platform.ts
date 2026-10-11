@@ -7,20 +7,21 @@
 //! each aimed by a required `workspace`/`env`.
 import { readFileSync } from "node:fs";
 import type { ToolDef } from "./index.ts";
+import { repoTools } from "./repos.ts";
 
 const UNAVAILABLE = "platform tools unavailable: KL_API_URL / KL_TOOL_TOKEN_FILE not set";
 
 type Raw = { unavailable: true } | { unavailable?: false; status: number; text: string; data: any };
 
-async function raw(method: string, path: string, body?: unknown): Promise<Raw> {
+async function raw(method: string, path: string, body?: unknown, asText = false): Promise<Raw> {
   const base = process.env.KL_API_URL;
   const file = process.env.KL_TOOL_TOKEN_FILE;
   if (!base || !file) return { unavailable: true };
   const token = readFileSync(file, "utf8").trim();
   const res = await fetch(base.replace(/\/$/, "") + path, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": asText ? "text/plain" : "application/json" }) },
+    ...(body === undefined ? {} : { body: asText ? String(body) : JSON.stringify(body) }),
     signal: AbortSignal.timeout(30_000),
   });
   const text = await res.text();
@@ -39,8 +40,8 @@ function show(r: Raw): string {
 }
 
 /** One call, rendered for the model. A non-2xx answer throws, so a direct call shows as failed and a codemode script stops. */
-export async function api(method: string, path: string, body?: unknown): Promise<string> {
-  return show(await raw(method, path, body));
+export async function api(method: string, path: string, body?: unknown, asText = false): Promise<string> {
+  return show(await raw(method, path, body, asText));
 }
 
 /** One call, parsed. For the TUI's own reads (sidebar): the same text a failed `api` shows, as an Error. */
@@ -56,8 +57,8 @@ export async function apiJson<T>(method: string, path: string, body?: unknown): 
   return r.data as T;
 }
 
-const seg = encodeURIComponent;
-const qs = (p: Record<string, string | undefined>) => {
+export const seg = encodeURIComponent;
+export const qs = (p: Record<string, string | undefined>) => {
   const u = new URLSearchParams();
   for (const [k, v] of Object.entries(p)) if (v) u.set(k, v);
   const s = u.toString();
@@ -106,7 +107,7 @@ function withReady(out: string): string {
   }
 }
 
-function def(name: string, description: string, properties: Props, required: string[], run: (a: any) => Promise<string>): ToolDef {
+export function def(name: string, description: string, properties: Props, required: string[], run: (a: any) => Promise<string>): ToolDef {
   // the tools' own refusals ("error: service exists") fail like an API error does, never pass as a result
   const checked = async (a: any) => {
     const r = await run(a ?? {});
@@ -127,7 +128,12 @@ async function load(path: string): Promise<{ doc: any } | { err: string }> {
   return { doc: r.data };
 }
 
+/** The platform table plus the repo and image tools, for every kind. */
 export function platformTools(kind: "main" | "workspace" | "all", wsId?: string): ToolDef[] {
+  return [...basePlatformTools(kind, wsId), ...repoTools()];
+}
+
+function basePlatformTools(kind: "main" | "workspace" | "all", wsId?: string): ToolDef[] {
   const ws = kind === "workspace";
   const W = ws ? `/v1/workspaces/${seg(wsId!)}` : "";
   const wsPath = (a: any) => (ws ? W : `/v1/workspaces/${seg(a.workspace)}`);
