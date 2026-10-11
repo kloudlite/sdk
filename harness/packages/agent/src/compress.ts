@@ -275,11 +275,16 @@ export async function compressWithModel(dir: string, text: string, query = ""): 
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return c;
-    const body = (await res.json()) as { compressed: string; original_tokens: number; compressed_tokens: number };
-    if (typeof body.compressed !== "string" || body.compressed_tokens >= body.original_tokens) return c; // any shrink, as headroom: retrieve undoes the loss
+    const body = (await res.json()) as { compressed: string };
+    if (typeof body.compressed !== "string") return c;
+    // Any shrink, as headroom (kompress_remote.py): the whole marked result against the whole original
+    // in one unit we count ourselves. Kompress's token counts are its tokenizer, not the model's, so
+    // characters it is (headroom's own fallback unit); retrieve undoes the loss.
+    const out = (hash: string) => body.compressed + marker(text.length, body.compressed.length, hash);
+    if (out("0".repeat(12)).length >= text.length) return c;
     const hash = remember(dir, text);
     return {
-      text: body.compressed + marker(text.length, body.compressed.length, hash),
+      text: out(hash),
       hash,
       strategy: "kompress",
       before: text.length,
