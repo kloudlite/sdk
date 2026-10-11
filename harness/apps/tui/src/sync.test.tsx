@@ -122,7 +122,6 @@ function sessionStub(msgs: any[]) {
   const handle: any = new Proxy(
     {
       get messages() { return msgs; },
-      isClaude: false,
       busy: false,
       state: { type: "session_state", model: hello().defaultModel, tokens: 0, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
       subscribe: (cb: any) => (listeners.add(cb), () => listeners.delete(cb)),

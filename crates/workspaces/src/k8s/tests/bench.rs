@@ -6,7 +6,7 @@ use super::*;
 
 #[test]
 fn a_bench_pods_user_key_mount_carries_the_whole_secret() {
-    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, ""))).unwrap();
+    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420))).unwrap();
     let v = p.spec.unwrap().volumes.unwrap().into_iter().find(|v| v.name == "user-key").unwrap();
     // The bench's own `apiKeyHelper` is what reads `provider-token`, so unlike an ordinary
     // workspace (`a_workspace_pods_user_key_mount_excludes_provider_token`) it keeps every key.
@@ -40,9 +40,9 @@ fn bench_ws_spec() -> WorkspaceSpec {
 }
 
 /// The `sessions` container, built with `bench_container_for_test()`'s shape of
-/// `workspace_pod(..., Some((image, idle_secs, provider_url)))`.
+/// `workspace_pod(..., Some((image, idle_secs)))`.
 fn bench_container_for_test() -> k8s_openapi::api::core::v1::Container {
-    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, "https://llm.example"))).unwrap();
+    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420))).unwrap();
     p.spec.unwrap().containers.into_iter().next().unwrap()
 }
 
@@ -53,27 +53,14 @@ fn a_bench_runs_its_services_under_runit_and_pings_kl_sessions() {
     let probe = c.readiness_probe.unwrap().exec.unwrap().command.unwrap();
     assert_eq!(probe, ["node", "/opt/kl/sessions/main.ts", "--ping"]);
     let env = |k: &str| c.env.as_ref().unwrap().iter().find(|e| e.name == k).and_then(|e| e.value.clone());
-    assert_eq!(env("ANTHROPIC_BASE_URL").as_deref(), Some("https://llm.example"));
-    assert!(
-        env("ANTHROPIC_API_KEY").is_none() && env("ANTHROPIC_AUTH_TOKEN").is_none(),
-        "the token is read by apiKeyHelper from the mounted file, never stamped"
-    );
-    // No env var of this shape at all: a provider key stamped under any name is exactly the leak
-    // `apiKeyHelper` exists to avoid.
+    assert!(env("ANTHROPIC_BASE_URL").is_none() && env("ANTHROPIC_MODEL").is_none(), "no Anthropic env on the bench");
+    // No env var of this shape at all: a provider key stamped under any name is a leak.
     assert!(
         c.env.as_ref().unwrap().iter().all(|e| !e.name.ends_with("_API_KEY")),
         "no *_API_KEY env var of any name belongs on this container"
     );
     let ports: Vec<i32> = c.ports.unwrap().iter().map(|p| p.container_port).collect();
     assert_eq!(ports, [BENCH_TERM_PORT as i32, BENCH_TUI_PORT as i32]);
-}
-
-#[test]
-fn an_empty_provider_url_stamps_no_base_url() {
-    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, ""))).unwrap();
-    let c = p.spec.unwrap().containers.into_iter().next().unwrap();
-    let env = |k: &str| c.env.as_ref().unwrap().iter().find(|e| e.name == k).and_then(|e| e.value.clone());
-    assert!(env("ANTHROPIC_BASE_URL").is_none());
 }
 
 #[test]
@@ -91,7 +78,7 @@ fn a_bench_exposes_no_ssh_port() {
 /// ever comes back to a bench pod, whoever adds it should see why the engine-side chown exists.
 #[test]
 fn a_bench_pod_has_no_prelude_to_chown_its_worktree() {
-    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, ""))).unwrap();
+    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420))).unwrap();
     let pod = p.spec.unwrap();
     for c in pod.containers.iter().chain(pod.init_containers.iter().flatten()) {
         let argv = c.command.clone().unwrap_or_default().join(" ") + " " + &c.args.clone().unwrap_or_default().join(" ");
@@ -105,7 +92,7 @@ fn a_bench_pod_has_no_prelude_to_chown_its_worktree() {
 
 #[test]
 fn a_bench_pod_carries_its_one_container_and_the_tool_secret_optional() {
-    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, ""))).unwrap();
+    let p = workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420))).unwrap();
     assert_eq!(p.metadata.labels.as_ref().unwrap()[KIND_LABEL], "bench");
     let spec = p.spec.unwrap();
     let names: Vec<&str> = spec.containers.iter().map(|c| c.name.as_str()).collect();
@@ -147,7 +134,6 @@ fn a_bench_pod_carries_its_one_container_and_the_tool_secret_optional() {
     // Never set on the bench: the mod reads `KL_WORKSPACE` to mean "I am a per-workspace
     // session", and the main agent CLI running in this pod is not one (final review C1).
     assert_eq!(get("KL_WORKSPACE"), None);
-    assert_eq!(get("ANTHROPIC_MODEL").as_deref(), Some("sonnet"));
     assert_eq!(get("KL_BENCH_IDLE_SECS").as_deref(), Some("420"));
     // No `KL_POD_IP` any more (owner ruling 2026-09-25): there is no shell sidecar to dial, so a
     // downward-API pod address would have no reader.
@@ -175,7 +161,7 @@ fn only_the_gateway_may_reach_a_bench_workspace_pod() {
 
 
 fn bench_pod_for_test() -> k8s_openapi::api::core::v1::Pod {
-    workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420, ""))).unwrap()
+    workspace_pod(&bench_ws_spec(), "ws-1", "bench-1", &ctx(), None, Some(("cr.example/bench:v9", 420))).unwrap()
 }
 
 #[test]

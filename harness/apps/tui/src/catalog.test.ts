@@ -32,7 +32,7 @@ test("refreshCatalog returns the live list and updates the binding", async () =>
 // A cold start knows only pi's bundled seed, so validating a saved model
 // against the catalog at import time threw away any choice the seed predates:
 // `deepseek-flash` (the one DeepSeek model that accepts images) became an
-// anthropic fallback on first launch. DEFAULT_MODEL is computed at import, and
+// default-model fallback on first launch. DEFAULT_MODEL is computed at import, and
 // bun caches modules for the process — so this needs a real fresh process.
 test("a saved default model survives a cold start", () => {
   const dir = mkdtempSync(join(tmpdir(), "kl-cold-"));

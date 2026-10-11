@@ -7,7 +7,6 @@ test("remote.tsx bundles no agent", async () => {
   expect(out.success).toBe(true);
   const code = (await Promise.all(out.outputs.map((o) => o.text()))).join("");
   expect(code).not.toContain("ModelRuntime");
-  expect(code).not.toContain("claude-agent-sdk");
 });
 
 test("TUI keeps the backend's edit set", async () => {

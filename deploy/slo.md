@@ -241,7 +241,6 @@ first destructive stage.
 | `kl.commands` | Identity | `kl-connect ws`, `kl-connect ws list --team` and `kl-connect logout` answer | 99.9 % ≤ 30000 ms | hourly | 14 · Experience |
 | `admin.reads` | Admin | `/admin/nodes`, `/admin/settings/schema` and a cluster status write answer, and an unknown history series is a 404 | 99.9 % ≤ 10000 ms | hourly | 14 · Experience |
 | `bench.idle.wake` | Benches | With every client gone past `benchIdleSecs` the bench has no pod, a new connection wakes it, `GET /v1/bench/session` answers, and `kl-sessions`' `/state` session list and a transcript read back unchanged | 99.9 % ≤ 480000 ms | hourly | 14 · Experience |
-| `bench.claude.tool_roundtrip` | Benches | `POST /send` on a probe workspace asks the agent to read the workspace's README, and `/state` shows a `read` call answered from the workspace | 99.9 % ≤ 120000 ms | hourly | 14 · Experience |
 | `bench.builtin.refused` | Benches | A prompt forcing the built-in Bash tool is denied, never run | 99.9 % | hourly | 14 · Experience |
 | `bench.tool.token` | Benches | The probe's login mints a tool token and a `/v1/regions` call inside the bench pod answers JSON | 99.9 % ≤ 120000 ms | hourly | 14 · Experience |
 | `bench.tool.audience` | Benches | The pod's token is refused on `/v1/bench/session`, `/v1/cli/tokens` and `/v1/keys` | 99.9 % | hourly | 14 · Experience |

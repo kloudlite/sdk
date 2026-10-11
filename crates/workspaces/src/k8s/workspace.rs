@@ -533,10 +533,10 @@ pub fn owner_slug<'a>(owner: &'a str, team: &'a str) -> &'a str {
 /// (`id` is the source volume; `ws_id` is this workspace's own
 /// worktree name) — see `Pool::worktree`.
 ///
-/// `bench` is `Some((configured bench image, idle seconds, provider base URL))` exactly when
+/// `bench` is `Some((configured bench image, idle seconds))` exactly when
 /// `crd::is_bench(ws)`: the pod's ONE container then runs the bench image under `runsvdir` and is
 /// labelled `kind=bench`. The image is not a spec field on purpose — a bench follows the
-/// configured image on every start — and `idle_secs`/`provider_url` are stamped in at create like
+/// configured image on every start — and `idle_secs` is stamped in at create like
 /// every other `Mark::Live`/`Mark::Boot` value, so a setting change never reaches a session
 /// already running.
 pub fn workspace_pod(
@@ -545,7 +545,7 @@ pub fn workspace_pod(
     ws_id: &str,
     ctx: &PodContext,
     init: Option<Container>,
-    bench: Option<(&str, u64, &str)>,
+    bench: Option<(&str, u64)>,
 ) -> Result<Pod, String> {
     // The last place before `spec.name` becomes a root `/bin/sh -c` word, an sshd `SetEnv` value
     // and this container's `mount_path`. `/v1` checked it; this covers a Workspace written by any
@@ -652,9 +652,9 @@ pub fn workspace_pod(
         // expose them). A workspace pod's terminal now runs inside `workspace` itself
         // (`prelude()`), not a sidecar.
         match bench {
-            Some((image, idle, provider_url)) => {
+            Some((image, idle)) => {
                 vec![
-                    bench_container(ws_id, spec, image, idle, ctx.api_url, ctx.registry_host, provider_url),
+                    bench_container(ws_id, spec, image, idle, ctx.api_url, ctx.registry_host),
                     net_container(image),
                 ]
             }

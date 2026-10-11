@@ -8,7 +8,7 @@
 //! it races the kubelet — the probe reads the live token out of the pod once, holds it in memory
 //! only, and asks from here; the gate that refuses it is the same one either way.
 //!
-//! Walked after `bench::claude_tools` in group 3, so it never resets `bench.idle.wake`'s wait.
+//! Walked after `bench::builtin_refused` in group 3, so it never resets `bench.idle.wake`'s wait.
 
 use std::time::{Duration, Instant};
 

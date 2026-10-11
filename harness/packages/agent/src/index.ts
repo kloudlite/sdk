@@ -12,9 +12,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, AuthInteraction, AuthType, Credential, Model } from "@earendil-works/pi-ai";
 import type { Registry } from "@kloudlite-tui/tools";
-import { CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role, claudeSignedIn, createClaudeSession, type ClaudeSession } from "./claude.ts";
+import { CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
 
-export { claudeSignedIn, type ClaudeSession };
 export { btwPrompt, piBtw } from "./btw.ts";
 
 export type {
@@ -61,9 +60,13 @@ export function writeSettings(patch: Partial<Settings>): void {
   writeFileSync(SETTINGS_PATH, JSON.stringify({ ...readSettings(), ...patch }, null, 2));
 }
 
+/** Claude runs natively in Claude Code, never here: pi's bundled anthropic provider is not offered anywhere. */
+export const offered = (p: { id: string }) => p.id !== "anthropic";
+
 export function listModels(): { provider: string; id: string; name: string }[] {
   return models
     .getModels()
+    .filter((m) => offered({ id: m.provider }))
     .map((m) => ({ provider: m.provider, id: m.id, name: m.name ?? m.id }));
 }
 
@@ -218,19 +221,14 @@ export function withCodemodeExtras(factory: ReturnType<typeof createCodemodeExte
 /** Auth status for every provider (env keys, stored credentials, ambient). */
 export async function providerAuth(): Promise<ProviderAuth[]> {
   return Promise.all(
-    models.getProviders().map(async (p) =>
-      // Claude is served by Claude Code's own login, never by pi's credentials
-      p.id === "anthropic"
-        ? { provider: p.id, ok: await claudeSignedIn(), envKeys: [] }
-        : {
-            provider: p.id,
-            ok: await models
-              .checkAuth(p.id)
-              .then((c) => c !== undefined)
-              .catch(() => false),
-            envKeys: await envKeysFor(p as never),
-          },
-    ),
+    models.getProviders().filter(offered).map(async (p) => ({
+      provider: p.id,
+      ok: await models
+        .checkAuth(p.id)
+        .then((c) => c !== undefined)
+        .catch(() => false),
+      envKeys: await envKeysFor(p as never),
+    })),
   );
 }
 
@@ -243,13 +241,7 @@ type LoginOption = {
 /** Interactive login flows the providers offer (OAuth and prompted API keys). */
 export function loginOptions(): LoginOption[] {
   const out: LoginOption[] = [];
-  for (const p of models.getProviders()) {
-    // Claude only through the Agent SDK: no pi oauth, and no api key (that would route through pi).
-    // The daemon drives `claude auth login` itself (backend claudelogin.ts), shown as an oauth flow.
-    if (p.id === "anthropic") {
-      out.push({ provider: "claude-subscription", type: "oauth", label: "Claude (subscription)" });
-      continue;
-    }
+  for (const p of models.getProviders().filter(offered)) {
     if (p.auth.oauth)
       out.push({
         provider: p.id,
@@ -404,15 +396,14 @@ export async function createSession({
   codemode?: boolean;
   /** main, workspace or subagent: picks the role skill loaded beside kloudlite. */
   role?: Role;
-  /** Working directory the model is told and Claude spawns in (default: this process's). */
+  /** Working directory the model is told (default: this process's). */
   cwd?: string;
-}): Promise<AgentSession | ClaudeSession> {
+}): Promise<AgentSession> {
   // pi finds a session to continue by the cwd in its header, and every session written so far has
   // this process's cwd: keep it for the SessionManager so a changed `cwd` never orphans them.
   const smCwd = process.cwd();
   const dir = sessionDir(key);
   // meta.json makes a session findable later: its key, its name, last use
-  // (Claude models and pi's own models share this key and transcript)
   writeMeta({ ...(readMeta(key) ?? { key }), key, updated: Date.now() });
   // pi's codemode ships as an extension and is registered *inactive*, so both
   // halves are needed: the factory on a resource loader, and the tool activated
@@ -431,7 +422,6 @@ export async function createSession({
     // An earlier "on" never fired codemode because nothing said when; the codemode skill and the
     // rules prepended to its description (CODEMODE_NOTE) now carry that.
     ...(codemode ? { extensionFactories: [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" })) }] } : {}),
-    // the same skills Claude sessions get through the plugin (claude.ts)
     appendSystemPrompt: systemAppends(codemode, role),
   });
   await resourceLoader.reload();
@@ -452,13 +442,5 @@ export async function createSession({
   // add codemode to pi's defaults rather than replacing them
   if (codemode) session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
   if (autoCompact !== undefined) session.setAutoCompactionEnabled(autoCompact);
-  // Claude models run Claude Code's loop on this same session: its tools,
-  // prompt and transcript (spec 2026-10-08-claude-tool-host). pi's own loop
-  // never starts for them.
-  if (model.provider === "anthropic") {
-    const claude = createClaudeSession({ key, model, thinkingLevel, role, cwd, pi: session as never });
-    if (autoCompact !== undefined) claude.setAutoCompactionEnabled(autoCompact);
-    return claude;
-  }
   return session;
 }
