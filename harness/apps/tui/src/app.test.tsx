@@ -727,7 +727,6 @@ function btwSession(calls: { btw: string[]; abort: number; prompt: string[] }, r
   const h: any = new Proxy(
     {
       messages: [],
-      isClaude: false,
       busy: false,
       state: { type: "session_state", model: hello().defaultModel, tokens: 0, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
       subscribe: () => () => {},

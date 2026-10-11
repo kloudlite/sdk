@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { declaredTools } from "./claude-tools.ts";
 
-test("codemode on: pi declares the direct tools beside codemode (the Claude bridge mirrors it)", async () => {
+// pi keeps every tool in `state.tools` in codemode and strips the hidden direct ones from each request.
+// ponytail: reads pi's private `_hiddenDeclarations` (pi pinned at 1.0.4); a pin bump re-checks it.
+const declaredTools = (s: any): any[] => s.agent.state.tools.filter((t: any) => !(s._hiddenDeclarations ?? new Set()).has(t.name));
+
+test("codemode on: pi declares the direct tools beside codemode", async () => {
   process.env.KLOUDLITE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "kl-cfg-"));
   const { createSession, models } = await import("./index.ts");
   const { Registry } = await import("@kloudlite-tui/tools");
@@ -30,10 +33,10 @@ test("codemode description opens with the rules, display included", async () => 
   s.dispose();
 });
 
-test("codemode sessions advertise the codemode skill, from the plugin Claude sessions load", async () => {
+test("codemode sessions advertise the codemode skill, ", async () => {
   process.env.KLOUDLITE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "kl-cfg-"));
   const { createSession, models } = await import("./index.ts");
-  const { CODEMODE_SKILL } = await import("./claude.ts");
+  const { CODEMODE_SKILL } = await import("./roles.ts");
   expect(existsSync(join(CODEMODE_SKILL, "../../.claude-plugin/plugin.json"))).toBe(true);
   const model = models.getModels().find((m: any) => m.provider !== "anthropic") as any;
   const s: any = await createSession({ key: `t-${process.pid}-skill`, model, codemode: true, fresh: true });

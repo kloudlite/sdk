@@ -5,7 +5,7 @@ const ctx = {
   models: [] as { provider: string; id: string; hint: string }[],
   themes: [],
   logins: [
-    { provider: "anthropic", type: "oauth", label: "Anthropic (Claude Pro/Max)" },
+    { provider: "openai-codex", type: "oauth", label: "ChatGPT Plus/Pro" },
     { provider: "deepseek", type: "api_key", label: "DeepSeek API key" },
   ],
   settings: [],

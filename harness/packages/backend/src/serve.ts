@@ -17,8 +17,8 @@ export function serve(backend: Backend, peer: Peer) {
   peer.handle("hello", () => backend.hello());
 
   peer.handle("session.open", async ({ key, tools, ...o }: { key: string; tools: ToolSpec[] } & any) => {
-    // Claude Code drops the WHOLE tool server when one tool has no object schema: the session then
-    // runs with no tools and says nothing (a drill client sent `parameters` and lost all 53)
+    // a tool without an object schema would be declared to the model with no usable parameters
+    // (a drill client sent `parameters` and lost all 53)
     const bad = tools.find((t: ToolSpec) => (t?.inputSchema as any)?.type !== "object");
     if (bad) throw new Error(`tool ${bad?.name} needs an inputSchema of type "object"`);
     await open.get(key)?.dispose();
@@ -30,7 +30,7 @@ export function serve(backend: Backend, peer: Peer) {
     });
     open.set(key, h);
     h.subscribe((event) => peer.emit("session", key, event));
-    return { messages: h.messages, isClaude: h.isClaude, busy: h.busy, state: h.state };
+    return { messages: h.messages, busy: h.busy, state: h.state };
   });
 
   peer.handle("session.call", async ({ key, method, args }: { key: string; method: string; args: unknown[] }) => {
@@ -80,7 +80,6 @@ export function serve(backend: Backend, peer: Peer) {
   });
   peer.handle("models.refresh", () => backend.models.refresh());
   peer.handle("auth.providers", () => backend.auth.providers());
-  peer.handle("auth.claudeSignedIn", (fresh) => backend.auth.claudeSignedIn(fresh));
   peer.handle("auth.login", ({ lid, provider, type }, signal) =>
     backend.auth.login(provider, type, {
       signal,

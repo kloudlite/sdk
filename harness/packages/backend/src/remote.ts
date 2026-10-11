@@ -51,7 +51,7 @@ export class RemoteBackend implements Backend {
     this.#opts.set(key, opts);
     const subs = new Set<(e: any) => void>();
     this.#subs.set(key, subs);
-    const { messages, isClaude, busy, state: first } = await this.peer.request<{ messages: any; isClaude: boolean; busy: boolean; state: SessionState }>("session.open", {
+    const { messages, busy, state: first } = await this.peer.request<{ messages: any; busy: boolean; state: SessionState }>("session.open", {
       key,
       ...rest,
       tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
@@ -69,7 +69,6 @@ export class RemoteBackend implements Backend {
       this.peer.request<void>("session.call", { key, method, args });
     return {
       messages,
-      isClaude,
       get busy() {
         return running;
       },
@@ -133,7 +132,6 @@ export class RemoteBackend implements Backend {
   models = { refresh: () => this.peer.request<any>("models.refresh", null) };
   auth = {
     providers: () => this.peer.request<any>("auth.providers", null),
-    claudeSignedIn: (fresh?: boolean) => this.peer.request<boolean>("auth.claudeSignedIn", fresh ?? false),
     login: async (provider: string, type: any, ui: LoginUi) => {
       const lid = String(++this.#lid);
       this.#logins.set(lid, ui);

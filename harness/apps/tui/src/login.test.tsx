@@ -8,7 +8,6 @@ const ctl = new AbortController();
 boot(
   {
     auth: {
-      claudeSignedIn: async () => false,
       login: async (_p: string, _t: any, io: any) => {
         io.notify({ type: "progress", message: "polling for approval" });
         io.notify({
@@ -34,7 +33,7 @@ const { Login } = await import("./components/Login.tsx");
 // single prompt when something else answers the step (a manual_code raced
 // against the callback server) — all three used to be dropped on the floor
 test("login shows progress and links, and clears a cancelled prompt", async () => {
-  const t = await testRender(<Login provider="anthropic" type="oauth" onDone={() => {}} />, {
+  const t = await testRender(<Login provider="openai-codex" type="oauth" onDone={() => {}} />, {
     width: 100,
     height: 20,
   });

@@ -14,9 +14,8 @@
 //! message log (messages.ts) is the one place that links a message to the sender's task (`for`) or to
 //! the ask it answers (`reply`).
 //! Delegated sessions ask through `deps.permit`, the daemon's gate: the card is raised for the caller's key on every connected TUI.
-//! The answer is the last assistant text seen before `agent_end`: Claude sessions emit
-//! `agent_end` with an empty message list, so the events are tracked instead. It only counts after
-//! the asked user message was seen (a busy Claude ends its CURRENT run before the followUp runs).
+//! The answer is the last assistant text seen before `agent_end`, tracked from the events. It only counts after
+//! the asked user message was seen (a busy session ends its CURRENT run before the followUp runs).
 //! A `workspace_ask` is saved to disk (asks.ts) while it is in flight and resent after a bench
 //! restart (`resumeAsks`), at most twice.
 import type { Cards } from "./cards.ts";
@@ -95,7 +94,7 @@ const textOf = (m: any): string =>
     .trim();
 
 /** Send `text`, then resolve at the `agent_end` of the run that answered IT. Armed only by the user
- * message carrying `text`: a busy Claude emits `agent_end` for its CURRENT run first and only then
+ * message carrying `text`: a busy session emits `agent_end` for its CURRENT run first and only then
  * runs a followUp, so an earlier end would hand back the wrong turn's text. A disposed session
  * (`session_closed`) never ends a turn, so it resolves too. */
 function answer(h: SessionHandle, text: string, send: () => Promise<void>): Promise<string> {

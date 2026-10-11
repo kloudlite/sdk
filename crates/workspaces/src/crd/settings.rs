@@ -15,11 +15,6 @@ pub mod defaults {
     pub fn bench_idle_secs() -> u64 {
         300
     }
-    /// Empty = no override: the bench's `ANTHROPIC_BASE_URL` is unset and the agent CLI talks to
-    /// Anthropic directly.
-    pub fn bench_provider_url() -> String {
-        String::new()
-    }
     pub fn replica_secs() -> u64 {
         300
     }
@@ -91,12 +86,6 @@ pub struct ClusterSettingsSpec {
     /// stamped into the pod at create, so a change reaches the next pod only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bench_idle_secs: Option<u64>,
-    /// The base URL bench agents send model requests to; the token is the user's
-    /// `provider-token`. **Boot** — stamped into the pod's `ANTHROPIC_BASE_URL` at create, so a
-    /// change reaches the next pod only. `None`/empty = unset, the agent CLI talks to Anthropic
-    /// directly.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bench_provider_url: Option<String>,
     /// Replication pull beat interval. 30..=3600 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replica_secs: Option<u64>,
@@ -200,7 +189,6 @@ pub const CLUSTER_SETTING_META: &[(&str, kloudlite_core::settings::Mark, &[&str]
     ("stallDumps", kloudlite_core::settings::Mark::Live, &[]),
     ("memberRemovalDeletes", kloudlite_core::settings::Mark::Live, &[]),
     ("benchIdleSecs", kloudlite_core::settings::Mark::Live, &[]),
-    ("benchProviderUrl", kloudlite_core::settings::Mark::Boot, &["kloudlite-agent"]),
     ("replicaSecs", kloudlite_core::settings::Mark::Live, &[]),
     ("decommissionSecs", kloudlite_core::settings::Mark::Live, &[]),
     ("nodeDeadSecs", kloudlite_core::settings::Mark::Live, &[]),

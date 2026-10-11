@@ -5,7 +5,6 @@
 import type {
   AgentSession,
   AgentSessionEvent,
-  ClaudeSession,
   listSessions,
   loginOptions,
   loginProvider,
@@ -164,7 +163,6 @@ export type SessionEvent = (AgentSessionEvent & { diff?: FileDiff }) | { type: "
 export type SessionHandle = {
   /** Snapshot taken when the session opened; restoreTranscript reads it. */
   messages: AgentSession["messages"];
-  isClaude: boolean;
   /** A turn is running right now (live: a client that reconnects mid-turn sees it). */
   readonly busy: boolean;
   /** Current snapshot; kept live by `session_state` events. */
@@ -210,7 +208,6 @@ export interface Backend {
   auth: {
     providers(): Promise<ProviderAuth[]>;
     login(provider: string, type: LoginType, ui: LoginUi): Promise<void>;
-    claudeSignedIn(fresh?: boolean): Promise<boolean>;
   };
   fs: {
     isGitRepo(root: string): Promise<boolean>;

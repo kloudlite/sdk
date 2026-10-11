@@ -93,10 +93,8 @@ pub fn bench_container(
     idle_secs: u64,
     api_url: &str,
     registry_host: &str,
-    provider_url: &str,
 ) -> Container {
     let var = |n: &str, v: String| EnvVar { name: n.into(), value: Some(v), ..Default::default() };
-    let model = spec.bench.as_ref().map(|b| b.model.clone()).unwrap_or_default();
     let mut env = vec![
         var("KL_OWNER", spec.owner.clone()),
         // The SPACE slug, exactly as the workspace container's `login_env` spells it (a personal
@@ -126,18 +124,6 @@ pub fn bench_container(
     // Unset rather than empty when the agent has no `WS_API_URL`: the tools then fail closed.
     if !api_url.is_empty() {
         env.push(var("KL_API_URL", api_url.to_string()));
-    }
-    // From `spec.bench.model` only when set: an unset model leaves the agent CLI on its own
-    // default rather than stamping an empty override.
-    if !model.is_empty() {
-        env.push(var("ANTHROPIC_MODEL", model));
-    }
-    // `ClusterSettings.benchProviderUrl`, omitted when empty so the agent CLI's own default (talk
-    // to Anthropic directly) applies. The token itself is never an env var — `apiKeyHelper` in
-    // `/etc/claude-code/managed-settings.json` reads it off the mounted `user-key` Secret, never
-    // stamped here (env shows up in `ps e`, crash dumps, child processes).
-    if !provider_url.is_empty() {
-        env.push(var("ANTHROPIC_BASE_URL", provider_url.to_string()));
     }
 
     Container {

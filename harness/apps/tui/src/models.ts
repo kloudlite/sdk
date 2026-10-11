@@ -15,7 +15,7 @@ export async function refreshCatalog(): Promise<CatalogModel[]> {
   return catalog;
 }
 
-/** The backend resolved it (saved choice, else an anthropic opus, else the first model). */
+/** The backend resolved it (saved choice, else deepseek-v4-flash, else the first model). */
 export const DEFAULT_MODEL: ModelRef = hello().defaultModel;
 
 /** provider id → auth info; re-resolved after a login. */

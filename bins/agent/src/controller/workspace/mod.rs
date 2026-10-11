@@ -424,7 +424,7 @@ pub async fn apply_workspace(w: &crd::Workspace, ctx: &Arc<Ctx>) -> Result<Actio
             // a session already running.
             let settings = ctx.settings.load();
             let bench = crd::is_bench(w)
-                .then(|| (ctx.bench_image.as_str(), settings.bench_idle_secs, settings.bench_provider_url.as_str()));
+                .then(|| (ctx.bench_image.as_str(), settings.bench_idle_secs));
             let pod = match k8s::workspace_pod(&w.spec, &id, &w.name_any(), &pod_ctx, init, bench) {
                 Ok(p) => p,
                 // Unreachable while `validate_ws_spec` runs at the top of this function; kept

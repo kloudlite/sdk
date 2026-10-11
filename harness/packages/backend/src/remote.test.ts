@@ -18,7 +18,6 @@ function fake(): Backend & { seen: string[] } {
       opts = o;
       return {
         messages: [{ role: "user", content: "earlier" }] as any,
-        isClaude: false,
         prompt: async (text: string) => {
           seen.push(`tool:${await opts.tools[0]!.run({ q: text })}`);
           for (const s of subs) s({ type: "agent_end", error: new Error("e") });

@@ -26,11 +26,6 @@ RUN chmod 0755 /usr/local/bin/ttyd
 COPY --from=oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 /usr/local/bin/bun /usr/local/bin/bun
 COPY harness /opt/kl/harness
 RUN cd /opt/kl/harness && bun install --frozen-lockfile
-# Claude Code's own binary, bundled by the Agent SDK (glibc build; this base is bookworm). The
-# harness resolves it by package, and the daemon's Claude sign-in
-# (claudelogin.ts) runs it from PATH. Bun nests packages under .bun/, hence the find; the test fails the build loudly.
-RUN f=$(find /opt/kl/harness/node_modules -path '*claude-agent-sdk-linux-x64/claude' -type f | head -n1) \
-    && ln -s "$f" /usr/local/bin/claude && test -x /usr/local/bin/claude
 
 # The musl `kl` binary — statically linked, so it runs fine on this glibc base — built by the same
 # CI job that builds this image and downloaded as the kl-musl artifact. A bench builds/pushes like

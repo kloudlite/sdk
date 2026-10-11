@@ -21,7 +21,6 @@ function fakeBackend() {
     hello: async () => ({ protocol: 2, cwd: "/home/kl", tools: [] }),
     session: async (key: string) => ({
       messages: [],
-      isClaude: false,
       busy: true,
       subscribe: () => () => {},
       dispose: async () => void disposed.push(key),

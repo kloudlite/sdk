@@ -101,7 +101,6 @@ pub const IDS: &[&str] = &[
     "kl.commands",
     "admin.reads",
     "bench.idle.wake",
-    "bench.claude.tool_roundtrip",
     "bench.builtin.refused",
     "shell.up",
     "bench.tool.token",
@@ -207,9 +206,7 @@ pub async fn run(c: &mut Ctx) {
             "team.member.paused" => super::experience_teams::member_paused(c).await,
             "bench.idle.wake" => super::bench::hourly(c).await,
             // kube-exec into the pod, no tunnel/SSH identity needed (ruling 3, task 9 fix round 1).
-            "bench.claude.tool_roundtrip" => super::bench::claude_tools(c).await,
-            // Filed by the call above.
-            "bench.builtin.refused" => {}
+            "bench.builtin.refused" => super::bench::builtin_refused(c).await,
             // One call: the pod's token, then its audience, then the stop/restart (files
             // `bench.tool.revoked` too).
             "bench.tool.token" => super::bench_tool::run(c).await,

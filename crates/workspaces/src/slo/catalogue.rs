@@ -161,12 +161,11 @@ pub fn journey(suite: Suite) -> Vec<(&'static str, Vec<&'static str>)> {
 pub const HOURLY_GROUPS: u8 = 4;
 
 /// Group 3: every id the owner's bench owns.
-const BENCH_IDS: [&str; 12] = [
+const BENCH_IDS: [&str; 11] = [
     "bench.create",
     "bench.start.p95",
     "bench.tunnel",
     "bench.idle.wake",
-    "bench.claude.tool_roundtrip",
     "bench.builtin.refused",
     "bench.tool.token",
     "bench.tool.audience",
@@ -624,7 +623,6 @@ pub const CATALOGUE: &[Slo] = &[
     // Benches. 480 s is the region's default `benchIdleSecs` (300) plus a 90 s start plus 90 s of
     // reads; a region that raises the knob raises the probe's ceiling with it.
     Slo { id: "bench.idle.wake", feature: "Benches", sli: "With every client gone past `benchIdleSecs` the bench has no pod, a new connection wakes it, `GET /v1/bench/session` answers, and `kl-sessions`' `/state` session list and a transcript read back unchanged", target: bound(480_000), suite: Suite::Hourly, stage: "14 · Experience" },
-    Slo { id: "bench.claude.tool_roundtrip", feature: "Benches", sli: "`POST /send` on a probe workspace asks the agent to read the workspace's README, and `/state` shows a `read` call answered from the workspace", target: bound(120_000), suite: Suite::Hourly, stage: "14 · Experience" },
     Slo { id: "bench.builtin.refused", feature: "Benches", sli: "A prompt forcing the built-in Bash tool is denied, never run", target: avail(99.9), suite: Suite::Hourly, stage: "14 · Experience" },
     Slo { id: "bench.tool.token", feature: "Benches", sli: "The probe's login mints a tool token and a `/v1/regions` call inside the bench pod answers JSON", target: bound(120_000), suite: Suite::Hourly, stage: "14 · Experience" },
     Slo { id: "bench.tool.audience", feature: "Benches", sli: "The pod's token is refused on `/v1/bench/session`, `/v1/cli/tokens` and `/v1/keys`", target: avail(99.9), suite: Suite::Hourly, stage: "14 · Experience" },
@@ -772,7 +770,7 @@ mod tests {
     #[test]
     fn every_bench_id_is_catalogued() {
         for id in ["bench.create", "bench.start.p95", "bench.tunnel", "bench.idle.wake",
-                   "bench.claude.tool_roundtrip", "bench.builtin.refused",
+                   "bench.builtin.refused",
                    "bench.survives.reschedule", "bench.tool.revoked",
                    "bench.tool.token", "bench.tool.audience",
                    "shell.up",

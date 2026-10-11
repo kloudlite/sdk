@@ -52,8 +52,6 @@ const IDLE_STAMP: Duration = Duration::from_secs(30);
 const START_WAIT: Duration = Duration::from_secs(90);
 /// `shell.up`: target 15 s.
 const SHELL_CEILING: Duration = Duration::from_secs(20);
-/// `bench.claude.tool_roundtrip`: target 120 s.
-const CLAUDE_TOOL_CEILING: Duration = Duration::from_secs(120);
 /// `bench.builtin.refused`: no bound target (`avail`), but a step still needs a cap.
 const BUILTIN_REFUSED_CEILING: Duration = Duration::from_secs(120);
 const EXEC: Duration = Duration::from_secs(20);
@@ -458,45 +456,6 @@ fn tool_workspace(ws: Option<String>, ready: bool) -> std::result::Result<String
     }
 }
 
-/// A line starting `t:` is a tool call, `r:` its result (`kl-sessions`' own transcript prefixes,
-/// `docs/superpowers/specs/2026-10-05-claude-code-bench-design.md`).
-fn claude_tool_ran(state: &Value, ws: &str) -> Result<()> {
-    let lines = state[ws]["lines"].as_array().context("no lines for the workspace session in /state")?;
-    let text: Vec<&str> = lines.iter().filter_map(Value::as_str).collect();
-    if !text.iter().any(|l| l.starts_with("t:")) {
-        bail!("no tool call in the transcript: {}", super::clip(&text.join("\n")));
-    }
-    if !text.iter().any(|l| l.starts_with("r:")) {
-        bail!("no tool result in the transcript: {}", super::clip(&text.join("\n")));
-    }
-    Ok(())
-}
-
-/// `bench.claude.tool_roundtrip`: `POST /send` on the probe workspace asks the agent to read the
-/// workspace's README, and `/state` shows a tool call answered from the workspace.
-async fn claude_tool_roundtrip(c: &mut Ctx) {
-    const ID: &str = "bench.claude.tool_roundtrip";
-    const PROMPT: &str = "Use the read tool to read this workspace's README.md and summarize it in one sentence.";
-    let ws = match tool_workspace(c.state.ux_workspace.clone(), c.state.ux_ready) {
-        Ok(ws) => ws,
-        Err(why) => return c.skip(ID, why),
-    };
-    if c.kube.is_none() {
-        return c.skip(ID, "no kubeconfig");
-    }
-    c.step(ID, CLAUDE_TOOL_CEILING, move |c| {
-        async move {
-            wait_phase(c, "ready", START_WAIT).await.context("the bench is not ready")?;
-            send(c, &ws, PROMPT).await?;
-            wait_not_busy(c, CLAUDE_TOOL_CEILING).await?;
-            let state = state(c).await?;
-            claude_tool_ran(&state, &ws)
-        }
-        .boxed()
-    })
-    .await;
-}
-
 /// The deny hook's own wording (`bench/mod/hooks/register.tsx`): a built-in tool call is refused,
 /// never run, and the refusal reaches the transcript carrying this substring.
 const BUILTIN_DENY_MARKER: &str = "no local tools";
@@ -511,7 +470,7 @@ fn builtin_denied(state: &Value, ws: &str) -> Result<()> {
 }
 
 /// `bench.builtin.refused`: a prompt forcing the built-in Bash tool is denied, never run.
-async fn builtin_refused(c: &mut Ctx) {
+pub async fn builtin_refused(c: &mut Ctx) {
     const ID: &str = "bench.builtin.refused";
     const PROMPT: &str = "Use the Bash tool to run the command: echo hi";
     let ws = match tool_workspace(c.state.ux_workspace.clone(), c.state.ux_ready) {
@@ -532,14 +491,6 @@ async fn builtin_refused(c: &mut Ctx) {
         .boxed()
     })
     .await;
-}
-
-/// Dispatched from `experience.rs`'s two arms (ruling 3, task 9 fix round 1): kube-exec has no
-/// contention with the tunnel, so unlike the retired `bench.workspace.tool_roundtrip` these need
-/// no `suite::wait_for_group` coordination.
-pub async fn claude_tools(c: &mut Ctx) {
-    claude_tool_roundtrip(c).await;
-    builtin_refused(c).await;
 }
 
 pub async fn weekly(c: &mut Ctx) {
@@ -581,10 +532,6 @@ mod tests {
 
     #[test]
     fn transcripts_are_judged_by_their_prefixes() {
-        let state = json!({"w-1": {"lines": ["u:summarize", "t:read(README.md)", "r:ok summary"]}});
-        assert!(claude_tool_ran(&state, "w-1").is_ok());
-        assert!(claude_tool_ran(&json!({"w-1": {"lines": ["u:hi"]}}), "w-1").is_err());
-
         let denied = json!({"w-1": {"lines": ["u:echo hi", "s:This bench runs no local tools; use the workspace's tools (mcp__kloudlite__*) instead."]}});
         assert!(builtin_denied(&denied, "w-1").is_ok());
         assert!(builtin_denied(&json!({"w-1": {"lines": ["u:echo hi", "r:hi"]}}), "w-1").is_err());
@@ -599,7 +546,6 @@ mod tests {
         use kloudlite_workspaces::slo::catalogue::find;
         for (id, cap) in [
             ("shell.up", SHELL_CEILING),
-            ("bench.claude.tool_roundtrip", CLAUDE_TOOL_CEILING),
             ("bench.start.p95", START_CEILING),
             ("bench.tunnel", TUNNEL_CEILING),
             ("bench.idle.wake", WAKE_CEILING),

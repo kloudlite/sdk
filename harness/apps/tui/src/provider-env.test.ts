@@ -14,8 +14,8 @@ test("provider env vars are the ones the provider really reads", async () => {
   expect(byId.get("amazon-bedrock")).toContain("AWS_ACCESS_KEY_ID");
   // the convention still holds where it holds
   expect(byId.get("deepseek")).toEqual(["DEEPSEEK_API_KEY"]);
-  // Claude signs in through Claude Code, so no env var is offered for it
-  expect(byId.get("anthropic")).toEqual([]);
+  // Claude runs in Claude Code, so the provider is not offered at all
+  expect(byId.has("anthropic")).toBe(false);
   // OAuth-only: no hint to show
   expect(byId.get("openai-codex")).toEqual([]);
 });

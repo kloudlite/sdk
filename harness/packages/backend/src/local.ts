@@ -7,7 +7,6 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import {
-  claudeSignedIn,
   clearSessionHistory,
   createSession,
   describeSession,
@@ -18,6 +17,7 @@ import {
   nameSession,
   providerAuth,
   readSettings,
+  offered,
   piBtw,
   resolveModel,
   writeSettings,
@@ -25,7 +25,6 @@ import {
 } from "@kloudlite-tui/agent";
 import { Registry, anyPodTools, platformTools, podTools, scratchRoot, scratchTools, webFetch, webSearch, type ToolDef } from "@kloudlite-tui/tools";
 import { Cards } from "./cards.ts";
-import { claudeLogin } from "./claudelogin.ts";
 import { WORKSPACE_DIR, delegateTools, resumeAsks, type DelegateDeps } from "./delegate.ts";
 import { forgetSessions } from "./forget.ts";
 import { SpaceWatch } from "./spacewatch.ts";
@@ -76,9 +75,8 @@ export function stripCard(key: string, text: string): string {
   return text.startsWith(card) ? text.slice(card.length) : text;
 }
 
-/** Who this session is, on its first message: Claude sessions see skills only by name until they
- * load one, so the role must arrive in the conversation itself (the system prompt stays Claude
- * Code's own for billing, claude.ts). */
+/** Who this session is, on its first message: skills are seen only by name until one is loaded, so
+ * the role arrives in the conversation itself. */
 export function roleCard(key: string): string {
   const k = sessionKind(key);
   if (k.kind === "main")
@@ -111,16 +109,17 @@ export function sessionKind(key: string): SessionKind {
 }
 
 function catalog(): CatalogModel[] {
-  return models.getModels().map((m) => ({ provider: m.provider, id: m.id, name: m.name ?? m.id, input: [...m.input] }));
+  return models.getModels().filter((m) => offered({ id: m.provider })).map((m) => ({ provider: m.provider, id: m.id, name: m.name ?? m.id, input: [...m.input] }));
 }
 
 function defaultModel(list: CatalogModel[]): ModelRef {
   // An explicitly chosen model wins outright — not validated against the catalog: on a cold
   // start only pi's bundled seed is known, and validating discarded any model it predates.
+  // A saved anthropic model is ignored: Claude runs in Claude Code, not here.
   const saved = readSettings().defaultModel;
-  if (saved) return saved;
-  const opus = list.find((m) => m.provider === "anthropic" && /opus/.test(m.id));
-  return opus ?? list[0] ?? { provider: "anthropic", id: "claude-opus-5" };
+  if (saved && offered({ id: saved.provider })) return saved;
+  // same value as Rust `model::DEFAULT_BENCH_MODEL`
+  return list.find((m) => m.provider === "deepseek" && m.id === "deepseek-v4-flash") ?? list[0] ?? { provider: "deepseek", id: "deepseek-v4-flash" };
 }
 
 function forgetting(t: ToolDef, deps: DelegateDeps): ToolDef {
@@ -176,7 +175,7 @@ export async function mcpTools(deps: DelegateDeps): Promise<ToolDef[]> {
 }
 
 /** The permission gate, on both doors a call comes through: `agent.beforeToolCall` for a
- * model's own calls (pi's loop and Claude's tool server both call it), and the pi session's
+ * model's own calls (pi's loop calls it), and the pi session's
  * `_beforeToolCall` for calls a codemode script makes, which pi's nested runner sends straight
  * there with the parent's id and no signal. Gated once per call: top level has no parent id. */
 export function installGate(agent: any, permission: SessionOpts["permission"], words?: () => { typed: string[]; self?: string }): void {
@@ -208,7 +207,7 @@ export function installGate(agent: any, permission: SessionOpts["permission"], w
 /**
  * Workspace sessions work in the pod's ~/workspace, so the model is told that path and
  * resolves relative paths there; main keeps the bench's cwd. Every file tool is the pod's, so on the
- * bench the folder only has to exist (Claude spawns its process in it; session() creates it).
+ * bench the folder only has to exist (session() creates it).
  */
 export function sessionCwd(k: { kind: string }): string | undefined {
   return k.kind === "main" ? undefined : WORKSPACE_DIR;
@@ -322,25 +321,17 @@ export function baseHandle(
     get state() {
       return state;
     },
-    isClaude: "isClaude" in agent,
     prompt: async (text, o) => agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${text}` : text, o),
     steer: async (text, images) => agent.steer(text, images),
     followUp: async (text, images) => agent.followUp(text, images),
     clearQueue: async () => void agent.clearQueue(),
-    btw: (q) => ("isClaude" in agent ? agent.btw(q) : piBtw(agent, q)),
+    btw: (q) => piBtw(agent, q),
     abort: async () => agent.abort(),
     dispose: () => close(false),
     close,
     setModel: async (ref) => {
       const m = resolveModel(ref);
       if (!m) throw new Error(`unknown model ${ref.provider}/${ref.id}`);
-      if ((ref.provider === "anthropic") !== "isClaude" in agent) {
-        // Claude and pi are different agents: crossing means a rebuild from the stored state
-        if (hooks.busy.has(key)) throw new Error("a turn is running");
-        state.model = { provider: ref.provider, id: ref.id };
-        pushState();
-        return hooks.rebuild?.();
-      }
       await agent.setModel(m);
       state.model = { provider: ref.provider, id: ref.id };
       pushState();
@@ -536,7 +527,7 @@ export class LocalBackend implements Backend {
 
   /** Dispose the agent when no turn runs and nobody views it (or it is due a rebuild). Called from
    * the last view going away and, a tick after `agent_end`, from the agent itself: the tick lets
-   * `answer()` see the `agent_end` first and lets Claude start a queued followUp (busy again). */
+   * `answer()` see the `agent_end` first and lets the agent start a queued followUp (busy again). */
   #settle(key: string) {
     const base = this.#live.get(key);
     const sh = this.#shared.get(key);
@@ -601,7 +592,7 @@ export class LocalBackend implements Backend {
     const k = sessionKind(key);
     const registry = await registryFor(k, this.#deps(), opts, key);
     const cwd = sessionCwd(k);
-    // best effort: off the bench (a laptop running the backend) / is not writable, and only Claude spawns there
+    // best effort: off the bench (a laptop running the backend) / is not writable
     if (cwd) try { mkdirSync(cwd, { recursive: true }); } catch {}
     const agent: any = await this.#create({
       key,
@@ -718,15 +709,9 @@ export class LocalBackend implements Backend {
   auth = {
     providers: () => providerAuth(),
     login: async (provider: string, type: any, ui: any) => {
-      if (provider === "claude-subscription")
-        await claudeLogin((e) => ui.notify(e), (message) => ui.prompt({ type: "manual_code", message, signal: ui.signal }));
-      else await loginProvider(provider, type, ui);
-      // an agent built before the sign-in holds the old (missing) credentials
-      for (const key of [...this.#live.keys()])
-        if (this.#state.get(key)?.model.provider === "anthropic" && !this.#busy.has(key)) await this.#rebuild(key).catch(() => {});
+      await loginProvider(provider, type, ui);
       this.#broadcast({ type: "auth_changed" });
     },
-    claudeSignedIn: async (fresh?: boolean) => claudeSignedIn(fresh),
   };
 
   podfs = podfs;
