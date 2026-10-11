@@ -91,8 +91,13 @@ export const register: Register = on => {
       const c = state.calls.get(w.id) ?? state.calls.get(w.name)
       return activity(w, c?.inFlight ?? 0, c?.lastEnd ?? 0, now)
     }
-    // one row: dot, name, then the state flush right
-    const head = (r: Row, bold = true) => {
+    // Colour sits on the dot; the state word stays quiet unless it needs a look.
+    const loud = (s: string) => (s === 'working' ? 'claude' : s === 'error' || s === 'failed' || s === 'failing' ? 'error' : undefined)
+    const word = (s: string) => {
+      const c = loud(s)
+      return c ? <Text color={c}>{s}</Text> : <Text dimColor>{s}</Text>
+    }
+    const row = (r: Row, bold: boolean) => {
       const m = mark(r.state)
       return (
         <Box gap={1}>
@@ -100,55 +105,61 @@ export const register: Register = on => {
           <Box flexGrow={1}>
             <Text bold={bold} wrap="truncate-end">{r.name}</Text>
           </Box>
-          <Text color={m.color}>{r.state}</Text>
+          {word(r.state)}
         </Box>
       )
     }
-    const service = (s: Service) => (
-      <Box gap={1}>
-        <Text color={s.mark.color}>{s.mark.glyph}</Text>
-        <Box flexGrow={1} gap={2}>
-          <Text wrap="truncate-end">{s.name}</Text>
-          <Text dimColor>{s.ports}</Text>
+    // services as a tree under their environment, names in one column so the ports line up
+    const env = (x: Env) => {
+      const w = Math.max(...x.services.map(s => s.name.length), 0) + 2
+      return (
+        <Box flexDirection="column">
+          {row(x, true)}
+          {x.services.map((s: Service, i) => (
+            <Box gap={1}>
+              <Text dimColor>{i === x.services.length - 1 ? '└' : '├'}</Text>
+              <Text color={s.mark.color}>{s.mark.glyph}</Text>
+              <Box width={w}>
+                <Text wrap="truncate-end">{s.name}</Text>
+              </Box>
+              <Box flexGrow={1}>
+                <Text dimColor>{s.ports}</Text>
+              </Box>
+              {s.interceptedBy ? <Text color="suggestion" wrap="truncate-start">{`→ ${s.interceptedBy}`}</Text> : word(s.state)}
+            </Box>
+          ))}
         </Box>
-        {s.interceptedBy ? <Text color="suggestion">{`⤷ ${s.interceptedBy}`}</Text> : <Text dimColor>{s.state}</Text>}
-      </Box>
-    )
-    const env = (x: Env) => (
-      <Box flexDirection="column">
-        {head(x)}
-        {x.services.length ? <Box flexDirection="column" paddingLeft={2}>{x.services.map(service)}</Box> : null}
-      </Box>
-    )
+      )
+    }
     const section = (title: string, count: number, body: unknown) => (
-      <Box flexDirection="column" marginBottom={1}>
-        <Box justifyContent="space-between" marginBottom={1}>
-          <Text bold color="claude">{title}</Text>
-          <Text dimColor>{String(count)}</Text>
+      <Box flexDirection="column" gap={1}>
+        <Box gap={1}>
+          <Text bold dimColor>{title}</Text>
+          <Text dimColor>{`· ${count}`}</Text>
         </Box>
         {body}
       </Box>
     )
+    const health = state.error ? { color: 'error', label: 'error' } : state.at ? { color: 'success', label: state.at } : { color: 'inactive', label: 'connecting' }
     return (
-      <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
-        <Box justifyContent="space-between" marginBottom={1}>
-          <Text bold>KLOUDLITE</Text>
-          <Text dimColor>{state.at ? `updated ${state.at}` : 'loading…'}</Text>
+      <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1} gap={1}>
+        <Box justifyContent="space-between">
+          <Text bold>Kloudlite</Text>
+          <Box gap={1}>
+            <Text color={health.color}>●</Text>
+            <Text dimColor>{health.label}</Text>
+          </Box>
         </Box>
+        {state.error ? <Text color="error" wrap="wrap">{state.error}</Text> : null}
         {section(
           'WORKSPACES',
           state.ws.length,
           state.ws.length ? (
-            <Box flexDirection="column">{state.ws.map(w => head(live(w), false))}</Box>
+            <Box flexDirection="column">{state.ws.map(w => row(live(w), false))}</Box>
           ) : (
             <Text dimColor>No workspaces</Text>
           ),
         )}
-        {state.error ? (
-          <Box marginBottom={1}>
-            <Text color="error" wrap="wrap">{state.error}</Text>
-          </Box>
-        ) : null}
         <Box flexGrow={1} />
         {section(
           'ENVIRONMENTS',
