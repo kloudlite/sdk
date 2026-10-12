@@ -349,10 +349,160 @@ pub async fn environment(cfg: &crate::config::Config, id: &str) -> Result<EnvDoc
     json(r).await
 }
 
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Workspace,
+    Environment,
+}
+
+impl Kind {
+    fn path(self) -> &'static str {
+        match self {
+            Kind::Workspace => "workspaces",
+            Kind::Environment => "environments",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Step {
+    Ready,
+    /// Idle-stopped: the agent stopped it, so the first caller to want it back wakes it.
+    Wake,
+    /// A person's stop (no `idle_since`): never auto-woken.
+    Stopped,
+    Wait(String),
+}
+
+// ponytail: fixed 2 s poll and 180 s wake budget (cold start includes `nix copy`), same as the
+// harness's ensure.ts; a knob if anyone waits longer.
+const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+const WAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The harness predicate (harness/packages/tools/src/ensure.ts): workspaces report `ready`,
+/// environments `state: running`.
+fn is_ready(d: &serde_json::Value) -> bool {
+    d["ready"] == true || matches!(d["state"].as_str(), Some("ready" | "running"))
+}
+
+/// Why it is not ready: the first False condition's reason (the workspace doc names its
+/// conditions individually, `conditions` covers a list), else the state.
+fn reason(d: &serde_json::Value) -> String {
+    let mut cs: Vec<&serde_json::Value> = d["conditions"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    cs.extend(["packages_status", "degraded", "placed"].iter().map(|k| &d[*k]));
+    cs.into_iter()
+        .find(|c| c["status"] == "False" && c["reason"].as_str().is_some_and(|r| !r.is_empty()))
+        .and_then(|c| c["reason"].as_str())
+        .or(d["state"].as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+pub fn decide(d: &serde_json::Value) -> Step {
+    if is_ready(d) {
+        Step::Ready
+    } else if !d["idle_since"].is_null() {
+        Step::Wake
+    } else if d["state"] == "stopped" {
+        Step::Stopped
+    } else {
+        Step::Wait(reason(d))
+    }
+}
+
+async fn get_doc(cfg: &crate::config::Config, kind: Kind, id: &str) -> Result<serde_json::Value, Error> {
+    let r = client()
+        .get(format!("{}/v1/{}/{}", cfg.api, kind.path(), path_segment(id)))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    json(r).await
+}
+
+/// One door before any tunnel: ready returns; idle-stopped is started and waited for; a person's
+/// stop stays stopped and says so.
+pub async fn ensure_running(cfg: &crate::config::Config, kind: Kind, id: &str) -> Result<(), Error> {
+    let d = get_doc(cfg, kind, id).await?;
+    match decide(&d) {
+        Step::Ready => return Ok(()),
+        Step::Stopped => {
+            return Err(Error::Other(format!(
+                "{id} is stopped; start it from the console (kl-connect has no start command)"
+            )))
+        }
+        Step::Wake => {
+            eprintln!("waking {id}…");
+            let r = client()
+                .post(format!("{}/v1/{}/{}/start", cfg.api, kind.path(), path_segment(id)))
+                .bearer_auth(&cfg.token)
+                .send()
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
+            empty(r).await?;
+        }
+        Step::Wait(_) => {} // already coming up: just poll
+    }
+    let until = std::time::Instant::now() + WAKE_BUDGET;
+    let mut failed = false;
+    loop {
+        tokio::time::sleep(POLL).await;
+        let d = match get_doc(cfg, kind, id).await {
+            Ok(d) => {
+                failed = false;
+                d
+            }
+            // one failed GET mid-poll is a blip; the second in a row is real
+            Err(e) if failed => return Err(e),
+            Err(_) => {
+                failed = true;
+                continue;
+            }
+        };
+        if is_ready(&d) {
+            return Ok(());
+        }
+        if matches!(d["state"].as_str(), Some("error" | "deleted")) {
+            return Err(Error::Other(format!("{id} is {}: {}", d["state"].as_str().unwrap_or(""), reason(&d))));
+        }
+        if std::time::Instant::now() >= until {
+            return Err(Error::Other(format!("{id} did not become ready: {}", reason(&d))));
+        }
+    }
+}
+
+/// Keeps a connected environment from idling out (204).
+pub async fn hold_env(cfg: &crate::config::Config, id: &str) -> Result<(), Error> {
+    let r = client()
+        .post(format!("{}/v1/environments/{}/hold", cfg.api, path_segment(id)))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+    empty(r).await
+}
+
 /// A 2xx with no body we need (204 on PUT/DELETE of a space); failures go through `json`'s mapping.
 async fn empty(r: reqwest::Response) -> Result<(), Error> {
     if r.status().is_success() {
         return Ok(());
     }
     json::<serde_json::Value>(r).await.map(|_| ())
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn decide_table() {
+        use serde_json::json;
+        assert_eq!(decide(&json!({"state": "running", "ready": true})), Step::Ready);
+        assert_eq!(decide(&json!({"state": "stopped", "idle_since": "2026-10-12T10:00:00Z"})), Step::Wake);
+        assert_eq!(decide(&json!({"state": "stopped"})), Step::Stopped);
+        assert_eq!(
+            decide(&json!({"state": "starting", "conditions": [{"type": "Ready", "status": "False", "reason": "KeysNotReady"}]})),
+            Step::Wait("KeysNotReady".into())
+        );
+    }
 }

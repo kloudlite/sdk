@@ -262,7 +262,7 @@ impl Daemon {
             _ => {}
         }
         if self.current.is_none() {
-            match tunnel::bring_up(&cfg, &team, &self.secret).await {
+            match tunnel::bring_up(&cfg, &team, &space.environment, &self.secret).await {
                 Ok(up) => {
                     eprintln!("kl-connect env: up on {} as {}", up.iface, up.addr);
                     self.current = Some((space.clone(), up));

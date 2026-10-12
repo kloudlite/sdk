@@ -86,6 +86,7 @@ async fn connect(env: &str, team: Option<&str>) -> Result<(), String> {
     let team = team.map(str::to_string).unwrap_or_else(|| cfg.username.clone());
     let envs = api::environments(&cfg, &team).await.map_err(|e| e.to_string())?;
     let id = pick(&envs, env, &team)?;
+    api::ensure_running(&cfg, api::Kind::Environment, &id).await.map_err(|e| e.to_string())?;
     api::set_space(&cfg, &team, &id).await.map_err(|e| e.to_string())?;
     let p = env_file();
     config::write_atomic(&p, &serde_json::json!({ "team": team }).to_string())?; // 0600 at create
