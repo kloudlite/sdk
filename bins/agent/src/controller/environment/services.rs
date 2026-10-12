@@ -128,6 +128,9 @@ pub(crate) async fn write_env_status(e: &crd::Environment, st: crd::EnvironmentS
             // `restore_gate` re-applying that wish forever.
             && a.restored_to == b.restored_to
             && a.restore_requested_at == b.restore_requested_at
+            // The idle verdict is a status-only write; skipped as a no-op it would never stop.
+            && a.idle_since == b.idle_since
+            && a.unfollowed_since == b.unfollowed_since
             && conditions_eq(&a.conditions, &b.conditions)
     })
     .await
