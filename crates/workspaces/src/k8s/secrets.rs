@@ -151,8 +151,9 @@ pub fn sshd_config(
     api_url: &str,
     git_ssh_host: &str,
     git_ssh_port: &str,
+    hub_url: &str,
 ) -> String {
-    let set_env = format!("SetEnv {}", login_env(ws_id, name, owner, team, registry_host, api_url, git_ssh_host, git_ssh_port).iter().map(|e| format!("\"{}={}\"", e.name, e.value.as_deref().unwrap_or_default())).collect::<Vec<_>>().join(" "));
+    let set_env = format!("SetEnv {}", login_env(ws_id, name, owner, team, registry_host, api_url, git_ssh_host, git_ssh_port, hub_url).iter().map(|e| format!("\"{}={}\"", e.name, e.value.as_deref().unwrap_or_default())).collect::<Vec<_>>().join(" "));
     format!(
         "Port 22\n\
          HostKey {SSHD_DIR}/ssh_host_ed25519_key\n\
@@ -198,13 +199,14 @@ pub fn ws_ssh_secret(
     api_url: &str,
     git_ssh_host: &str,
     git_ssh_port: &str,
+    hub_url: &str,
 ) -> Secret {
     Secret {
         metadata: meta(&ws_ssh_secret_name(id), Some(namespace), owner, "workspace", owner_ref),
         string_data: Some(BTreeMap::from([
             ("ssh_host_ed25519_key".to_string(), private_openssh.to_string()),
             ("ssh_host_ed25519_key.pub".to_string(), public_line.to_string()),
-            ("sshd_config".to_string(), sshd_config(id, name, owner, team, registry_host, api_url, git_ssh_host, git_ssh_port)),
+            ("sshd_config".to_string(), sshd_config(id, name, owner, team, registry_host, api_url, git_ssh_host, git_ssh_port, hub_url)),
         ])),
         type_: Some("Opaque".to_string()),
         ..Default::default()
