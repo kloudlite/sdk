@@ -54,6 +54,14 @@ pub const SSH_SESSION_TTL_SECS: u64 = 60;
 /// friction, and it carries a `jti` so it can be revoked without shortening the TTL.
 pub const CLI_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CasClaims {
+    pub owner: String,
+    pub repo: String,
+    pub rev: String,
+    pub write: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SshSessionClaims {
     pub sub: String,
@@ -147,6 +155,7 @@ fn now() -> Result<u64> {
 pub struct Jwt {
     encoding: EncodingKey,
     decoding: DecodingKey,
+    secret: Vec<u8>,
 }
 
 impl Jwt {
@@ -158,6 +167,7 @@ impl Jwt {
         Ok(Jwt {
             encoding: EncodingKey::from_secret(secret.as_bytes()),
             decoding: DecodingKey::from_secret(secret.as_bytes()),
+            secret: secret.as_bytes().to_vec(),
         })
     }
 
@@ -227,6 +237,46 @@ impl Jwt {
             return None;
         }
         data.claims["sub"].as_str().map(str::to_string)
+    }
+
+    /// A CAS access token, handed to Xet clients by the hub's xet-read/write-token routes. It
+    /// names the owner whose bytes it may touch (`sub`), the repo and revision it was minted for,
+    /// and whether it may upload. The CAS checks `sub` against every key it reads or writes; the
+    /// repo and revision are recorded for the logs, not enforced (dedup is per owner, not per repo).
+    pub fn mint_cas(&self, owner: &str, repo: &str, rev: &str, write: bool, ttl_secs: u64) -> Result<String> {
+        let now = now()?;
+        let claims = serde_json::json!({
+            "sub": owner,
+            "repo": repo,
+            "rev": rev,
+            "scope": if write { "write" } else { "read" },
+            "iat": now,
+            "exp": now + ttl_secs,
+            "typ": "cas",
+        });
+        encode(&Header::new(Algorithm::HS256), &claims, &self.encoding)
+            .map_err(|e| err(format!("minting cas token: {e}")))
+    }
+
+    pub fn verify_cas(&self, token: &str) -> Option<CasClaims> {
+        let mut v = Validation::new(Algorithm::HS256);
+        v.set_required_spec_claims(&["exp", "sub"]);
+        let data = decode::<serde_json::Value>(token, &self.decoding, &v).ok()?;
+        let c = &data.claims;
+        if c["typ"] != "cas" {
+            return None;
+        }
+        Some(CasClaims {
+            owner: c["sub"].as_str()?.to_string(),
+            repo: c["repo"].as_str()?.to_string(),
+            rev: c["rev"].as_str()?.to_string(),
+            write: c["scope"] == "write",
+        })
+    }
+
+    /// The raw secret, for HMAC-signed URLs that must verify on every node.
+    pub fn secret(&self) -> &[u8] {
+        &self.secret
     }
 
     /// A per-user provider token, minted on the keys beat beside `registry_token` and written into
@@ -664,5 +714,32 @@ mod tests {
         // A CLI token never carries it: `kl` is not an admin console.
         let (c, _) = j.verify_any_user(&j.mint_cli("a@b.c", "A", Some("a")).unwrap().0).unwrap();
         assert!(!c.superadmin);
+    }
+}
+
+#[cfg(test)]
+mod cas_tests {
+    use super::*;
+    const S: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn cas_token_round_trips_and_is_typed() {
+        let j = Jwt::new(S).unwrap();
+        let t = j.mint_cas("alice", "mdl/alice/bert", "abc", true, 3600).unwrap();
+        let c = j.verify_cas(&t).unwrap();
+        assert_eq!((c.owner.as_str(), c.repo.as_str(), c.rev.as_str(), c.write), ("alice", "mdl/alice/bert", "abc", true));
+        let reg = j.mint_registry("alice", "pull", 3600).unwrap();
+        assert!(j.verify_cas(&reg).is_none(), "a registry token is not a CAS token");
+        let other = Jwt::new("ffffffffffffffffffffffffffffffff").unwrap();
+        assert!(other.verify_cas(&t).is_none());
+    }
+
+    #[test]
+    fn expired_cas_token_is_refused() {
+        let j = Jwt::new(S).unwrap();
+        let now = now().unwrap();
+        let claims = serde_json::json!({"sub":"a","repo":"mdl/a/b","rev":"x","scope":"read","iat":now-7200,"exp":now-3600,"typ":"cas"});
+        let t = encode(&Header::new(Algorithm::HS256), &claims, &j.encoding).unwrap();
+        assert!(j.verify_cas(&t).is_none());
     }
 }
