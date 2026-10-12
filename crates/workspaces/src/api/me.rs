@@ -186,6 +186,11 @@ pub(crate) async fn set_my_environment(
         .patch(&name, &PatchParams::apply(crd::API_FIELD_MANAGER).force(), &Patch::Apply(&obj))
         .await
         .map_err(kube_err)?;
+    // The running workspace now resolves to this environment; an idle-stopped one would stay
+    // stopped under it (nothing else wakes an environment for a follower that arrives later).
+    if workspaces::idle_stopped(&e) {
+        workspaces::wake_env(&s, &caller.name, &e, k8s_openapi::jiff::Timestamp::now(), "space").await;
+    }
     Ok(Json(SpaceDoc { team, environment, region: Some(e.spec.region) }).into_response())
 }
 

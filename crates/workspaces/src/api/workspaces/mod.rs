@@ -723,11 +723,33 @@ pub(crate) fn wake_patch(at: &str) -> serde_json::Value {
     serde_json::json!({ "spec": { "desiredState": DesiredState::Running, "wakeAt": at } })
 }
 
+/// Asked to run but idle-stopped; a person's stop is not this and is never auto-woken.
+pub(crate) fn idle_stopped(e: &crd::Environment) -> bool {
+    e.spec.desired_state == DesiredState::Running && !crd::wants_running(e)
+}
+
+/// Wakes one idle-stopped environment under the quota gate `start_env` applies, so a follower's
+/// start or a space switch is never a way round it. Over quota or a failed patch is logged and
+/// skipped: the caller's own action must not fail on it.
+pub(crate) async fn wake_env(s: &ApiState, caller: &str, env: &crd::Environment, now: k8s_openapi::jiff::Timestamp, by: &str) {
+    let eid = kube::ResourceExt::name_any(env);
+    let Ok(c) = kube(s) else { return };
+    if super::guard_fill(s, &env.spec.owner, env.spec.owner != caller).await.is_err() {
+        tracing::warn!(id = eid, by, "idle.wake skipped: over quota");
+        return;
+    }
+    let idle = env.status.as_ref().and_then(|st| st.idle_since.clone());
+    match Api::<crd::Environment>::all(c.clone()).patch(&eid, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle.as_deref())))).await {
+        Ok(_) => tracing::info!(kind = "environment", id = eid, by, "idle.wake"),
+        Err(e) => tracing::warn!(id = eid, by, error = %e, "idle.wake patch failed"),
+    }
+}
+
 /// Environments an idle-stopped follower's start must bring back: asked to run but idle-stopped,
 /// and either the workspace's space environment or intercepted through it.
 pub(crate) fn envs_to_wake(ws: &str, space_env: Option<&str>, envs: &[crd::Environment]) -> Vec<String> {
     envs.iter()
-        .filter(|e| e.spec.desired_state == DesiredState::Running && !crd::wants_running(e))
+        .filter(|e| idle_stopped(e))
         .filter(|e| {
             let id = kube::ResourceExt::name_any(*e);
             space_env == Some(id.as_str()) || e.spec.intercepts.iter().any(|i| i.workspace == ws)
@@ -756,18 +778,9 @@ async fn wake_followers(s: &ApiState, caller: &str, w: &crd::Workspace, id: &str
             return;
         }
     };
-    let api = Api::<crd::Environment>::all(c.clone());
     for eid in envs_to_wake(id, space.as_deref(), &envs) {
-        let Some(env) = envs.iter().find(|e| kube::ResourceExt::name_any(*e) == eid) else { continue };
-        // The quota gate start_env applies: a workspace start must not be a way round it.
-        if super::guard_fill(s, &env.spec.owner, env.spec.owner != caller).await.is_err() {
-            tracing::warn!(id = eid, "idle.wake follower skipped: over quota");
-            continue;
-        }
-        let idle = env.status.as_ref().and_then(|st| st.idle_since.clone());
-        match api.patch(&eid, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle.as_deref())))).await {
-            Ok(_) => tracing::info!(kind = "environment", id = eid, by = "follower", "idle.wake"),
-            Err(e) => tracing::warn!(id = eid, error = %e, "idle.wake follower patch failed"),
+        if let Some(env) = envs.iter().find(|e| kube::ResourceExt::name_any(*e) == eid) {
+            wake_env(s, caller, env, now, "follower").await;
         }
     }
 }
@@ -1093,5 +1106,16 @@ mod tests {
         let mut stopped = env("e4", Some("w1"), true);
         stopped.spec.desired_state = crd::DesiredState::Stopped;
         assert!(super::envs_to_wake("w1", Some("e4"), &[stopped]).is_empty(), "stopped by hand stays stopped");
+    }
+
+    /// `set_my_environment` wakes its target on exactly this test: idle-stopped yes, running no,
+    /// a person's stop never.
+    #[test]
+    fn space_switch_wakes_only_an_idle_stopped_environment() {
+        assert!(super::idle_stopped(&env("e1", None, true)));
+        assert!(!super::idle_stopped(&env("e2", None, false)));
+        let mut stopped = env("e3", None, true);
+        stopped.spec.desired_state = crd::DesiredState::Stopped;
+        assert!(!super::idle_stopped(&stopped));
     }
 }
