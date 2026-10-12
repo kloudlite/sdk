@@ -11,7 +11,7 @@
 //! task to running; without `for` it adds a running row (`note: ask:<ws>`) that replaces that
 //! workspace's open row, and that workspace's `main_tell` done|blocked moves it to done|blocked; an
 //! answer delivered without a tell moves it to done, a failed or lost ask to failed. The
-//! same tell closes the sender's own board: done finishes every open step, blocked its running ones. The
+//! same tell closes the sender's running steps (done or blocked); queued ones stay and a done names them. The
 //! message log (messages.ts) is the one place that links a message to the sender's task (`for`) or to
 //! the ask it answers (`reply`).
 //! Delegated sessions ask through `deps.permit`, the daemon's gate: the card is raised for the caller's key on every connected TUI.
@@ -368,27 +368,23 @@ export function delegateTools(kind: "main" | "workspace", ws: string | undefined
       async run(i: { kind: "done" | "blocked" | "need"; text: string }) {
         const to = deps.lastCaller?.get(ws!) ?? "main";
         const msg = `[from ${ws}] ${i.kind}: ${i.text}`;
-        // read before the close-out below: what the sender left open is what the note names
-        const open =
-          i.kind === "done"
-            ? readTasks(tasksFile(ws!, deps.tasks ?? tasksDir())).filter((t) => t.state === "running" || t.state === "queued")
-            : [];
+        const own = tasksFile(ws!, deps.tasks ?? tasksDir());
         if (i.kind !== "need") {
           deps.reported?.add(ws!);
           // the platform keeps main's row for this ask (see header)
           const board = tasksFile(to, deps.tasks ?? tasksDir());
           for (const t of readTasks(board)) if (t.note === `ask:${ws}` && t.state !== "done") updateTask(board, t.id, { state: i.kind });
-          // and closes the sender's own steps: a session ends its turn on the report, so a last step
-          // like "report to main" would otherwise stay running forever
-          const own = tasksFile(ws!, deps.tasks ?? tasksDir());
-          for (const t of readTasks(own))
-            if (i.kind === "done" ? t.state !== "done" : t.state === "running") updateTask(own, t.id, { state: i.kind });
+          // and closes the sender's running step: a session ends its turn on the report, so a last step
+          // like "report to main" would otherwise stay running forever. Queued tasks stay queued: closing
+          // them unchecked is how boards went to done in bulk with no summary (ws-73, 2026-10-11)
+          for (const t of readTasks(own)) if (t.state === "running") updateTask(own, t.id, { state: i.kind });
         }
         recordMessage(deps.messages ?? messagesFile(), { from: base(ws!), to: base(to), text: msg, kind: i.kind, reply: deps.lastAsk?.get(ws!) });
         await deliver(deps, to, callerSettings(deps, ws!, caller), msg, ws!);
         // never refuse the report; remind the session that its own board disagrees with it
+        const open = i.kind === "done" ? readTasks(own).filter((t) => t.state === "queued") : [];
         return open.length
-          ? `told ${to}. Your board still has open tasks: ${open.map((t) => `${t.id} (${t.state})`).join(", ")}. Move each with task_update now: done with summary and verified if finished, failed or blocked if not.`
+          ? `told ${to}. Your board still has queued tasks: ${open.map((t) => t.id).join(", ")}. Move each with task_update now: done with summary and verified if finished, failed or blocked if not.`
           : `told ${to}`;
       },
     };
