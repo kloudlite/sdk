@@ -98,10 +98,14 @@ pub struct Procs {
     /// Set by `serve`; while unset `save` writes nothing, so test Apps leave no file behind.
     /// Shared with the waiter tasks, which save when their process exits.
     pub file: Arc<std::sync::OnceLock<std::path::PathBuf>>,
+    /// Held across snapshot AND write in `save_to`: otherwise an older snapshot can rename last
+    /// (a running process vanishes from the file) or two writers interleave in one temp file.
+    saving: Arc<Mutex<()>>,
 }
 
-fn save_to(inner: &Mutex<HashMap<String, Arc<Mutex<Proc>>>>, file: &std::sync::OnceLock<std::path::PathBuf>) {
+fn save_to(inner: &Mutex<HashMap<String, Arc<Mutex<Proc>>>>, file: &std::sync::OnceLock<std::path::PathBuf>, saving: &Mutex<()>) {
     let Some(path) = file.get() else { return };
+    let _serial = saving.lock().unwrap_or_else(|p| p.into_inner());
     let entries: Vec<crate::procfile::Entry> = inner
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -112,8 +116,6 @@ fn save_to(inner: &Mutex<HashMap<String, Arc<Mutex<Proc>>>>, file: &std::sync::O
             Some(crate::procfile::Entry { id: g.id.clone(), tree: g.tree.clone(), args, started_at: g.started_at.clone(), attempts: g.attempts })
         })
         .collect();
-    // ponytail: concurrent saves race on the temp file; the last rename wins and the next
-    // spawn/exit rewrites it. A save lock if a lost write ever shows up.
     if let Err(e) = crate::procfile::save(path, &entries) {
         tracing::warn!(error = %e, "procs.save_failed");
     }
@@ -144,6 +146,7 @@ impl Procs {
     }
 
     fn spawn_inner(&self, id: Option<String>, tree: &str, mut command: Command, cmdline: String, args: Option<serde_json::Value>, restored: Option<(u32, String)>) -> Result<String, String> {
+        let restored_run = restored.as_ref().map(|_| ());
         let (attempts, marker) = restored.map_or((0, None), |(a, m)| (a, Some(m)));
         {
             let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -165,11 +168,15 @@ impl Procs {
             proc_.lock().unwrap_or_else(|p| p.into_inner()).out.push(m.as_bytes());
         }
         self.inner.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), proc_.clone());
-        self.save();
+        // A relaunch saves for itself: a save here would drop the entries not yet relaunched.
+        if restored_run.is_none() {
+            self.save();
+        }
         // Running for a minute is the proof it is not crash-looping: forgive earlier attempts.
-        // The guard-free form is fine here: a task that never runs just leaves the count as is.
+        // The timer holds THIS Proc: a relaunch under the same id is a new Proc, so a stale timer
+        // only ever resets (or skips, once Exited) the one it was started for.
         if args.is_some() {
-            let (p, inner, file) = (proc_.clone(), self.inner.clone(), self.file.clone());
+            let (p, inner, file, saving) = (proc_.clone(), self.inner.clone(), self.file.clone(), self.saving.clone());
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(RESET_ATTEMPTS_SECS)).await;
                 {
@@ -177,7 +184,7 @@ impl Procs {
                     if g.state != State::Running { return; }
                     g.attempts = 0;
                 }
-                save_to(&inner, &file);
+                save_to(&inner, &file, &saving);
             });
         }
         let pump = |reader: Option<tokio::process::ChildStdout>, err_reader: Option<tokio::process::ChildStderr>, p: Arc<Mutex<Proc>>| {
@@ -222,7 +229,7 @@ impl Procs {
         // which is why the handle is kept in the Proc rather than moved here alone.
         proc_.lock().unwrap_or_else(|p| p.into_inner()).child = Some(child);
         let p = proc_.clone();
-        let (inner, file) = (self.inner.clone(), self.file.clone());
+        let (inner, file, saving) = (self.inner.clone(), self.file.clone(), self.saving.clone());
         tokio::spawn(async move {
             loop {
                 let status = {
@@ -258,11 +265,21 @@ impl Procs {
                         tracing::info!(process = %g.id, code, "ide.process.exited");
                         drop(g);
                         // The file lists only running processes, so an exit removes the entry.
-                        save_to(&inner, &file);
+                        save_to(&inner, &file, &saving);
                         break;
                     }
                     Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
-                    Err(_) => break,
+                    Err(_) => {
+                        // A wait error ends the watch; mark it exited so no stale entry survives.
+                        {
+                            let mut g = p.lock().unwrap_or_else(|q| q.into_inner());
+                            g.state = State::Exited;
+                            g.exited_at = Some(std::time::Instant::now());
+                            g.child = None;
+                        }
+                        save_to(&inner, &file, &saving);
+                        break;
+                    }
                 }
             }
         });
@@ -343,7 +360,7 @@ impl Procs {
     /// Rewrite `procs.json` from the running, recorded processes. A write error is logged and
     /// never reaches the caller: losing the file costs a relaunch, not the process.
     pub fn save(&self) {
-        save_to(&self.inner, &self.file);
+        save_to(&self.inner, &self.file, &self.saving);
     }
 
     /// A process that was recorded but is not coming back, listed so its owner can read why.
@@ -480,5 +497,29 @@ mod tests {
         let id = procs.spawn("main", c, "sh -c sleep".into()).unwrap();
         let st = procs.kill("main", &id, "TERM").await.unwrap();
         assert_eq!(st, State::Exited);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_saves_leave_valid_json_matching_final_state() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join(".kl/procs.json");
+        let procs = Arc::new(Procs::default());
+        procs.file.set(f.clone()).unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..8 {
+            let mut c = Command::new("sleep");
+            c.arg("600").process_group(0);
+            ids.push(procs.spawn_as(None, "main", c, "sleep 600".into(), Some(serde_json::json!({"cmd": "sleep 600"}))).unwrap());
+        }
+        let hs: Vec<_> = (0..16).map(|_| { let p = procs.clone(); std::thread::spawn(move || for _ in 0..50 { p.save() }) }).collect();
+        for id in &ids[..4] { procs.kill("main", id, "KILL").await.unwrap(); }
+        for h in hs { h.join().unwrap(); }
+        procs.save();
+        let mut got: Vec<_> = crate::procfile::load(&f).into_iter().map(|e| e.id).collect();
+        let mut want: Vec<_> = ids[4..].to_vec();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
+        for id in &ids[4..] { procs.kill("main", id, "KILL").await.unwrap(); }
     }
 }
