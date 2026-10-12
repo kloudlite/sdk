@@ -4662,10 +4662,13 @@ name = "kloudlite-hub"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "gix-hash",
  "kloudlite-app",
  "kloudlite-core",
  "kloudlite-storage",
+ "kloudlite-vcs",
  "kloudlite-xet",
+ "object_store",
  "serde",
  "serde_json",
  "tokio",

@@ -19,7 +19,10 @@
 #![allow(clippy::result_large_err)]
 
 pub mod auth;
+pub mod pointer;
+pub mod read;
 pub mod repos;
+pub mod rev;
 
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -85,7 +88,14 @@ pub fn router(st: HubState) -> Router {
 /// Routes that exist once per kind. Paths are built from the kind so the two never drift; the
 /// kind reaches handlers as an `Extension`, set by this router's own layer.
 fn per_kind(kind: HubKind) -> Router<HubState> {
-    let _api = format!("/api/{}/{{owner}}/{{name}}", kind.api_plural());
+    let api = format!("/api/{}/{{owner}}/{{name}}", kind.api_plural());
     let _repo = format!("/{}{{owner}}/{{name}}", kind.url_prefix());
-    Router::new().layer(axum::Extension(kind))
+    Router::new()
+        .route(&api, get(read::info))
+        .route(&format!("{api}/revision/{{rev}}"), get(read::info_rev))
+        .route(&format!("{api}/tree/{{rev}}"), get(read::tree_root))
+        .route(&format!("{api}/tree/{{rev}}/{{*path}}"), get(read::tree_path))
+        .route(&format!("{api}/paths-info/{{rev}}"), post(read::paths_info))
+        .route(&format!("{api}/refs"), get(read::refs))
+        .layer(axum::Extension(kind))
 }
