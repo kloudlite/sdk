@@ -99,7 +99,7 @@ pub fn entry_not_found() -> Response {
 
 /// The commit a request names, or the response that refuses it. `None` for an empty repo's
 /// default branch so `info` can answer it.
-async fn commit_of(st: &HubState, a: &Access, rev: &str) -> Result<Option<ObjectId>, Response> {
+pub(crate) async fn commit_of(st: &HubState, a: &Access, rev: &str) -> Result<Option<ObjectId>, Response> {
     match resolve(&st.app.store, &a.repo, rev).await {
         Ok(Some(o)) => Ok(Some(o)),
         Ok(None) if rev == "main" && st.app.store.list_refs(&a.repo).await.map_err(internal)?.is_empty() => Ok(None),

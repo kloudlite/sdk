@@ -578,3 +578,80 @@ async fn commit_refusals() {
     assert_eq!(hub_commit(&h, Some(&h.alice), path, &[]).await.status(), 400, "nothing to commit");
     assert_eq!(hub_commit(&h, Some(&h.alice), "datasets/alice/bert/commit/main", &line).await.status(), 404, "a model is not a dataset");
 }
+
+async fn post_json(h: &Hub, path: &str, token: &str, body: Value) -> reqwest::Response {
+    client().post(format!("{}{path}", h.base)).bearer_auth(token).json(&body).send().await.unwrap()
+}
+
+async fn del(h: &Hub, path: &str, token: &str) -> reqwest::Response {
+    client().delete(format!("{}{path}", h.base)).bearer_auth(token).send().await.unwrap()
+}
+
+#[tokio::test]
+async fn branch_create_list_delete() {
+    let h = hub().await;
+    let main = seed_hub(&h, HubKind::Model, "alice", "m", false, &[("a.txt", b"a")]).await;
+    let r = post_json(&h, "/api/models/alice/m/branch/dev", &h.alice, json!({})).await;
+    assert_eq!(r.status(), 200);
+    let refs: Value = client().get(format!("{}/api/models/alice/m/refs", h.base)).bearer_auth(&h.alice).send().await.unwrap().json().await.unwrap();
+    let dev = refs["branches"].as_array().unwrap().iter().find(|b| b["name"] == "dev").unwrap();
+    assert_eq!(dev["targetCommit"], main);
+    assert_eq!(post_json(&h, "/api/models/alice/m/branch/dev", &h.alice, json!({})).await.status(), 409);
+    assert_eq!(del(&h, "/api/models/alice/m/branch/dev", &h.alice).await.status(), 200);
+    assert_eq!(del(&h, "/api/models/alice/m/branch/dev", &h.alice).await.status(), 404);
+}
+
+#[tokio::test]
+async fn branch_from_unknown_start_is_revision_not_found() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", false, &[("a.txt", b"a")]).await;
+    let r = post_json(&h, "/api/models/alice/m/branch/dev", &h.alice, json!({"startingPoint": "nope"})).await;
+    assert_eq!(r.status(), 404);
+    assert_eq!(r.headers()["x-error-code"], "RevisionNotFound");
+}
+
+#[tokio::test]
+async fn main_cannot_be_deleted_and_strangers_cannot_branch() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", true, &[("a.txt", b"a")]).await;
+    assert_eq!(del(&h, "/api/models/alice/m/branch/main", &h.alice).await.status(), 403);
+    assert_eq!(post_json(&h, "/api/models/alice/m/branch/dev", &h.bob, json!({})).await.status(), 403);
+}
+
+#[tokio::test]
+async fn bad_ref_names_are_400() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", false, &[("a.txt", b"a")]).await;
+    for bad in ["a..b", "a.lock", "a%20b", "a~1", "x.", "%40%7B"] {
+        let r = post_json(&h, &format!("/api/models/alice/m/branch/{bad}"), &h.alice, json!({})).await;
+        assert_eq!(r.status(), 400, "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn tag_create_and_delete() {
+    let h = hub().await;
+    let main = seed_hub(&h, HubKind::Dataset, "alice", "d", false, &[("a.csv", b"1")]).await;
+    let r = post_json(&h, "/api/datasets/alice/d/tag/main", &h.alice, json!({"tag": "v1"})).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(post_json(&h, "/api/datasets/alice/d/tag/main", &h.alice, json!({"tag": "v1"})).await.status(), 409);
+    let info: Value = client().get(format!("{}/api/datasets/alice/d/revision/v1", h.base)).bearer_auth(&h.alice).send().await.unwrap().json().await.unwrap();
+    assert_eq!(info["sha"], main);
+    assert_eq!(del(&h, "/api/datasets/alice/d/tag/v1", &h.alice).await.status(), 200);
+}
+
+#[tokio::test]
+async fn xet_tokens_carry_scope_and_cas_url() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", false, &[("a.txt", b"a")]).await;
+    let r = client().get(format!("{}/api/models/alice/m/xet-read-token/main", h.base)).bearer_auth(&h.alice).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers().contains_key("x-xet-access-token"));
+    let b: Value = r.json().await.unwrap();
+    assert!(b["casUrl"].as_str().unwrap().starts_with("http"));
+    assert!(b["exp"].as_u64().unwrap() > 0);
+    let r = client().get(format!("{}/api/models/alice/m/xet-write-token/main", h.base)).bearer_auth(&h.bob).send().await.unwrap();
+    assert_eq!(r.status(), 404, "private repo hides from a stranger");
+    let r = client().get(format!("{}/api/models/alice/m/xet-read-token/nope", h.base)).bearer_auth(&h.alice).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}
