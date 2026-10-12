@@ -94,6 +94,16 @@ spec:
             # (localhost:8080) sends every client somewhere it cannot go.
             - name: KLOUDLITE_EXTERNAL_URL
               value: https://cr.khost.dev
+            # Model/dataset hub and Xet CAS listeners (8081/8082 are the peer pair). The URLs are
+            # what a client is told to call back, so they must be the public hostnames.
+            - name: KLOUDLITE_HUB_ADDR
+              value: 0.0.0.0:8090
+            - name: KLOUDLITE_CAS_ADDR
+              value: 0.0.0.0:8091
+            - name: KLOUDLITE_HUB_URL
+              value: https://hub.khost.dev
+            - name: KLOUDLITE_CAS_URL
+              value: https://cas.khost.dev
             # Signs the registry's bearer tokens. Every node must share ONE key: `/v2/token` is
             # answered by whichever node the request lands on, while the push that presents the
             # token routes to the node owning the image. Unset, each pod invents its own secret at
@@ -148,6 +158,8 @@ spec:
             - { name: ssh, containerPort: 2222 }
             - { name: peer, containerPort: 8081 }
             - { name: peer-stream, containerPort: 8082 }
+            - { name: hub, containerPort: 8090 }
+            - { name: cas, containerPort: 8091 }
             - { name: metrics, containerPort: 9464 }
           # On termination Kubernetes removes the pod from endpoints and sends SIGTERM at once.
           # A sleep here used to be the whole story: wait out DNS (TTL 5s) and the membership cache
@@ -336,6 +348,8 @@ spec:
   selector: { app: kloudlite, role: server }
   ports:
     - { name: http, port: 80, targetPort: http }
+    - { name: hub, port: 8090, targetPort: hub }
+    - { name: cas, port: 8091, targetPort: cas }
 ---
 apiVersion: v1
 kind: Service
@@ -393,6 +407,8 @@ spec:
     - ports:
         - { protocol: TCP, port: 8080 }
         - { protocol: TCP, port: 2222 }
+        - { protocol: TCP, port: 8090 }
+        - { protocol: TCP, port: 8091 }
     # Prometheus presents no secret, so metrics have their own port — and a rule with no `from:`
     # would open it to every pod in the cluster. Only the monitoring namespace may scrape it.
     - from:
@@ -1137,6 +1153,84 @@ spec:
                 name: kloudlite-http
                 port:
                   number: 80
+---
+# Models and datasets: the Hugging Face Hub API on its own hostname.
+# Serves hub.khost.dev. Copied from the registry Ingress above: bodies are not buffered or capped here
+# (the servers cap them) and reads/writes get ten minutes. DNS must point at the same address as
+# cr.khost.dev; the cert is cert-manager's, like the registry's.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kloudlite-hub
+  namespace: kloudlite
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # Same as the registry: the record may sit behind Cloudflare, which fetches the origin over
+    # plain HTTP, so a redirect here loops.
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # LFS basic PUTs reach 5 GiB; the hub caps them itself.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/limit-whitelist: "40.80.82.158/32,20.219.22.61/32"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [hub.khost.dev]
+      secretName: kloudlite-hub-tls
+  rules:
+    - host: hub.khost.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kloudlite-http
+                port:
+                  number: 8090
+---
+# Xet CAS: chunk and xorb transfer for the hub.
+# Serves cas.khost.dev. Copied from the registry Ingress above: bodies are not buffered or capped here
+# (the servers cap them) and reads/writes get ten minutes. DNS must point at the same address as
+# cr.khost.dev; the cert is cert-manager's, like the registry's.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kloudlite-cas
+  namespace: kloudlite
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # Same as the registry: the record may sit behind Cloudflare, which fetches the origin over
+    # plain HTTP, so a redirect here loops.
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # A CAS xorb is up to 64 MiB and downloads stream multi-GiB ranges.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/limit-whitelist: "40.80.82.158/32,20.219.22.61/32"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [cas.khost.dev]
+      secretName: kloudlite-cas-tls
+  rules:
+    - host: cas.khost.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kloudlite-http
+                port:
+                  number: 8091
 ---
 # The AKS collectors: deploy/k3s/otel-agent.yaml, copied and then diverged. The comment here used
 # to claim THREE changes and no others; by 2026-09-12 there were eight (review #71), which is what
@@ -1900,6 +1994,7 @@ data:
   KLOUDLITE_WEB_URL: https://dev.kloudlite.io
   KLOUDLITE_URL: https://dev.kloudlite.io
   KLOUDLITE_REGISTRY: cr.khost.dev
+  KLOUDLITE_HUB_URL: https://hub.khost.dev
   # host or host:port. SSH cannot go through Cloudflare's proxy, so this is the DNS-only name
   # straight at the git load balancer, on 22.
   KLOUDLITE_SSH_HOST: git.khost.dev

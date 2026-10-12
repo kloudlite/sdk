@@ -55,6 +55,7 @@ pub mod lifecycle;
 pub mod monthly;
 pub mod pr;
 pub mod quota_usage;
+pub mod hub;
 pub mod registry;
 pub mod security;
 pub mod weekly;

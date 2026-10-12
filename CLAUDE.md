@@ -67,12 +67,18 @@ route that touches a per-repo/per-image database, it must route —
 router and the middleware together. A handler that only reads the shared object store may be
 served on any node (that is why `/api/{owner}/images` and `_catalog` are exceptions).
 
-## Two namespaces, one server
+## Three namespaces, one server
 
 - Git repos: DB at `repo/{owner}/{name}`, routing key `{owner}/{name}`.
 - Container images (OCI registry, `/v2/...`): DB at `repo/img/{owner}/{name}`, routing key
   `img/{owner}/{name}` (`crates/registry/src/`). `api`, `v2`, `img` are reserved owner names so the two
   keyspaces cannot collide. An image is NOT tied to a repo of the same name.
+- Models and datasets (Hugging Face Hub API, `crates/hub`): DB `repo/mdl/{owner}/{name}` and
+  `repo/ds/{owner}/{name}`, keys `mdl/…`/`ds/…`. Own listener (`KLOUDLITE_HUB_ADDR`), routed by
+  `route_hub`; on the peer listener under `/hub`. `HUB_TAILS` is the routing contract.
+- Xet CAS (`crates/xet`, `KLOUDLITE_CAS_ADDR`): unrouted, any node; v1 routes only. Bytes
+  `xet/{owner}/…` and `lfs/{owner}/…`, shared across an owner's repos. Objects capped at
+  `MAX_XET_OBJECT` (64 MiB of chunk data).
 
 Registry layout in the object store: blobs `blobs/{owner}/{algo}/{hex}` (per-owner, shared
 across that owner's images), manifest bytes `manifests/{owner}/{name}/{algo}/{hex}`. Tags,
@@ -91,6 +97,9 @@ head.
 - **Only two things ever delete a blob**: an explicit client `DELETE /v2/.../blobs/{digest}`,
   and the GC sweep (`crates/registry/src/gc.rs`) — never a manifest path, because siblings share
   layers. The sweep is keep-biased: any uncertainty (unreadable manifest) aborts it.
+- **Only the hub sweep deletes hub bytes** (`crates/xet/src/gc.rs`, worker lane). It trusts the
+  live lists `hub/{owner}/live/…`; a missing list keeps everything, so a failed rebuild deletes
+  the list instead of leaving a stale one.
 - **Manifest bytes are stored and returned verbatim.** The digest is over those exact bytes;
   parse to read a field, never re-emit.
 - **`Digest::parse` is the only way a path segment becomes an object-store key** (sha256 or

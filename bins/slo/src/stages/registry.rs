@@ -70,6 +70,7 @@ pub async fn run(c: &mut Ctx) {
             c.skip(id, "no personal token");
         }
         c.skip("reg.canary", "no personal token");
+        super::hub::run(c).await;
         return;
     };
 
@@ -94,6 +95,7 @@ pub async fn run(c: &mut Ctx) {
         }
     }
     canary(c, &secret).await;
+    super::hub::run(c).await;
 }
 
 /// `reg.token.p95`: the `/v2/token` exchange every spec-following client makes before it pulls.

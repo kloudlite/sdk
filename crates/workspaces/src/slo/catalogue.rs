@@ -319,6 +319,8 @@ pub const CATALOGUE: &[Slo] = &[
     // both halves of the rule the registry actually enforces (`may_act(caller, owner)`, never
     // what a token was minted under) — no invite round trip needed every five minutes.
     Slo { id: "reg.team.push", feature: "Container registry", sli: "A team member's personal credential pushes to the team's new image with no 5xx on its first requests, and a non-member's is DENIED", target: avail(99.9), suite: Suite::Hourly, stage: "4 · Registry" },
+    Slo { id: "hub.upload", feature: "Model hub", sli: "A model repo is created and a 1 KiB file committed to it through the hub API", target: avail(99.9), suite: Suite::Fast, stage: "4 · Registry" },
+    Slo { id: "hub.download", feature: "Model hub", sli: "The committed file resolves byte for byte and the repo is deleted", target: avail(99.9), suite: Suite::Fast, stage: "4 · Registry" },
 
     // Stage 5 · workspace
     Slo { id: "ws.create.p95", feature: "Workspaces", sli: "Creating a workspace completes", target: p95(90_000), suite: Suite::Fast, stage: "5 · Workspace" },
