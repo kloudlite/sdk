@@ -18,6 +18,7 @@
 //! family), `procs` (detached processes and their ring buffers), `stream` (the two WebSocket
 //! streams), `activity` (the `~/.kl/activity` mtime the agent idle-stops by), `graft` (the child and the freshness triggers).
 pub mod activity;
+mod procfile;
 pub mod api;
 pub mod auth;
 pub mod fs;

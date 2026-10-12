@@ -46,7 +46,7 @@ fn words_of(args: &Value) -> Result<(Vec<String>, String), ToolError> {
 /// `KL_TREE`, `PORT`, `KL_PORT_RANGE`. `HOME` is the sandbox's (`{tree}/.home`) and `KL_WORKSPACE`
 /// is REMOVED: it names the layout §3.5 says a model is never taught, and it was in the pod
 /// environment this process inherited.
-fn command(t: &TreeCtx, args: &Value) -> Result<(Command, String), ToolError> {
+pub(crate) fn command(t: &TreeCtx, args: &Value) -> Result<(Command, String), ToolError> {
     let (words, line) = words_of(args)?;
     let cwd = confine(t, opt_str(args, "cwd").unwrap_or("."))?;
     // Wrapping each exec, never the server: the server must see every tree to serve them, and an
@@ -217,7 +217,8 @@ impl ToolSet for Exec {
                     }
                     let (cmd, line) = command(&t, &args)?;
                     if opt_bool(&args, "detach") {
-                        let id = self.procs.spawn(&t.name, cmd, line).map_err(ToolError::Failed)?;
+                        let rec = json!({ "cmd": args.get("cmd"), "cwd": args.get("cwd"), "env": args.get("env") });
+                        let id = self.procs.spawn_as(None, &t.name, cmd, line, Some(rec)).map_err(ToolError::Failed)?;
                         return Ok(json!({ "id": id }));
                     }
                     let timeout = opt_u64(&args, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);

@@ -13,6 +13,8 @@ pub const RING_BYTES: usize = 4 << 20;
 pub const MAX_PROCS: usize = 32;
 /// How long an exited process stays listed so a caller can still read its tail.
 pub const KEEP_EXITED_SECS: u64 = 600;
+/// A relaunched process that has run this long starts its attempt count over.
+pub const RESET_ATTEMPTS_SECS: u64 = 60;
 
 /// The last `cap` bytes of a stream, addressed by ABSOLUTE offset so a reader that comes back
 /// later asks "everything since byte N" and learns how much it missed.
@@ -83,12 +85,38 @@ pub struct Proc {
     /// second write read "takes no more input" instead of waiting its turn (2026-09-12).
     pub stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
     pub tx: broadcast::Sender<Frame>,
+    /// The exec request this was started from; `None` for graft and watch spawns, which are
+    /// never recorded in `procs.json`.
+    pub args: Option<serde_json::Value>,
+    pub attempts: u32,
     child: Option<Child>,
 }
 
 #[derive(Default)]
 pub struct Procs {
-    inner: Mutex<HashMap<String, Arc<Mutex<Proc>>>>,
+    inner: Arc<Mutex<HashMap<String, Arc<Mutex<Proc>>>>>,
+    /// Set by `serve`; while unset `save` writes nothing, so test Apps leave no file behind.
+    /// Shared with the waiter tasks, which save when their process exits.
+    pub file: Arc<std::sync::OnceLock<std::path::PathBuf>>,
+}
+
+fn save_to(inner: &Mutex<HashMap<String, Arc<Mutex<Proc>>>>, file: &std::sync::OnceLock<std::path::PathBuf>) {
+    let Some(path) = file.get() else { return };
+    let entries: Vec<crate::procfile::Entry> = inner
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .filter_map(|p| {
+            let g = p.lock().unwrap_or_else(|q| q.into_inner());
+            let args = g.args.clone().filter(|_| g.state == State::Running)?;
+            Some(crate::procfile::Entry { id: g.id.clone(), tree: g.tree.clone(), args, started_at: g.started_at.clone(), attempts: g.attempts })
+        })
+        .collect();
+    // ponytail: concurrent saves race on the temp file; the last rename wins and the next
+    // spawn/exit rewrites it. A save lock if a lost write ever shows up.
+    if let Err(e) = crate::procfile::save(path, &entries) {
+        tracing::warn!(error = %e, "procs.save_failed");
+    }
 }
 
 fn now_rfc3339() -> String {
@@ -100,7 +128,23 @@ fn now_rfc3339() -> String {
 impl Procs {
     /// Spawn `command` detached: pipes wired, readers pumping into the rings and the broadcast,
     /// the exit recorded when it comes. `command` must already carry argv, cwd and env.
-    pub fn spawn(&self, tree: &str, mut command: Command, cmdline: String) -> Result<String, String> {
+    pub fn spawn(&self, tree: &str, command: Command, cmdline: String) -> Result<String, String> {
+        self.spawn_as(None, tree, command, cmdline, None)
+    }
+
+    /// `spawn` with a fixed id (a relaunch keeps it) and the exec request to record.
+    pub fn spawn_as(&self, id: Option<String>, tree: &str, command: Command, cmdline: String, args: Option<serde_json::Value>) -> Result<String, String> {
+        self.spawn_inner(id, tree, command, cmdline, args, None)
+    }
+
+    /// Relaunch of a recorded process: same id, attempts as counted, ring opened with a marker.
+    pub fn spawn_restored(&self, id: &str, tree: &str, command: Command, cmdline: String, args: serde_json::Value, attempts: u32) -> Result<String, String> {
+        let marker = format!("[restarted {}: workspace was stopped]\n", chrono::Utc::now().to_rfc3339());
+        self.spawn_inner(Some(id.to_string()), tree, command, cmdline, Some(args), Some((attempts, marker)))
+    }
+
+    fn spawn_inner(&self, id: Option<String>, tree: &str, mut command: Command, cmdline: String, args: Option<serde_json::Value>, restored: Option<(u32, String)>) -> Result<String, String> {
+        let (attempts, marker) = restored.map_or((0, None), |(a, m)| (a, Some(m)));
         {
             let mut map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             self.reap_locked(&mut map);
@@ -110,13 +154,32 @@ impl Procs {
         }
         command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         let mut child = command.spawn().map_err(|e| format!("spawn: {e}"))?;
-        let id = format!("p-{:x}", rand_u64());
+        let id = id.unwrap_or_else(|| format!("p-{:x}", rand_u64()));
         let (tx, _) = broadcast::channel(1024);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let stdin = Arc::new(tokio::sync::Mutex::new(child.stdin.take()));
-        let proc_ = Arc::new(Mutex::new(Proc { id: id.clone(), failed: None, tree: tree.to_string(), cmd: cmdline, started_at: now_rfc3339(), state: State::Running, exit_code: None, exited_at: None, out: Ring::new(RING_BYTES), err: Ring::new(RING_BYTES), stdin, tx: tx.clone(), child: None }));
+        let proc_ = Arc::new(Mutex::new(Proc { id: id.clone(), failed: None, tree: tree.to_string(), cmd: cmdline, started_at: now_rfc3339(), state: State::Running, exit_code: None, exited_at: None, out: Ring::new(RING_BYTES), err: Ring::new(RING_BYTES), stdin, tx: tx.clone(), args: args.clone(), attempts, child: None }));
+        if let Some(m) = marker {
+            // Before the pumps start, so the marker is the first thing a reader sees.
+            proc_.lock().unwrap_or_else(|p| p.into_inner()).out.push(m.as_bytes());
+        }
         self.inner.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), proc_.clone());
+        self.save();
+        // Running for a minute is the proof it is not crash-looping: forgive earlier attempts.
+        // The guard-free form is fine here: a task that never runs just leaves the count as is.
+        if args.is_some() {
+            let (p, inner, file) = (proc_.clone(), self.inner.clone(), self.file.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(RESET_ATTEMPTS_SECS)).await;
+                {
+                    let mut g = p.lock().unwrap_or_else(|q| q.into_inner());
+                    if g.state != State::Running { return; }
+                    g.attempts = 0;
+                }
+                save_to(&inner, &file);
+            });
+        }
         let pump = |reader: Option<tokio::process::ChildStdout>, err_reader: Option<tokio::process::ChildStderr>, p: Arc<Mutex<Proc>>| {
             if let Some(r) = reader {
                 let p = p.clone();
@@ -159,6 +222,7 @@ impl Procs {
         // which is why the handle is kept in the Proc rather than moved here alone.
         proc_.lock().unwrap_or_else(|p| p.into_inner()).child = Some(child);
         let p = proc_.clone();
+        let (inner, file) = (self.inner.clone(), self.file.clone());
         tokio::spawn(async move {
             loop {
                 let status = {
@@ -192,6 +256,9 @@ impl Procs {
                         }
                         let _ = g.tx.send(Frame::Exit(code));
                         tracing::info!(process = %g.id, code, "ide.process.exited");
+                        drop(g);
+                        // The file lists only running processes, so an exit removes the entry.
+                        save_to(&inner, &file);
                         break;
                     }
                     Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
@@ -259,6 +326,7 @@ impl Procs {
             }
         }
         let state = p.lock().unwrap_or_else(|q| q.into_inner()).state;
+        self.save();
         Ok(state)
     }
 
@@ -270,6 +338,19 @@ impl Procs {
         let r = s.write_all(data).await.map(|_| data.len()).map_err(|e| format!("stdin: {e}"));
         let _ = s.flush().await;
         r
+    }
+
+    /// Rewrite `procs.json` from the running, recorded processes. A write error is logged and
+    /// never reaches the caller: losing the file costs a relaunch, not the process.
+    pub fn save(&self) {
+        save_to(&self.inner, &self.file);
+    }
+
+    /// A process that was recorded but is not coming back, listed so its owner can read why.
+    pub fn exited_note(&self, id: &str, tree: &str, cmd: &str, note: &str) {
+        let (tx, _) = broadcast::channel(1);
+        let p = Proc { id: id.to_string(), failed: Some(note.to_string()), tree: tree.to_string(), cmd: cmd.to_string(), started_at: now_rfc3339(), state: State::Exited, exit_code: None, exited_at: Some(std::time::Instant::now()), out: Ring::new(RING_BYTES), err: Ring::new(RING_BYTES), stdin: Arc::new(tokio::sync::Mutex::new(None)), tx, args: None, attempts: 0, child: None };
+        self.inner.lock().unwrap_or_else(|q| q.into_inner()).insert(id.to_string(), Arc::new(Mutex::new(p)));
     }
 
     fn reap_locked(&self, map: &mut HashMap<String, Arc<Mutex<Proc>>>) {
