@@ -644,6 +644,10 @@ export function Transcript({
       // no scrollbar anywhere in the TUI (owner ruling); wheel and keys still scroll
       scrollbarOptions={{ visible: false }}
       scrollAcceleration={wheel}
+      // a left click would focus the scrollbox (opentui autoFocus), and a focused
+      // scrollbox scrolls on up/down too: an open ask's selection then dragged
+      // the transcript with it. Our own handler above owns the scroll keys.
+      focusable={false}
     >
       {/* opencode: one blank row above the first message */}
       <box height={1} />
