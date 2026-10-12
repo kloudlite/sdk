@@ -199,3 +199,26 @@ test("all is main's table plus the workspace-only tools, each aimed by a require
   expect((tool(all, "intercept").inputSchema as any).required).toEqual(["env", "service", "workspace"]);
   expect((tool(all, "release").inputSchema as any).required).toEqual(["env", "service"]);
 });
+
+test("env_wait returns once every service is ready, at once on failing, and marks a timeout", async () => {
+  const t = platformTools("main", undefined, 1);
+  let n = 0;
+  routes["GET /v1/environments/e1"] = () => json({ state: "running", services: [{ name: "a" }], service_status: [{ name: "a", ready: ++n >= 3 }] })();
+  const out = JSON.parse(await tool(t, "env_wait").run({ env: "e1" }));
+  expect(n).toBe(3);
+  expect(out.timedOut).toBeUndefined();
+  n = 0;
+  routes["GET /v1/environments/e1"] = () => { n++; return json({ state: "creating", services: [{ name: "a" }], service_status: [{ name: "a", ready: false, failing: true, message: "crash" }] })(); };
+  expect(JSON.parse(await tool(t, "env_wait").run({ env: "e1" })).services[0].failing).toBe(true);
+  expect(n).toBe(1);
+  routes["GET /v1/environments/e1"] = json({ state: "creating", services: [{ name: "a" }], service_status: [{ name: "a", ready: false }] });
+  const slow = platformTools("main", undefined, 1);
+  const real = Date.now;
+  let t0 = real();
+  Date.now = () => (t0 += 4000); // each read of the clock skips 4 s, so the 10 s floor is reached in a few ticks
+  try {
+    expect(JSON.parse(await tool(slow, "env_wait").run({ env: "e1", timeout: 1 })).timedOut).toBe(true);
+  } finally {
+    Date.now = real;
+  }
+});
