@@ -27,6 +27,7 @@ import {
 import { Registry, anyPodTools, platformTools, podTools, scratchRoot, scratchTools, webFetch, webSearch, type ToolDef } from "@kloudlite-tui/tools";
 import { Cards } from "./cards.ts";
 import { WORKSPACE_DIR, delegateTools, resumeAsks, type DelegateDeps } from "./delegate.ts";
+import { asksDir, listAsks } from "./asks.ts";
 import { forgetSessions } from "./forget.ts";
 import { SpaceWatch } from "./spacewatch.ts";
 import * as git from "./git.ts";
@@ -438,7 +439,10 @@ export class LocalBackend implements Backend {
   readonly #archive: typeof clearSessionHistory;
   /** Board directory; undefined is `~/.kl/tasks`. A test seam. */
   readonly #tasks?: string;
-  constructor(o: { create?: typeof createSession; archive?: typeof clearSessionHistory; tasks?: string } = {}) {
+  /** Pending-ask directory; undefined is `~/.kl/asks`. A test seam. */
+  readonly #asks?: string;
+  constructor(o: { create?: typeof createSession; archive?: typeof clearSessionHistory; tasks?: string; asks?: string } = {}) {
+    this.#asks = o.asks;
     this.#create = o.create ?? createSession;
     this.#archive = o.archive ?? clearSessionHistory;
     this.#tasks = o.tasks;
@@ -605,6 +609,7 @@ export class LocalBackend implements Backend {
       cards: this.#cards,
       changed: () => this.#changed(),
       tasks: this.#tasks,
+      asks: this.#asks,
     };
   }
 
@@ -733,6 +738,12 @@ export class LocalBackend implements Backend {
       } else if (e.type === "agent_end") {
         const before = doneBefore;
         setTimeout(() => void this.#restartFresh(key, before), 0);
+        // Incident: main told the person "Done" while its ask was open for 12 more minutes. For the
+        // person only (session_notice), never the model: the reply arrives as a message anyway.
+        if (sessionKind(key).kind !== "subagent") {
+          const open = listAsks(this.#asks ?? asksDir()).filter((a) => a.callerKey === key);
+          if (open.length) handle.notice(`${open.length} ask(s) still open: ${open.map((a) => a.key).join(", ")}. Their replies arrive as messages.`);
+        }
         this.#words(key).end();
         this.#space.poke();
       } else if ((e as any).type === "tool_execution_end") {

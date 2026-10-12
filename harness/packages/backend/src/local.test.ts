@@ -6,6 +6,7 @@ import { LocalBackend, DESTRUCTIVE, asking, baseHandle, ROUTE_TIMEOUT_MS, mustAs
 import { toolDiff } from "./diff.ts";
 import { Cards } from "./cards.ts";
 import { PROTOCOL } from "./wire.ts";
+import { saveAsk } from "./asks.ts";
 import { addTask, readBoards, readTasks, tasksFile, updateTask } from "./tasks.ts";
 import { POD_TOOLS, platformTools } from "@kloudlite-tui/tools";
 
@@ -410,6 +411,7 @@ test("the MCP door serves every platform and pod tool with no `because`, plus ma
 // A fake agent whose prompt() records what it was sent; a turn is agent_start, a board change, agent_end.
 async function freshRig(key: string) {
   const tasks = mkdtempSync(join(tmpdir(), "kl-fresh-"));
+  const asks = mkdtempSync(join(tmpdir(), "kl-asks-"));
   const { models } = await import("@kloudlite-tui/agent");
   const m = models.getModels().find((x: any) => x.provider !== "anthropic") as any;
   const log: string[] = [];
@@ -419,7 +421,7 @@ async function freshRig(key: string) {
     const sessionManager = { appendCompaction: (summary: string) => void log.push(`compact:${summary}`), getBranch: () => [] };
     return { agent: {}, sessionManager, messages: [], subscribe: (cb: any) => (subs.add(cb), () => void subs.delete(cb)), setThinkingLevel() {}, dispose() {}, prompt: async (t: string) => void log.push(`prompt:${t}`) };
   }) as any;
-  const b = new LocalBackend({ create, archive: ((k: string) => void log.push(`archive:${k}`)) as any, tasks });
+  const b = new LocalBackend({ create, archive: ((k: string) => void log.push(`archive:${k}`)) as any, tasks, asks });
   const o: any = { initial: { model: { provider: m.provider, id: m.id } }, tools: [], permission: async () => ({}) };
   const file = tasksFile(key, tasks);
   const turn = async (change: () => void) => {
@@ -430,7 +432,7 @@ async function freshRig(key: string) {
     await new Promise((r) => setTimeout(r, 30));
     return h;
   };
-  return { b, o, key, file, log, turn };
+  return { b, o, key, file, log, turn, asks, subs };
 }
 
 test("a turn that marks a task done with nothing running compacts to the board and rebuilds, never archives", async () => {
@@ -588,3 +590,21 @@ test("seen keeps what a compaction summarised away, and a kept message once", ()
   expect(seen(agent)).toEqual([a, b, sum, c]);
   expect(seen({ messages: [a] })).toEqual([a]);
 });
+
+test("a caller turn that ends with its ask still open notices the person; no open ask, no notice", async () => {
+  const r = await freshRig("main");
+  const h = await r.b.session(r.key, { ...r.o, fresh: true });
+  const notices: string[] = [];
+  h.subscribe((e: any) => e.type === "session_notice" && notices.push(e.text));
+  const end = async () => {
+    r.subs.forEach((s) => s({ type: "agent_start" }));
+    r.subs.forEach((s) => s({ type: "agent_end", messages: [] }));
+    await new Promise((x) => setTimeout(x, 10));
+  };
+  await end();
+  expect(notices).toEqual([]);
+  saveAsk(r.asks, { id: "a1", callerKey: "main", key: "ws-a", text: "build", tries: 0 });
+  saveAsk(r.asks, { id: "a2", callerKey: "other", key: "ws-b", text: "x", tries: 0 });
+  await end();
+  expect(notices).toEqual(["1 ask(s) still open: ws-a. Their replies arrive as messages."]);
+}, 20000);
