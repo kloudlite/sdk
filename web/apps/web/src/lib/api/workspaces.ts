@@ -296,11 +296,12 @@ export function restoreWorkspace(
   });
 }
 
-/** A NEW environment made from one of `id`'s snapshots — `restoreWorkspace`'s twin. A snapshot
- *  freezes the service list beside the data, so omitting `services` runs what was pushed; an empty
- *  list means the same on the server. Only a non-empty list overrides. */
-export function cloneEnvironmentFromSnapshot(token: string, id: string, name: string, snapshotId: string, services?: ApiService[]) {
-  return call<ApiEnvironment>(`/v1/environments/${encodeURIComponent(id)}/clone`, {
+/** A NEW environment made from one of the caller's snapshots, also one of a deleted environment
+ *  (create with `snapshot_id`, no source environment needed). A snapshot freezes the service list
+ *  beside the data, so omitting `services` runs what was pushed; an empty list means the same on
+ *  the server. Only a non-empty list overrides. */
+export function cloneEnvironmentFromSnapshot(token: string, name: string, snapshotId: string, services?: ApiService[]) {
+  return call<ApiEnvironment>("/v1/environments", {
     method: "POST",
     token,
     body: JSON.stringify({ name, snapshot_id: snapshotId, ...(services ? { services } : {}) }),

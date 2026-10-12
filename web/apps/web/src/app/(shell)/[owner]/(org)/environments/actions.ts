@@ -127,7 +127,7 @@ export async function restoreEnvironmentFrom(_prev: EnvActionState, formData: Fo
   const r =
     mode === "inplace"
       ? await api.restoreEnvironment(token, id, snapshotId)
-      : await api.cloneEnvironmentFromSnapshot(token, id, name, snapshotId);
+      : await api.cloneEnvironmentFromSnapshot(token, name, snapshotId);
   if (!r.ok) {
     if (mode === "inplace" && r.kind === "conflict") {
       // The 409 body names services that keep data the snapshot does not have. Nothing was written.
