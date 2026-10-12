@@ -74,11 +74,14 @@ pub fn valid_pin(pin: &str) -> bool {
 /// fallback, not the value the cluster runs. Prepended, never written into `spec.packages`, so it
 /// stays the platform's to change and a person cannot remove it from one workspace.
 pub const DEFAULT_BASE_PACKAGES: &str =
-    "bashInteractive zsh fish starship coreutils git openssh curl less which gnugrep gnused findutils ttyd bubblewrap runit";
+    "bashInteractive zsh fish starship coreutils git openssh curl less which gnugrep gnused findutils ttyd bubblewrap runit stdenv.cc.cc.lib zlib";
 // `ttyd` is the person's terminal, started inside the workspace container's own `prelude()` (owner
 // ruling 2026-09-25: no shell sidecar) once this profile publishes it — and `bubblewrap` is what
 // wraps every tree exec. `runit` is `runsvdir`/`chpst`: ttyd, the tool server and sshd all run
 // under it (owner ruling 2026-09-25: a master process restarts whichever of the three dies).
+// `stdenv.cc.cc.lib` (libstdc++, libgcc_s) and `zlib` are for pip wheels under a Nix Python: a
+// manylinux wheel (torch) needs them and Nix's loader never searches `/usr/lib`. Nothing links
+// them by path; `/etc/kloudlite/python/sitecustomize.py` preloads them into Nix Pythons only.
 
 pub fn base_packages(settings: &crate::controller::Settings) -> Vec<String> {
     settings.load().base_packages.split_whitespace().map(str::to_string).collect()
