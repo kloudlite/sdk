@@ -39,7 +39,7 @@ pub(crate) struct Lost {
 /// What a restore does to the service list, by name.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Plan {
-    /// Persistent in both: their folders are rewound. Never blocks.
+    /// Every folder they mount now is in the snapshot too: rewound, never blocks.
     pub rolled_back: Vec<String>,
     /// Lost services the caller agreed to discard.
     pub discarded: Vec<String>,
@@ -49,7 +49,8 @@ pub(crate) struct Plan {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Refusal {
-    /// 409: persistent services the snapshot does not have, and `discard` does not name.
+    /// 409: persistent services (or folders of them) the snapshot does not have, and `discard` does
+    /// not name.
     Lost(Vec<Lost>),
     /// 422: `discard` names something that is not lost.
     NotLost(Vec<String>),
@@ -76,7 +77,17 @@ pub(crate) fn plan(live: &[Service], snap: &[Service], discard: &[String]) -> Re
                     lost.push(Lost { service: s.name.clone(), folders: s.mounts.iter().map(|m| m.folder.clone()).collect() });
                 }
             }
-            Some(then) if persistent(s) && persistent(&then) => out.rolled_back.push(s.name.clone()),
+            // Same name, but a folder it mounts now that the snapshot's version never mounted
+            // (redis given a volume after the cut): that folder's bytes are not in the snapshot.
+            Some(then) if persistent(s) => {
+                let gone: Vec<String> =
+                    s.mounts.iter().map(|m| m.folder.clone()).filter(|f| !then.mounts.iter().any(|t| &t.folder == f)).collect();
+                if gone.is_empty() {
+                    out.rolled_back.push(s.name.clone());
+                } else {
+                    lost.push(Lost { service: s.name.clone(), folders: gone });
+                }
+            }
             Some(_) => {}
         }
     }
@@ -451,6 +462,16 @@ mod tests {
         assert_eq!(e, Refusal::Lost(vec![Lost { service: "redis".into(), folders: names(&["rd", "aof"]) }]));
         let p = plan(&[svc("db", &["data"]), svc("redis", &["rd"])], &[svc("db", &["data"])], &names(&["redis"])).unwrap();
         assert_eq!((p.discarded, p.removed, p.rolled_back), (names(&["redis"]), names(&["redis"]), names(&["db"])));
+    }
+
+    #[test]
+    fn a_folder_the_snapshot_version_never_mounted_is_lost_until_named() {
+        let e = plan(&[svc("redis", &["rd", "aof"])], &[svc("redis", &["rd"])], &[]).unwrap_err();
+        assert_eq!(e, Refusal::Lost(vec![Lost { service: "redis".into(), folders: names(&["aof"]) }]));
+        let e = plan(&[svc("redis", &["rd"])], &[svc("redis", &[])], &[]).unwrap_err();
+        assert_eq!(e, Refusal::Lost(vec![Lost { service: "redis".into(), folders: names(&["rd"]) }]));
+        let p = plan(&[svc("redis", &["rd"])], &[svc("redis", &[])], &names(&["redis"])).unwrap();
+        assert_eq!(p.discarded, names(&["redis"]));
     }
 
     #[test]
