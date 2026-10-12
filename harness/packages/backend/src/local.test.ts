@@ -2,7 +2,7 @@ import { expect, jest, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalBackend, DESTRUCTIVE, asking, baseHandle, ROUTE_TIMEOUT_MS, mustAsk, roleCard, stripCard, shareable, installGate, mcpTools, registryFor, sessionCwd, sessionKind } from "./local.ts";
+import { LocalBackend, DESTRUCTIVE, asking, baseHandle, ROUTE_TIMEOUT_MS, mustAsk, roleCard, stripCard, shareable, installGate, mcpTools, registryFor, sessionCwd, sessionKind, seen } from "./local.ts";
 import { toolDiff } from "./diff.ts";
 import { Cards } from "./cards.ts";
 import { PROTOCOL } from "./wire.ts";
@@ -416,7 +416,8 @@ async function freshRig(key: string) {
   const subs = new Set<(e: any) => void>();
   const create = (async () => {
     log.push("create");
-    return { agent: {}, messages: [], subscribe: (cb: any) => (subs.add(cb), () => void subs.delete(cb)), setThinkingLevel() {}, dispose() {}, prompt: async (t: string) => void log.push(`prompt:${t}`) };
+    const sessionManager = { appendCompaction: (summary: string) => void log.push(`compact:${summary}`), getBranch: () => [] };
+    return { agent: {}, sessionManager, messages: [], subscribe: (cb: any) => (subs.add(cb), () => void subs.delete(cb)), setThinkingLevel() {}, dispose() {}, prompt: async (t: string) => void log.push(`prompt:${t}`) };
   }) as any;
   const b = new LocalBackend({ create, archive: ((k: string) => void log.push(`archive:${k}`)) as any, tasks });
   const o: any = { initial: { model: { provider: m.provider, id: m.id } }, tools: [], permission: async () => ({}) };
@@ -432,7 +433,7 @@ async function freshRig(key: string) {
   return { b, o, key, file, log, turn };
 }
 
-test("a turn that marks a task done with nothing running archives, rebuilds, and seeds the next prompt once", async () => {
+test("a turn that marks a task done with nothing running compacts to the board and rebuilds, never archives", async () => {
   const r = await freshRig("main");
   addTask(r.file, { title: "first" });
   await r.turn(() => void updateTask(r.file, "T1", { state: "done", summary: "added x in y.ts", verified: "bun test: pass" }));
@@ -441,17 +442,20 @@ test("a turn that marks a task done with nothing running archives, rebuilds, and
   next.subscribe((e: any) => e.type === "session_notice" && notices.push(e.text));
   await next.prompt("go on");
   await next.prompt("again");
-  // archive runs after the old agent closed and before the new one was created
+  // the session files stay (the transcript is read back from them); only the context is cut
+  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
   expect(r.log.filter((l) => l === "create").length).toBe(2);
-  expect(r.log.indexOf("archive:main")).toBeGreaterThan(r.log.indexOf("create"));
-  expect(r.log.indexOf("archive:main")).toBeLessThan(r.log.lastIndexOf("create"));
+  const compact = r.log.filter((l) => l.startsWith("compact:"));
+  expect(compact.length).toBe(1);
+  expect(compact[0]).toContain("[fresh context after task T1]");
+  expect(compact[0]).toContain("T1 first: added x in y.ts (verified: bun test: pass)");
+  expect(r.log.indexOf(compact[0]!)).toBeLessThan(r.log.lastIndexOf("create"));
+  // the board rides in the compaction summary, never on a prompt
   const sent = r.log.filter((l) => l.startsWith("prompt:"));
-  expect(sent[0]).toContain("[fresh session after task T1]");
-  expect(sent[0]).toContain("T1 first: added x in y.ts (verified: bun test: pass)");
-  expect(sent[0]!.endsWith("go on")).toBe(true);
-  expect(sent[1]).not.toContain("fresh session");
+  expect(sent.length).toBe(2);
+  expect(sent.some((l) => l.includes("fresh context"))).toBe(false);
   await new Promise((r) => setTimeout(r, 20));
-  expect(notices).toEqual(["fresh session after task T1: first"]);
+  expect(notices).toEqual(["fresh context after task T1: first"]);
   await next.dispose();
 }, 20000);
 
@@ -464,21 +468,21 @@ test("a done task while another is running does not restart", async () => {
     updateTask(r.file, "T1", { state: "done", summary: "s", verified: "v" });
   });
   expect(r.log.filter((l) => l === "create").length).toBe(1);
-  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
+  expect(r.log.some((l) => l.startsWith("compact"))).toBe(false);
 }, 20000);
 
 test("a subagent session never restarts", async () => {
   const r = await freshRig("w7:agent-ab12");
   addTask(r.file, { title: "a" });
   await r.turn(() => void updateTask(r.file, "T1", { state: "done", summary: "s", verified: "v" }));
-  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
+  expect(r.log.some((l) => l.startsWith("compact"))).toBe(false);
 }, 20000);
 
 test("a task the backend closes without a summary (an answered ask) does not restart", async () => {
   const r = await freshRig("main");
   addTask(r.file, { title: "ask w1" });
   await r.turn(() => void updateTask(r.file, "T1", { state: "done" }));
-  expect(r.log.some((l) => l.startsWith("archive"))).toBe(false);
+  expect(r.log.some((l) => l.startsWith("compact"))).toBe(false);
 }, 20000);
 
 test("compact drops pi's rejection, which compaction_end already reported", async () => {
@@ -564,4 +568,16 @@ test("route: idle by the time the fork answers prompts", async () => {
   const r = routeAgent("STEER: x", busy, () => void (busy.v = false));
   expect(await r.h.route("x")).toEqual({ kind: "prompt", reason: "x" });
   expect(r.agent.calls).toEqual(["prompt:x"]);
+});
+
+test("seen keeps what a compaction summarised away, and a kept message once", () => {
+  const msg = (role: string, timestamp: number) => ({ role, timestamp });
+  const a = msg("user", 1), b = msg("assistant", 2), c = msg("user", 3);
+  const sum = msg("compactionSummary", 4);
+  const agent = {
+    messages: [sum, c],
+    sessionManager: { getBranch: () => [{ type: "message", message: a }, { type: "message", message: b }, { type: "message", message: c }, { type: "compaction" }] },
+  };
+  expect(seen(agent)).toEqual([a, b, sum, c]);
+  expect(seen({ messages: [a] })).toEqual([a]);
 });
