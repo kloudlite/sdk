@@ -551,3 +551,24 @@ test("workspace has subagent, main does not", () => {
   expect(delegateTools("workspace", "ws-a", D(), caller).map((t) => t.name)).toEqual(["main_tell", "subagent"]);
   expect(delegateTools("main", undefined, D(), caller).map((t) => t.name)).not.toContain("subagent");
 });
+
+test("asks a workspace answers in one turn deliver one reply per caller", async () => {
+  const main = fake();
+  const other = fake();
+  const ws = fake("all three done");
+  const got: string[] = [];
+  // the workspace takes every ask into the turn already running and ends it once
+  ws.prompt = ws.route = (async (t: string) => void got.push(t)) as any;
+  const open = async (k: string) => (k === "main" ? main : k === "fe" ? other : ws);
+  const deps = D({ open });
+  const ask = (id: string, callerKey = "main") => ({ id, callerKey, key: "w", text: `q${id}`, tries: 0, model: caller.initial!.model });
+  const runs = [dispatchAsk(deps, ask("1")), dispatchAsk(deps, ask("2")), dispatchAsk(deps, ask("3")), dispatchAsk(deps, ask("4", "fe"))];
+  await flush();
+  for (const t of got) ws.emit({ type: "message_end", message: textMsg("user", t) });
+  ws.emit({ type: "message_end", message: textMsg("assistant", "all three done") });
+  ws.emit({ type: "agent_end", messages: [] });
+  await Promise.all(runs);
+  await flush();
+  expect(main.sent).toEqual(["prompt:[from w] all three done"]);
+  expect(other.sent).toEqual(["prompt:[from w] all three done"]);
+});

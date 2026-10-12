@@ -100,7 +100,12 @@ const textOf = (m: any): string =>
  * runs a queued message, so an earlier end would hand back the wrong turn's text. The message may instead be
  * steered into the current run (`route` decides); either way the user message carrying `text` appears first. A disposed session
  * (`session_closed`) never ends a turn, so it resolves too. */
-function answer(h: SessionHandle, text: string, send: () => Promise<void>): Promise<string> {
+/** Per workspace turn (its `agent_end` event, one object for every view), the callers already
+ * answered. Asks a workspace absorbs into one turn all resolve at its end with the same text; the
+ * caller gets that answer once, not once per ask (main once ran three turns on three copies). */
+const answered = new WeakMap<object, Set<string>>();
+
+function answer(h: SessionHandle, text: string, send: () => Promise<void>, end?: (e: object) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     let last = "";
     let armed = false;
@@ -114,6 +119,7 @@ function answer(h: SessionHandle, text: string, send: () => Promise<void>): Prom
       } else if (e.type === "message_end" && e.message?.role === "assistant") last = textOf(e.message) || last;
       else if (e.type === "agent_end") {
         off();
+        end?.(e);
         resolve(last || "(no answer)");
       }
     });
@@ -297,12 +303,13 @@ export async function dispatchAsk(deps: DelegateDeps, a: PendingAsk): Promise<vo
   let h: SessionHandle | undefined;
   let reply: string;
   let ok = true;
+  let turn: object | undefined;
   try {
     h = await deps.open(a.key, askOpts(deps, a.callerKey, a, a.key));
     const s = h;
     // the person typed these into the caller, not here; without them a quote of the person is "not in your messages"
     deps.lend?.(a.key, a.words ?? []);
-    reply = `[from ${a.key}] ${await answer(s, a.text, () => (deps.busy.has(a.key) ? s.route(a.text).then(() => {}) : s.prompt(a.text)))}`;
+    reply = `[from ${a.key}] ${await answer(s, a.text, () => (deps.busy.has(a.key) ? s.route(a.text).then(() => {}) : s.prompt(a.text)), (e) => (turn = e))}`;
   } catch (err) {
     reply = `[from ${a.key}] failed: ${err instanceof Error ? err.message : String(err)}`;
     ok = false;
@@ -311,7 +318,11 @@ export async function dispatchAsk(deps: DelegateDeps, a: PendingAsk): Promise<vo
   // final answer would be a second copy of it
   const told = deps.reported?.delete(a.key) ?? false;
   dropAsk(dir, a.id);
-  if (!told) {
+  const seen = turn && (answered.get(turn) ?? answered.set(turn, new Set()).get(turn)!);
+  const dup = seen?.has(a.callerKey) ?? false;
+  seen?.add(a.callerKey);
+  if (dup) closeAsk(deps, a, "done");
+  else if (!told) {
     // no tell closed the caller's row, so the delivered answer does: a session that answers in plain
     // text and never calls main_tell would otherwise leave it running forever
     closeAsk(deps, a, ok ? "done" : "failed");
