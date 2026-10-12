@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { holdTargets, host, listenTcp, openConnections } from "./daemon.ts";
+import { holdBeat, holdTargets, host, listenTcp, openConnections } from "./daemon.ts";
 import { connect, RemoteBackend } from "./remote.ts";
 import { connect as netConnect } from "node:net";
 import { Peer } from "./wire.ts";
@@ -177,4 +177,39 @@ test("an open 7791 connection counts until it closes", async () => {
 test("hold targets only workspaces touched since the oldest running turn", () => {
   expect(holdTargets(new Map([["w1", 100], ["w2", 50]]), 80)).toEqual(["w1"]);
   expect(holdTargets(new Map([["w1", 100]]), undefined)).toEqual([]);
+});
+
+function holdDeps(o: { busy?: number; touched?: [string, number][]; inflight?: [string, number][]; oldest?: number; fail?: boolean } = {}) {
+  const held: string[] = [];
+  return {
+    held,
+    deps: {
+      busy: () => o.busy ?? 0,
+      oldest: () => o.oldest,
+      touched: new Map(o.touched ?? []),
+      inflight: new Map(o.inflight ?? []),
+      podHold: async (w: string) => { held.push(`ws:${w}`); if (o.fail) throw new Error("x"); },
+      envHold: async (e: string) => { held.push(`env:${e}`); if (o.fail) throw new Error("x"); },
+      listEnvs: async () => { if (o.fail) throw new Error("x"); return ["e1"]; },
+    },
+  };
+}
+
+test("holdBeat holds touched workspaces and followed envs while busy", async () => {
+  const h = holdDeps({ busy: 1, oldest: 80, touched: [["w1", 100], ["w2", 50]] });
+  await holdBeat(h.deps);
+  expect(h.held).toEqual(["ws:w1", "env:e1"]);
+});
+test("holdBeat holds an in-flight workspace with busy 0", async () => {
+  const h = holdDeps({ inflight: [["w9", 1]], touched: [["w1", 100]] });
+  await holdBeat(h.deps);
+  expect(h.held).toEqual(["ws:w9", "env:e1"]);
+});
+test("holdBeat holds nothing when idle", async () => {
+  const h = holdDeps({ touched: [["w1", 100]] });
+  await holdBeat(h.deps);
+  expect(h.held).toEqual([]);
+});
+test("holdBeat swallows errors", async () => {
+  await holdBeat(holdDeps({ busy: 1, oldest: 0, touched: [["w1", 1]], fail: true }).deps);
 });

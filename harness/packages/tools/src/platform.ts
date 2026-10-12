@@ -60,6 +60,19 @@ export async function apiJson<T>(method: string, path: string, body?: unknown): 
 
 export const seg = encodeURIComponent;
 
+/** Keeps a followed environment from idling while a turn runs. Best effort: never wakes, errors dropped. */
+export async function envHold(id: string): Promise<void> {
+  try {
+    await apiJson("POST", `/v1/environments/${seg(id)}/hold`);
+  } catch {}
+}
+
+/** Every environment the person's spaces follow, deduped. */
+export async function followedEnvs(): Promise<string[]> {
+  const m = await apiJson<{ environment?: string }[]>("GET", "/v1/me/environments");
+  return [...new Set((Array.isArray(m) ? m : []).map((x) => x.environment).filter((e): e is string => !!e))];
+}
+
 /** Wake an idle-stopped environment before a read that needs it up. Only an idle-stopped one: a
  * creating, errored or person-stopped environment is what env_get exists to show, and a failed
  * lookup is the real call's error to report. */
@@ -260,7 +273,7 @@ function basePlatformTools(kind: "main" | "workspace" | "all", wsId?: string, ti
       return "err" in t ? t.err : api("DELETE", `/v1/me/environments/${seg(t.team)}`);
     }),
     envTool("env_get", "Read the services, state and intercepts of an environment. Each `services[]` entry has `ready` (and `message`) from service_status. Read `ready`, not the spec; to wait after a change call env_wait instead of polling. `failing: true` means the service will not come up by waiting (a crash loop, an image that will not pull, a refused config): read `message` (for a crash, the exit code and its last log lines), fix the cause and redeploy. The `state` is `creating`, `running`, `stopped`, `error` or `deleted`. `running` means up. Stop the poll when the state is `error` or `deleted`." + (ws ? " It defaults to the environment that the space of this workspace follows." : ""), {}, [], async (env) => (await wake(env), withReady(await api("GET", `/v1/environments/${env}`)))),
-    envTool("env_wait", "Wait until an environment settles after a change: every service ready, a service failing, or the state error/deleted. Use this instead of polling env_get. Returns the env_get view; `timedOut: true` means it was still settling after `timeout` seconds (default 300).", { timeout: N }, [], (env, a) => settle(async () => withReady(await api("GET", `/v1/environments/${env}`)), a.timeout, tickMs)),
+    envTool("env_wait", "Wait until an environment settles after a change: every service ready, a service failing, or the state error/deleted. Use this instead of polling env_get. Returns the env_get view; `timedOut: true` means it was still settling after `timeout` seconds (default 300).", { timeout: N }, [], async (env, a) => (await wake(env), settle(async () => withReady(await api("GET", `/v1/environments/${env}`)), a.timeout, tickMs))),
     services("service_add", "Add one service to an environment. The call fails if a service with this name exists." + ASYNC, { service: SERVICE }, ["service"], (cur, a) =>
       cur.some((s) => s.name === a.service?.name) ? `error: service exists: ${a.service?.name}` : [...cur, withServiceDefaults(a.service)]),
     services("service_update", "Replace one existing service in an environment. The tool matches the service by name." + ASYNC, { service: SERVICE }, ["service"], (cur, a) =>
@@ -298,7 +311,7 @@ function basePlatformTools(kind: "main" | "workspace" | "all", wsId?: string, ti
     of("packages_list"),
     def("env_list", "List the environments. You can give one team.", { team: S }, [], async (a) => api("GET", `/v1/environments${qs({ owner: a.team })}`)),
     def("env_get", "Read the services, state and intercepts of one environment. After an env call, wait with env_wait. Each `services[]` entry has `ready` (and `message`) from service_status. Read `ready`, not the spec; to wait after a change call env_wait instead of polling. `failing: true` means the service will not come up by waiting (a crash loop, an image that will not pull, a refused config): read `message` (for a crash, the exit code and its last log lines), fix the cause and redeploy. The `state` is `creating`, `running`, `stopped`, `error` or `deleted`. `running` means up.", { env: ENV }, ["env"], async (a) => (await wake(seg(a.env)), withReady(await api("GET", `/v1/environments/${seg(a.env)}`)))),
-    def("env_wait", "Wait until an environment settles after a change: every service ready, a service failing, or the state error/deleted. Use this instead of polling env_get. Returns the env_get view; `timedOut: true` means it was still settling after `timeout` seconds (default 300).", { env: ENV, timeout: N }, ["env"], async (a) => settle(async () => withReady(await api("GET", `/v1/environments/${seg(a.env)}`)), a.timeout, tickMs)),
+    def("env_wait", "Wait until an environment settles after a change: every service ready, a service failing, or the state error/deleted. Use this instead of polling env_get. Returns the env_get view; `timedOut: true` means it was still settling after `timeout` seconds (default 300).", { env: ENV, timeout: N }, ["env"], async (a) => (await wake(seg(a.env)), settle(async () => withReady(await api("GET", `/v1/environments/${seg(a.env)}`)), a.timeout, tickMs))),
     of("service_logs"),
     def("env_delete", "Delete an environment permanently.", { env: ENV }, ["env"], async (a) => api("DELETE", `/v1/environments/${seg(a.env)}`)),
     def("env_start", "Start a stopped environment." + ASYNC, { env: ENV }, ["env"], async (a) => api("POST", `/v1/environments/${seg(a.env)}/start`)),

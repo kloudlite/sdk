@@ -210,7 +210,7 @@ test("env_wait returns once every service is ready, at once on failing, and mark
   n = 0;
   routes["GET /v1/environments/e1"] = () => { n++; return json({ state: "creating", services: [{ name: "a" }], service_status: [{ name: "a", ready: false, failing: true, message: "crash" }] })(); };
   expect(JSON.parse(await tool(t, "env_wait").run({ env: "e1" })).services[0].failing).toBe(true);
-  expect(n).toBe(1);
+  expect(n).toBe(2); // the idle check, then one settle read
   routes["GET /v1/environments/e1"] = json({ state: "creating", services: [{ name: "a" }], service_status: [{ name: "a", ready: false }] });
   const slow = platformTools("main", undefined, 1);
   const real = Date.now;
