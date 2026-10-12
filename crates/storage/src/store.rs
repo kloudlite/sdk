@@ -337,7 +337,9 @@ pub fn reserved_repo_name(name: &str) -> bool {
 /// routing key, and a repo owned by `vol` would nest its database under `repo/vol/{name}`.
 /// `superadmin` is the web's operations area at `/superadmin/*`: an owner of that name would put
 /// a namespace page under every path the console owns.
-pub const RESERVED_OWNERS: [&str; 5] = ["api", "v2", "img", "vol", "superadmin"];
+/// `mdl` and `ds` are the hub's database namespaces (`repo/mdl/...`, see `hubrepo`); `models` and
+/// `datasets` are the hub's `/api/{plural}` and URL segments.
+pub const RESERVED_OWNERS: [&str; 9] = ["api", "v2", "img", "vol", "superadmin", "mdl", "ds", "models", "datasets"];
 
 /// Owner names are segments, minus the ones the URL space has already spent.
 ///
@@ -494,6 +496,12 @@ impl Store {
         if !valid_segment(owner) || !valid_segment(name) {
             return Ok(None);
         }
+        self.open_repo_unchecked(owner, name, true).await
+    }
+
+    /// `open_repo` minus the segment check, for hub repos whose name is `{owner}/{name}`.
+    /// `markers` is off for them: they have no index entries to reconcile.
+    pub(crate) async fn open_repo_unchecked(&self, owner: &str, name: &str, markers: bool) -> Result<Option<Repo>> {
         if !self.repo_exists(owner, name).await? {
             return Ok(None);
         }
@@ -502,7 +510,7 @@ impl Store {
         // on the node the routing middleware sent the request to (the owning node — see
         // `CLAUDE.md`'s ownership invariant); images instead rely on the renewal loop's
         // `warm_repos()` lane. Marker repair is a view, not authorization — log-and-continue.
-        if self.reconcile_due(&key) {
+        if markers && self.reconcile_due(&key) {
             match self.is_public(owner, name).await {
                 Ok(db_public) => {
                     if let Err(e) =
