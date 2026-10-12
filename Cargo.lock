@@ -4658,6 +4658,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kloudlite-hub"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "kloudlite-app",
+ "kloudlite-core",
+ "kloudlite-storage",
+ "kloudlite-xet",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "kloudlite-ide"
 version = "0.1.0"
 dependencies = [
@@ -4849,6 +4864,7 @@ dependencies = [
  "kloudlite-app",
  "kloudlite-core",
  "kloudlite-gitbase",
+ "kloudlite-hub",
  "kloudlite-nettun",
  "kloudlite-pulls",
  "kloudlite-registry",
@@ -4856,6 +4872,7 @@ dependencies = [
  "kloudlite-storage",
  "kloudlite-vcs",
  "kloudlite-workspaces",
+ "kloudlite-xet",
  "mongodb",
  "reqwest",
  "russh",

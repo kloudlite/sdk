@@ -1,7 +1,7 @@
 [workspace]
 members = [
     ".",
-    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun", "crates/xet",
+    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun", "crates/xet", "crates/hub",
     "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo", "bins/bench-net",
 ]
 # This root package is ALSO the workspace root ([workspace] + [package] in one file), which makes
@@ -11,7 +11,7 @@ members = [
 # (the deploy image's build command) keeps working unchanged.
 default-members = [
     ".",
-    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun", "crates/xet",
+    "crates/core", "crates/storage", "crates/gitbase", "crates/pulls", "crates/app", "crates/git", "crates/registry", "crates/api", "crates/workspaces", "crates/ide", "crates/trace", "crates/nettun", "crates/xet", "crates/hub",
     "bins/server", "bins/api", "bins/worker", "bins/agent", "bins/gateway", "bins/controller", "bins/builder-gate", "bins/kl-connect", "bins/kl", "bins/intercept-proxy", "bins/slo", "bins/bench-net",
 ]
 resolver = "2"
@@ -173,6 +173,8 @@ kloudlite-pulls = { path = "crates/pulls", features = ["check"] }
 kloudlite-app = { path = "crates/app" }
 kloudlite-vcs = { path = "crates/git" }
 kloudlite-registry = { path = "crates/registry" }
+kloudlite-hub = { path = "crates/hub" }
+kloudlite-xet = { path = "crates/xet", features = ["testkit"] }
 kloudlite-workspaces = { path = "crates/workspaces" }
 kloudlite-api = { path = "crates/api" }
 # The integration tests in `tests/` drive the composed server; the router/lanes they exercise
