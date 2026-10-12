@@ -20,11 +20,14 @@
 
 pub mod auth;
 pub mod commit;
+pub mod live;
 pub mod pointer;
 pub mod read;
+pub mod refs;
 pub mod repos;
 pub mod resolve;
 pub mod rev;
+pub mod xet;
 
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -105,5 +108,9 @@ fn per_kind(kind: HubKind) -> Router<HubState> {
             &format!("{api}/commit/{{rev}}"),
             post(commit::commit).layer(axum::extract::DefaultBodyLimit::max(commit::COMMIT_MAX)),
         )
+        .route(&format!("{api}/branch/{{branch}}"), post(refs::branch_create).delete(refs::branch_delete))
+        .route(&format!("{api}/tag/{{rev}}"), post(refs::tag_create).delete(refs::tag_delete))
+        .route(&format!("{api}/xet-read-token/{{rev}}"), get(xet::read_token))
+        .route(&format!("{api}/xet-write-token/{{rev}}"), get(xet::write_token))
         .layer(axum::Extension(kind))
 }
