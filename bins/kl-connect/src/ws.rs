@@ -42,6 +42,7 @@ async fn ssh_with(target: &str, args: &[String], banner: Option<String>) -> Resu
         .await
         .map_err(|e| e.to_string())?;
     let id = &s.id;
+    api::ensure_running(&cfg, api::Kind::Workspace, id).await.map_err(|e| e.to_string())?;
     // The id lands in ssh's argv and in a /bin/sh-parsed ProxyCommand; the api is trusted for
     // its content but not for its shape.
     if !crate::sshconfig::safe_name(id) {

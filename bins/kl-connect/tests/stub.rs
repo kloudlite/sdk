@@ -28,6 +28,9 @@ pub async fn spawn(s: Stub) -> String {
                 ]))
             }),
         )
+        // The wake check (`api::ensure_running`) reads the doc first; it is not counted, because
+        // `api_calls` pins the session mint to one, not the readiness probe.
+        .route("/v1/workspaces/{id}", get(|| async { Json(serde_json::json!({"state": "running", "ready": true})) }))
         .route(
             "/v1/workspaces/{id}/ssh-session",
             post(

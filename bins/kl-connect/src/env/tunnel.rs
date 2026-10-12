@@ -24,6 +24,8 @@ pub struct Up {
     pub addr: Ipv4Addr,
     task: tokio::task::JoinHandle<String>,
     pub iface: String,
+    /// Holds the environment awake while the tunnel is open; aborted in `down`.
+    hold: tokio::task::JoinHandle<()>,
 }
 
 impl Up {
@@ -32,6 +34,7 @@ impl Up {
     }
 
     pub async fn down(self) {
+        self.hold.abort();
         self.task.abort();
         let _ = self.task.await; // the device is dropped with the task
         delete_route();
@@ -46,7 +49,7 @@ impl Drop for AbortOnDrop {
     }
 }
 
-pub async fn bring_up(cfg: &Config, team: &str, secret: &StaticSecret) -> Result<Up, String> {
+pub async fn bring_up(cfg: &Config, team: &str, env: &str, secret: &StaticSecret) -> Result<Up, String> {
     let session = crate::bench::session_ready(cfg, Some(team), |_| {}).await?;
     let url = crate::proxy::gateway_url(&session.gateway).replacen("/tunnel/", "/net/", 1);
     let ws = crate::proxy::connect(&url, &session.token).await?;
@@ -79,7 +82,18 @@ pub async fn bring_up(cfg: &Config, team: &str, secret: &StaticSecret) -> Result
 
     let tunn = Tunn::new(secret.clone(), PublicKey::from(welcome.key), None, Some(25), u32::from(welcome.addr) & 0xffff, None);
     let task = tokio::spawn(run(dev, mine, tunn, buf, pump));
-    Ok(Up { addr: welcome.addr, task, iface })
+    let hold = {
+        let (cfg, env) = (cfg.clone(), env.to_string());
+        tokio::spawn(async move {
+            let mut beat = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                beat.tick().await;
+                // best effort: the next beat retries, and the idle window is far longer than one miss
+                let _ = crate::api::hold_env(&cfg, &env).await;
+            }
+        })
+    };
+    Ok(Up { addr: welcome.addr, task, iface, hold })
 }
 
 /// Device <-> boringtun <-> frames until either side ends; the return value is why.
