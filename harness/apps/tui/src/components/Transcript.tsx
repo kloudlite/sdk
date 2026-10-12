@@ -136,15 +136,6 @@ function shellHidden(entry: Entry & { kind: "tool" }, width: number): number {
   return collapse(entry.summary, false, width - 2).hidden + collapse(entry.output, false, width - 2).hidden;
 }
 
-function collapsible(entry: Entry, width: number): boolean {
-  if (entry.kind === "agent") return rowCount(entry.text, width - 3) > COLLAPSE_MAX;
-  if (entry.kind === "thinking")
-    return !!entry.done && rowCount(entry.text, width - RAIL) > COLLAPSE_MAX;
-  if (entry.kind === "tool" && (entry.name === "bash" || entry.name === "codemode"))
-    return shellHidden(entry, width) > 0;
-  return false;
-}
-
 /** Rows a block will occupy once wrapped — decides if it needs an expander. */
 function rowCount(text: string | undefined, width: number): number {
   if (!text) return 0;
@@ -373,7 +364,7 @@ function Row({
       // behind a left rail — never through <markdown>, whose own heading and
       // bold colours override `fg` and made a thinking block indistinguishable
       // from an agent message.
-      // the rail (1 col) plus its padding (2) — the same width `collapsible`
+      // the rail (1 col) plus its padding (2) — the same width `long`
       // measures with, or the two disagree by a row and the expander is drawn
       // into a box that was never sized for it
       const body = collapse(entry.text, open, width - RAIL);
@@ -658,7 +649,6 @@ export function Transcript({
       <box height={1} />
       {visible.map((entry, i) => {
         const key = "id" in entry && entry.id ? entry.id : `e${i}`;
-        const canCollapse = collapsible(entry, width);
         const toggle = () =>
           setOpen((prev) => {
             const next = new Set(prev);
