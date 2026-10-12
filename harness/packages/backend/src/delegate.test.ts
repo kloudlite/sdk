@@ -290,7 +290,8 @@ test("main_tell logs kind and the ask it answers, and leaves a row without an as
 test("workspace_ask without `for` adds a running row; a second ask to the same ws replaces it; for adds none", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kl-board-"));
   const tasks = tasksFile("main", dir);
-  const [ask] = delegateTools("main", undefined, D({ messages: board(), tasks: dir, open: route(fake("ok"), fake()) }), caller);
+  // the workspaces never answer: an answer would close the row (dispatchAsk)
+  const [ask] = delegateTools("main", undefined, D({ messages: board(), tasks: dir, open: () => new Promise(() => {}) }), caller);
   await ask!.run({ workspace: "w", request: "  first line\nsecond" });
   expect(readTasks(tasks)).toMatchObject([{ title: "first line", note: "ask:w", state: "running" }]);
   await ask!.run({ workspace: "v", request: "other" });
@@ -315,6 +316,21 @@ test("main_tell done|blocked closes only that ws's open ask row; need leaves it"
   await tell().run({ kind: "done", text: "d" });
   expect(readTasks(tasks).map((t) => t.state)).toEqual(["done", "queued"]);
   await flush();
+});
+
+test("an answer without main_tell closes the caller's ask row; a failed ask marks it failed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kl-board-"));
+  const tasks = tasksFile("main", dir);
+  addTask(tasks, { title: "ask:w", note: "ask:w" });
+  addTask(tasks, { title: "ask:x", note: "ask:x" });
+  const ask = { id: "a", callerKey: "main", key: "w", text: "q", tries: 0, model: caller.initial!.model };
+  await dispatchAsk(D({ tasks: dir, open: route(fake("plain"), fake()) }), ask);
+  await flush();
+  expect(readTasks(tasks).map((t) => t.state)).toEqual(["done", "queued"]);
+  addTask(tasks, { title: "ask:w", note: "ask:w" });
+  await dispatchAsk(D({ tasks: dir, open: async () => { throw new Error("gone"); } }), { ...ask, id: "b" });
+  await flush();
+  expect(readTasks(tasks).map((t) => t.state)).toEqual(["done", "queued", "failed"]);
 });
 
 test("main_tell blocked blocks the sender's running steps; done finishes every open step", async () => {
