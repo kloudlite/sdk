@@ -169,6 +169,8 @@ fn central_rows() -> Vec<Row> {
 const CLUSTER_ENV_VARS: &[(&str, &str)] = &[
     ("syncSecs", "WS_SYNC_SECS"),
     ("benchIdleSecs", "WS_BENCH_IDLE_SECS"),
+    ("wsIdleSecs", "WS_IDLE_SECS"),
+    ("envIdleSecs", "WS_ENV_IDLE_SECS"),
     ("replicaSecs", "WS_REPLICA_SECS"),
     ("decommissionSecs", "WS_DECOMMISSION_SECS"),
     ("nodeDeadSecs", "WS_NODE_DEAD_SECS"),
@@ -190,6 +192,8 @@ fn cluster_default(name: &str) -> serde_json::Value {
     match name {
         "syncSecs" => defaults::sync_secs().into(),
         "benchIdleSecs" => defaults::bench_idle_secs().into(),
+        "wsIdleSecs" => defaults::ws_idle_secs().into(),
+        "envIdleSecs" => defaults::env_idle_secs().into(),
         "replicaSecs" => defaults::replica_secs().into(),
         "decommissionSecs" => defaults::decommission_secs().into(),
         "nodeDeadSecs" => defaults::node_dead_secs().into(),
@@ -219,6 +223,7 @@ fn cluster_range(name: &str) -> Option<(f64, f64)> {
     match name {
         "syncSecs" => Some((10.0, 3_600.0)),
         "benchIdleSecs" => Some((60.0, 86_400.0)),
+        "wsIdleSecs" | "envIdleSecs" => Some((0.0, 86_400.0)),
         "replicaSecs" => Some((30.0, 3_600.0)),
         "decommissionSecs" => Some((5.0, 600.0)),
         "nodeDeadSecs" => Some((60.0, 3_600.0)),

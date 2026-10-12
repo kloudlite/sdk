@@ -15,6 +15,14 @@ pub mod defaults {
     pub fn bench_idle_secs() -> u64 {
         300
     }
+    /// Idle window before a workspace with no client and no running work is stopped; 0 is off.
+    pub fn ws_idle_secs() -> u64 {
+        1800
+    }
+    /// Same for an environment (stopped when idle, started again on demand); 0 is off.
+    pub fn env_idle_secs() -> u64 {
+        300
+    }
     pub fn replica_secs() -> u64 {
         300
     }
@@ -86,6 +94,13 @@ pub struct ClusterSettingsSpec {
     /// stamped into the pod at create, so a change reaches the next pod only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bench_idle_secs: Option<u64>,
+    /// How long a workspace with no client and nothing running stays up before it is stopped.
+    /// 0 (off) or 300..=86400 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_idle_secs: Option<u64>,
+    /// Same for an environment. 0 (off) or 60..=86400 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_idle_secs: Option<u64>,
     /// Replication pull beat interval. 30..=3600 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replica_secs: Option<u64>,
@@ -189,6 +204,8 @@ pub const CLUSTER_SETTING_META: &[(&str, kloudlite_core::settings::Mark, &[&str]
     ("stallDumps", kloudlite_core::settings::Mark::Live, &[]),
     ("memberRemovalDeletes", kloudlite_core::settings::Mark::Live, &[]),
     ("benchIdleSecs", kloudlite_core::settings::Mark::Live, &[]),
+    ("wsIdleSecs", kloudlite_core::settings::Mark::Live, &[]),
+    ("envIdleSecs", kloudlite_core::settings::Mark::Live, &[]),
     ("replicaSecs", kloudlite_core::settings::Mark::Live, &[]),
     ("decommissionSecs", kloudlite_core::settings::Mark::Live, &[]),
     ("nodeDeadSecs", kloudlite_core::settings::Mark::Live, &[]),
