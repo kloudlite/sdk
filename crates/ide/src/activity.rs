@@ -78,23 +78,37 @@ impl Activity {
     }
 }
 
+/// /proc/net/tcp{,6} hex address is loopback: 127.0.0.0/8 (v4 is little-endian, so the first octet
+/// is the LAST two hex digits), `::1`, or `::ffff:127.x`. A local client/server pair (an app and
+/// its postgres) is not a session; ssh reaches the pod from the gateway pods, never loopback.
+fn loopback(addr: &str) -> bool {
+    let a = addr.to_ascii_uppercase();
+    match a.len() {
+        8 => a.ends_with("7F"),
+        32 => a == "00000000000000000000000001000000" || (a.starts_with("0000000000000000FFFF0000") && a.ends_with("7F")),
+        _ => false,
+    }
+}
+
 /// True when some ESTABLISHED (st 01) socket's local port is a LISTENING (st 0A) port other than
-/// `exclude`. Inbound = accepted on a listener; a process dialing out uses an ephemeral port no
-/// one listens on, so it never counts.
+/// `exclude`, from a non-loopback peer. Inbound = accepted on a listener; a process dialing out
+/// uses an ephemeral port no one listens on, so it never counts.
 pub fn inbound(tcp: &str, exclude: u16) -> bool {
-    let rows: Vec<(u16, &str)> = tcp
+    let rows: Vec<(u16, &str, bool)> = tcp
         .lines()
         .skip(1)
         .filter_map(|l| {
             let mut f = l.split_whitespace();
             let local = f.nth(1)?;
-            let st = f.nth(1)?;
+            let remote = f.next()?;
+            let st = f.next()?;
             let port = u16::from_str_radix(local.rsplit(':').next()?, 16).ok()?;
-            Some((port, st))
+            let lo = loopback(remote.rsplit_once(':')?.0);
+            Some((port, st, lo))
         })
         .collect();
-    let listening: std::collections::HashSet<u16> = rows.iter().filter(|(p, st)| *st == "0A" && *p != exclude).map(|(p, _)| *p).collect();
-    rows.iter().any(|(p, st)| *st == "01" && listening.contains(p))
+    let listening: std::collections::HashSet<u16> = rows.iter().filter(|(p, st, _)| *st == "0A" && *p != exclude).map(|(p, ..)| *p).collect();
+    rows.iter().any(|(p, st, lo)| *st == "01" && !lo && listening.contains(p))
 }
 
 /// Counts a request while it runs and touches when it ends. `/healthz` and watchers pass through.
@@ -158,9 +172,22 @@ mod tests {
 
     #[test]
     fn inbound_reads_tcp6_rows() {
-        let t = "  sl  local_address rem_address st\n   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A x\n   1: 00000000000000000000000001000000:1F90 00000000000000000000000001000000:9C40 01 x\n";
+        let t = "  sl  local_address rem_address st\n   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A x\n   1: 00000000000000000000000001000000:1F90 0000000000000000FFFF00000A00000A:9C40 01 x\n";
         assert!(inbound(t, 7788));
         assert!(!inbound(t, 0x1F90));
+    }
+
+    #[test]
+    fn loopback_pairs_are_not_inbound() {
+        // The server side of a local pair: local port listening, remote 127.0.0.1 / ::1 / ::ffff:127.0.0.1.
+        let v4 = "h\n 0: 00000000:1538 00000000:0000 0A x\n 1: 0100007F:1538 0100007F:9C40 01 x\n";
+        assert!(!inbound(v4, 7788));
+        let lo6 = "h\n 0: 00000000000000000000000000000000:1538 00000000000000000000000000000000:0000 0A x\n 1: 00000000000000000000000001000000:1538 00000000000000000000000001000000:9C40 01 x\n";
+        assert!(!inbound(lo6, 7788));
+        let mapped = "h\n 0: 00000000000000000000000000000000:1538 00000000000000000000000000000000:0000 0A x\n 1: 0000000000000000FFFF00000100007F:1538 0000000000000000FFFF00000100007F:9C40 01 x\n";
+        assert!(!inbound(mapped, 7788));
+        let remote = "h\n 0: 00000000:1538 00000000:0000 0A x\n 1: 0A2A0005:1538 0A2A0009:9C40 01 x\n";
+        assert!(inbound(remote, 7788), "a non-loopback peer still counts");
     }
 
     #[test]
