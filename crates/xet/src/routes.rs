@@ -37,6 +37,7 @@ pub fn router(st: CasState) -> Router {
         .route("/v1/reconstructions", get(get_batch))
         .route("/v1/reconstructions/{hash}", get(get_recon))
         .route("/v1/fetch/{owner}/{xorb}", get(get_fetch))
+        .route("/v1/lfs/{owner}/{oid}", get(crate::lfs::get_lfs).put(crate::lfs::put_lfs))
         .layer(DefaultBodyLimit::max(MAX_XET_OBJECT))
         .with_state(st)
 }

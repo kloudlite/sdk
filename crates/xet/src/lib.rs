@@ -17,6 +17,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod keys;
+pub mod lfs;
 pub mod recon;
 pub mod routes;
 pub mod shards;
@@ -30,6 +31,7 @@ pub(crate) use kloudlite_core::{err, Result};
 
 pub const MAX_XET_OBJECT: usize = 64 * 1024 * 1024;
 pub const MAX_XORB_CHUNKS: u32 = 8192;
+pub const MAX_LFS_OBJECT: u64 = 5 * 1024 * 1024 * 1024;
 
 /// The CAS base URL clients are told to use. Configuration, not derived from the request: the
 /// client must reach it from outside.
