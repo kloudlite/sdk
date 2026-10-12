@@ -185,7 +185,10 @@ function displayTool() {
 // TUI (2026-10-11, twenty of them in one blog-app script). Capped so a typo cannot park a script.
 const SLEEP_CAP_SECS = 30;
 
-export function sleepTool() {
+/** `steered` is true while a steer message waits. pi delivers steering only after the whole tool batch,
+ * so a polling script would hold it for minutes (2026-10-12, "steer don't run" sat queued behind a
+ * service_add poll): a sleep ends the script instead. */
+export function sleepTool(steered: () => boolean = () => false) {
   return {
     name: "sleep",
     label: "Sleep",
@@ -199,19 +202,23 @@ export function sleepTool() {
     execute: async (_id: string, params: { seconds: number }, signal?: AbortSignal) => {
       const secs = Number(params.seconds);
       if (!(secs >= 0 && secs <= SLEEP_CAP_SECS)) throw new Error(`sleep: seconds must be 0 to ${SLEEP_CAP_SECS}`);
+      const interrupted = "sleep: interrupted, the person sent a message; stop this script and read it";
+      if (steered()) throw new Error(interrupted);
       await new Promise<void>((done, fail) => {
-        const t = setTimeout(done, secs * 1000);
-        signal?.addEventListener("abort", () => (clearTimeout(t), fail(new Error("sleep: aborted"))), { once: true });
+        const t = setTimeout(() => (clearInterval(poll), done()), secs * 1000);
+        const stop = (e: Error) => (clearTimeout(t), clearInterval(poll), fail(e));
+        const poll = setInterval(() => steered() && stop(new Error(interrupted)), 250);
+        signal?.addEventListener("abort", () => stop(new Error("sleep: aborted")), { once: true });
       });
       return { content: [{ type: "text" as const, text: `slept ${secs}s` }], details: {} };
     },
   };
 }
 
-export function withCodemodeExtras(factory: ReturnType<typeof createCodemodeExtension>): typeof factory {
+export function withCodemodeExtras(factory: ReturnType<typeof createCodemodeExtension>, steered?: () => boolean): typeof factory {
   return (pi: any) => {
     pi.registerTool(displayTool());
-    pi.registerTool(sleepTool());
+    pi.registerTool(sleepTool(steered));
     return factory(
       new Proxy(pi, {
         get: (t, k) =>
@@ -447,6 +454,7 @@ export async function createSession({
   // Always built: every session gets the Kloudlite skill inlined (pi lists skills only while a
   // read tool is active, and noTools "builtin" drops it). Without a loader pi builds
   // DefaultResourceLoader({cwd, agentDir, settingsManager}) with the same defaults used here.
+  let live: AgentSession | undefined;
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: getAgentDir(),
@@ -457,7 +465,7 @@ export async function createSession({
     extensionFactories: [
       { name: "orphans", factory: orphansExtension },
       { name: "budget", factory: budgetExtension(dir) },
-      ...(codemode ? [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" })) }] : []),
+      ...(codemode ? [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" }), () => (live?.getSteeringMessages().length ?? 0) > 0) }] : []),
     ],
     appendSystemPrompt: systemAppends(codemode, role),
   });
@@ -476,6 +484,7 @@ export async function createSession({
     noTools: "builtin",
     customTools: registry ? (adaptTools(registry) as never) : undefined,
   });
+  live = session;
   // add codemode to pi's defaults rather than replacing them
   if (codemode) session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
   if (autoCompact !== undefined) session.setAutoCompactionEnabled(autoCompact);

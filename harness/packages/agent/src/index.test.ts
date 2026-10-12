@@ -143,6 +143,18 @@ test("sleep waits, refuses out-of-range seconds, and stops on abort", async () =
   await expect(p).rejects.toThrow("aborted");
 });
 
+test("sleep ends the script when a steer message waits", async () => {
+  const { sleepTool } = await import("./index.ts");
+  let steered = false;
+  const t = sleepTool(() => steered);
+  const p = t.execute("x", { seconds: 30 });
+  steered = true;
+  const t0 = Date.now();
+  await expect(p).rejects.toThrow("interrupted");
+  expect(Date.now() - t0).toBeLessThan(1000);
+  await expect(t.execute("x", { seconds: 0 })).rejects.toThrow("interrupted");
+});
+
 test("clearSessionHistory removes stored results", async () => {
   process.env.KLOUDLITE_CONFIG_DIR ??= mkdtempSync(join(tmpdir(), "kl-cfg-"));
   const { clearSessionHistory, sessionDir } = await import("./index.ts");
