@@ -38,5 +38,3 @@ core.[0-9]*
 /graft/
 bench/sessions/node_modules
 
-# pip install -e sdk/python (tests/hub_e2e.sh) writes this beside the package.
-sdk/python/*.egg-info/
