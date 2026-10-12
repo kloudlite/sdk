@@ -5,6 +5,10 @@
 //! through `/v1/fetch`, presigned (HMAC over path and expiry, `sign.rs`) because hf-xet sends no
 //! bearer on fetch URLs. Absent on purpose: `/v2/*` (the client falls back to v1 on 404) and
 //! `/v1/chunks/*` (global dedup is out of scope; 404 means "no dedup hit").
+//!
+//! The bearer routes are also served WITHOUT the `/v1` prefix: hf-xet before 1.3 (still what
+//! nixpkgs' `huggingface-hub` bundles) appends `/reconstructions`, `/xorbs`, `/shards` straight
+//! to `casUrl`, and its wire shapes are the v1 ones. Unversioned `/chunks/*` stays a 404 too.
 
 use crate::{keys, recon, shards, sign, xorbs, MAX_XET_OBJECT};
 use axum::body::Bytes;
@@ -31,12 +35,15 @@ pub struct CasState {
 const FETCH_TTL: u64 = 3600;
 
 pub fn router(st: CasState) -> Router {
-    Router::new()
-        .route("/v1/xorbs/default/{hash}", post(post_xorb))
-        .route("/v1/shards", post(post_shard))
-        .route("/v1/reconstructions", get(get_batch))
-        .route("/v1/reconstructions/{hash}", get(get_recon))
-        .route("/v1/fetch/{owner}/{xorb}", get(get_fetch))
+    let mut r = Router::new();
+    for v in ["/v1", ""] {
+        r = r
+            .route(&format!("{v}/xorbs/default/{{hash}}"), post(post_xorb))
+            .route(&format!("{v}/shards"), post(post_shard))
+            .route(&format!("{v}/reconstructions"), get(get_batch))
+            .route(&format!("{v}/reconstructions/{{hash}}"), get(get_recon));
+    }
+    r.route("/v1/fetch/{owner}/{xorb}", get(get_fetch))
         .route("/v1/lfs/{owner}/{oid}", get(crate::lfs::get_lfs).put(crate::lfs::put_lfs))
         .layer(DefaultBodyLimit::max(MAX_XET_OBJECT))
         .with_state(st)
@@ -365,5 +372,32 @@ mod tests {
         }
         let (s, _) = call(&app, req("POST", "/v2/shards", &w, None, vec![1])).await;
         assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&app, req("GET", &format!("/chunks/default-merkledb/{h}"), &w, None, vec![])).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    /// hf-xet < 1.3 (nixpkgs) speaks the v1 shapes without the prefix: upload, then
+    /// reconstruct, entirely unversioned, and get the same answer as `/v1`.
+    #[tokio::test]
+    async fn unversioned_paths_serve_old_clients() {
+        let (app, jwt) = setup();
+        let w = jwt.mint_cas("alice", "mdl/alice/bert", "main", true, 600).unwrap();
+        let b = build(&[b"old ", b"client"]);
+        let (s, body) = call(&app, req("POST", &format!("/xorbs/default/{}", b.xorb_hash.hex()), &w, None, b.xorb.clone())).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(json(&body)["was_inserted"], true);
+        let (s, body) = call(&app, req("POST", "/shards", &w, None, b.shard.clone())).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(json(&body)["result"], 1);
+
+        let h = b.file_hash.hex();
+        let (s, old) = call(&app, req("GET", &format!("/reconstructions/{h}"), &w, None, vec![])).await;
+        assert_eq!(s, StatusCode::OK);
+        let (_, new) = call(&app, req("GET", &format!("/v1/reconstructions/{h}"), &w, None, vec![])).await;
+        assert_eq!(json(&old)["terms"], json(&new)["terms"]);
+        assert!(json(&old)["fetch_info"].get(b.xorb_hash.hex()).is_some());
+        let (s, body) = call(&app, req("GET", &format!("/reconstructions?file_id={h}"), &w, None, vec![])).await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(json(&body)["files"].get(&h).is_some());
     }
 }
