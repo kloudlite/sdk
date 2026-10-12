@@ -1,6 +1,6 @@
 //! Who is calling, and may they see or change this repo.
 //!
-//! Credentials: Bearer PAT (huggingface_hub, transformers) or Basic `user:PAT` (git, git-lfs). A
+//! Credentials: Bearer PAT or registry JWT (huggingface_hub, transformers) or Basic `user:PAT` / `user:JWT` (git, git-lfs). A
 //! credential that does not verify is a 401, never a silent downgrade to anonymous. Visibility
 //! follows the spec: anonymous on a private or missing repo is 401 (so huggingface_hub prompts for
 //! login), a signed-in stranger gets 404 `RepoNotFound` (existence is not leaked), and a write by
@@ -36,7 +36,15 @@ pub async fn caller(app: &App, trusted: Option<&Trusted>, headers: &HeaderMap) -
     match app.store.owner_for_token(&token).await {
         // git-lfs replays the git remote's credentials, so git's `x` placeholder is a valid user.
         Ok(Some(o)) if basic_user_names(headers, &o, true) => Ok(Some(o)),
-        Ok(_) => Err(bad_credential()),
+        Ok(Some(_)) => Err(bad_credential()),
+        // A workspace holds no PAT, only the registry JWT the keys beat mints for its owner. Under
+        // the same Basic rule as a PAT; an anonymous-scope token names nobody, so it is refused
+        // like any other credential that was presented and did not verify.
+        // ponytail: one owner credential for registry and hub; split audiences if a hub-only token is ever needed.
+        Ok(None) => match app.jwt.verify_registry(&token) {
+            Some(o) if !o.is_empty() && basic_user_names(headers, &o, true) => Ok(Some(o)),
+            _ => Err(bad_credential()),
+        },
         Err(e) => Err(internal(e)),
     }
 }

@@ -14,6 +14,10 @@ struct Hub {
     e: TestEnv,
     alice: String,
     bob: String,
+    /// The workspace credential: a registry JWT for alice, as the keys beat mints it.
+    alice_jwt: String,
+    /// What `/v2/token` hands an anonymous caller: ours, but names nobody.
+    anon_jwt: String,
 }
 
 async fn hub() -> Hub {
@@ -21,8 +25,10 @@ async fn hub() -> Hub {
     let app = app(e.store.clone()).await;
     let alice = e.store.create_token("alice").await.unwrap();
     let bob = e.store.create_token("bob").await.unwrap();
+    let alice_jwt = app.jwt.mint_registry("alice", "*", 3600).unwrap();
+    let anon_jwt = app.jwt.mint_registry("", "*", 3600).unwrap();
     let port = serve_hub(app).await;
-    Hub { base: format!("http://127.0.0.1:{port}"), e, alice, bob }
+    Hub { base: format!("http://127.0.0.1:{port}"), e, alice, bob, alice_jwt, anon_jwt }
 }
 
 fn client() -> reqwest::Client {
@@ -107,6 +113,40 @@ async fn whoami_names_the_caller() {
     assert_eq!(anon.status(), 401);
 }
 
+async fn whoami(h: &Hub, auth: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder) -> reqwest::Response {
+    auth(client().get(format!("{}/api/whoami-v2", h.base))).send().await.unwrap()
+}
+
+#[tokio::test]
+async fn registry_jwt_is_the_workspace_credential() {
+    let h = hub().await;
+    for r in [
+        whoami(&h, |b| b.bearer_auth(&h.alice_jwt)).await,
+        whoami(&h, |b| b.basic_auth("alice", Some(&h.alice_jwt))).await,
+        whoami(&h, |b| b.basic_auth("x", Some(&h.alice_jwt))).await,
+    ] {
+        assert_eq!(r.status(), 200);
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["name"], "alice");
+    }
+}
+
+#[tokio::test]
+async fn a_registry_jwt_that_does_not_verify_is_refused() {
+    let h = hub().await;
+    let foreign = kloudlite_core::jwt::Jwt::new("another-secret-that-is-at-least-32-bytes-long")
+        .unwrap()
+        .mint_registry("alice", "*", 3600)
+        .unwrap();
+    assert_eq!(whoami(&h, |b| b.bearer_auth(&foreign)).await.status(), 401);
+    // Ours, but anonymous-scope: a presented credential that names nobody is a refusal here.
+    assert_eq!(whoami(&h, |b| b.bearer_auth(&h.anon_jwt)).await.status(), 401);
+    // The Basic user must be the owner the token names.
+    assert_eq!(whoami(&h, |b| b.basic_auth("bob", Some(&h.alice_jwt))).await.status(), 401);
+    // No header at all is still anonymous, and whoami answers anonymous with 401 as before.
+    assert_eq!(whoami(&h, |b| b).await.status(), 401);
+}
+
 #[tokio::test]
 async fn delete_by_owner_only() {
     let h = hub().await;
@@ -153,6 +193,17 @@ async fn seed_hub(h: &Hub, kind: HubKind, owner: &str, name: &str, public: bool,
     let r = s.update_refs(&repo, &[RefUpdate { name: "refs/heads/main".into(), old: parent, new: Some(commit) }]).await.unwrap();
     assert_eq!(r, vec![None]);
     commit.to_string()
+}
+
+#[tokio::test]
+async fn registry_jwt_reads_a_private_repo_of_its_owner_only() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "secret", false, &[("config.json", b"{}")]).await;
+    let mine = client().get(format!("{}/api/models/alice/secret", h.base)).bearer_auth(&h.alice_jwt).send().await.unwrap();
+    assert_eq!(mine.status(), 200);
+    let bob_pat = client().get(format!("{}/api/models/alice/secret", h.base)).bearer_auth(&h.bob).send().await.unwrap();
+    // A signed-in stranger gets 404, as with a PAT.
+    assert_eq!(bob_pat.status(), 404);
 }
 
 fn tree_of(odb: &gix_odb::Handle, commit: gix_hash::ObjectId) -> Option<gix_hash::ObjectId> {
