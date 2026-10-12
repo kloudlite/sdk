@@ -54,9 +54,27 @@ pub(crate) async fn get_lfs(
     }
     match st.os.get(&keys::lfs(&owner, &oid)).await {
         Ok(g) => (StatusCode::OK, Body::from_stream(g.into_stream())).into_response(),
-        Err(slatedb::object_store::Error::NotFound { .. }) => refuse(StatusCode::NOT_FOUND, "no such object"),
+        Err(slatedb::object_store::Error::NotFound { .. }) => match xet_bytes(&st, &owner, &oid).await {
+            Ok(Some(body)) => (StatusCode::OK, body).into_response(),
+            Ok(None) => refuse(StatusCode::NOT_FOUND, "no such object"),
+            Err(e) => internal(e),
+        },
         Err(e) => internal(e),
     }
+}
+
+/// A Xet-uploaded file has no whole object: `sha/{sha256}` names its file hash, whose record
+/// lists the xorb ranges to stream. git-lfs clients see the same bytes either way.
+async fn xet_bytes(st: &CasState, owner: &str, oid: &str) -> Result<Option<Body>, String> {
+    let fh = match st.os.get(&keys::sha(owner, oid)).await {
+        Ok(g) => g.bytes().await.map_err(|e| e.to_string())?,
+        Err(slatedb::object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let Some(h) = keys::parse_hash(String::from_utf8_lossy(&fh).trim()) else { return Err("corrupt sha record".into()) };
+    let Some(rec) = crate::shards::read_file(&*st.os, owner, &h).await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let size = rec.size;
+    Ok(Some(Body::from_stream(crate::stream::file_bytes(st.os.clone(), owner.to_string(), rec, 0, size))))
 }
 
 pub(crate) async fn put_lfs(
@@ -182,6 +200,18 @@ mod tests {
         assert_eq!(got, body);
         let staged = st.os.list(Some(&"lfs/alice/tmp".into())).next().await;
         assert!(staged.is_none(), "staging key left behind");
+    }
+
+    #[tokio::test]
+    async fn get_falls_back_to_a_xet_file_by_sha256() {
+        let (app, st) = setup();
+        let b = crate::testkit::build(&[b"hello ", b"xet"]);
+        crate::xorbs::put_xorb(&*st.os, "alice", &b.xorb_hash, bytes::Bytes::from(b.xorb.clone())).await.unwrap();
+        crate::shards::put_shard(&*st.os, "alice", &b.shard).await.unwrap();
+        let oid = hex::encode(b.sha256);
+        let (s, got) = call(&app, "GET", &local(&super::lfs_url(&st, "alice", &oid, 600)), vec![]).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(got, b.bytes);
     }
 
     #[tokio::test]

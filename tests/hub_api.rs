@@ -655,3 +655,86 @@ async fn xet_tokens_carry_scope_and_cas_url() {
     let r = client().get(format!("{}/api/models/alice/m/xet-read-token/nope", h.base)).bearer_auth(&h.alice).send().await.unwrap();
     assert_eq!(r.status(), 404);
 }
+
+fn batch_body(op: &str, oid: &str, size: u64, transfers: &[&str]) -> Value {
+    json!({ "operation": op, "transfers": transfers, "objects": [{ "oid": oid, "size": size }], "hash_algo": "sha256" })
+}
+
+async fn batch(h: &Hub, path: &str, auth: Option<(&str, &str)>, body: Value) -> reqwest::Response {
+    let mut r = client().post(format!("{}{path}/info/lfs/objects/batch", h.base))
+        .header("accept", "application/vnd.git-lfs+json")
+        .header("content-type", "application/vnd.git-lfs+json")
+        .body(body.to_string());
+    if let Some((u, p)) = auth {
+        r = r.basic_auth(u, Some(p));
+    }
+    r.send().await.unwrap()
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(b))
+}
+
+#[tokio::test]
+async fn lfs_basic_upload_then_download() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", false, &[("a.txt", b"a")]).await;
+    let data = b"weights weights weights".to_vec();
+    let oid = sha256_hex(&data);
+    let r = batch(&h, "/alice/m.git", Some(("alice", &h.alice)), batch_body("upload", &oid, data.len() as u64, &["basic"])).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["content-type"], "application/vnd.git-lfs+json");
+    let b: Value = r.json().await.unwrap();
+    assert_eq!(b["transfer"], "basic");
+    let href = b["objects"][0]["actions"]["upload"]["href"].as_str().unwrap().to_string();
+    assert_eq!(client().put(&href).body(data.clone()).send().await.unwrap().status(), 200);
+
+    let b: Value = batch(&h, "/alice/m", Some(("alice", &h.alice)), batch_body("upload", &oid, data.len() as u64, &["basic"])).await.json().await.unwrap();
+    assert!(b["objects"][0].get("actions").is_none(), "stored object needs no upload");
+
+    let b: Value = batch(&h, "/alice/m.git", Some(("alice", &h.alice)), batch_body("download", &oid, data.len() as u64, &["basic"])).await.json().await.unwrap();
+    let href = b["objects"][0]["actions"]["download"]["href"].as_str().unwrap();
+    assert_eq!(b["objects"][0]["actions"]["download"]["expires_in"], 3600);
+    assert_eq!(client().get(href).send().await.unwrap().bytes().await.unwrap().to_vec(), data);
+}
+
+#[tokio::test]
+async fn lfs_upload_offers_xet_when_asked() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Dataset, "alice", "d", false, &[("a.csv", b"1")]).await;
+    let oid = sha256_hex(b"new");
+    let b: Value = batch(&h, "/datasets/alice/d.git", Some(("alice", &h.alice)), batch_body("upload", &oid, 3, &["xet", "basic"])).await.json().await.unwrap();
+    assert_eq!(b["transfer"], "xet");
+    let up = &b["objects"][0]["actions"]["upload"];
+    assert!(up["href"].as_str().unwrap().ends_with("/api/datasets/alice/d/xet-write-token/main"));
+    assert!(up["header"]["X-Xet-Access-Token"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn lfs_unknown_and_invalid_oids_are_per_object_errors() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", true, &[("a.txt", b"a")]).await;
+    let b: Value = batch(&h, "/alice/m.git", None, batch_body("download", &"0".repeat(64), 1, &["basic"])).await.json().await.unwrap();
+    assert_eq!(b["objects"][0]["error"]["code"], 404);
+    let b: Value = batch(&h, "/alice/m.git", None, batch_body("download", "../x", 1, &["basic"])).await.json().await.unwrap();
+    assert_eq!(b["objects"][0]["error"]["code"], 422);
+}
+
+#[tokio::test]
+async fn lfs_upload_needs_write_and_basic_user_must_match() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", true, &[("a.txt", b"a")]).await;
+    let oid = sha256_hex(b"x");
+    assert_eq!(batch(&h, "/alice/m.git", None, batch_body("upload", &oid, 1, &["basic"])).await.status(), 401);
+    assert_eq!(batch(&h, "/alice/m.git", Some(("bob", &h.bob)), batch_body("upload", &oid, 1, &["basic"])).await.status(), 403);
+    assert_eq!(batch(&h, "/alice/m.git", Some(("mallory", &h.alice)), batch_body("upload", &oid, 1, &["basic"])).await.status(), 401);
+}
+
+#[tokio::test]
+async fn lfs_locks_are_404() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", true, &[("a.txt", b"a")]).await;
+    let r = client().post(format!("{}/alice/m.git/info/lfs/locks/verify", h.base)).basic_auth("alice", Some(&h.alice)).body("{}").send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}

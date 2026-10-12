@@ -398,7 +398,14 @@ impl Drop for TestDirectory {
 pub async fn serve_hub(app: Arc<kloudlite_app::App>) -> u16 {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = l.local_addr().unwrap().port();
-    let st = kloudlite_hub::HubState::new(app, format!("http://127.0.0.1:{port}"));
+    let mut st = kloudlite_hub::HubState::new(app, format!("http://127.0.0.1:{port}"));
+    // The signed LFS URLs the hub hands out need a CAS listener to answer them.
+    let cl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    st.cas.base = format!("http://127.0.0.1:{}", cl.local_addr().unwrap().port());
+    let cas = kloudlite_xet::routes::router(st.cas.clone());
+    tokio::spawn(async move {
+        axum::serve(cl, cas).await.unwrap();
+    });
     tokio::spawn(async move {
         axum::serve(l, kloudlite_hub::router(st)).await.unwrap();
     });
