@@ -108,6 +108,7 @@ pub(super) fn ws_doc(w: &crd::Workspace, pushed: &HashSet<String>) -> Workspace 
         replicated: st.and_then(|s| s.conditions.iter().find(|c| c.type_ == "Replicated").map(ConditionDoc::from)),
         degraded: st.and_then(|s| s.conditions.iter().find(|c| c.type_ == "Degraded").map(ConditionDoc::from)),
         decommissioning: st.and_then(|s| s.conditions.iter().find(|c| c.type_ == "Decommissioning").map(ConditionDoc::from)),
+        idle_since: (w.spec.desired_state == DesiredState::Running && !crd::wants_pod(w)).then(|| st.and_then(|s| s.idle_since.clone())).flatten(),
         placed: st
             .and_then(|s| s.conditions.iter().find(|c| c.type_ == "Placed"))
             .filter(|c| c.status != "True" && c.reason == "NoCapacity")
@@ -693,8 +694,73 @@ pub(crate) async fn start_ws(
     // limit is checked at. Stopping is never refused.
     let owner_of = if w.spec.team.is_empty() { w.spec.owner.clone() } else { w.spec.team.clone() };
     super::guard_fill(&s, &owner_of, !w.spec.team.is_empty()).await?;
-    set_desired::<crd::Workspace>(kube(&s)?, &id, DesiredState::Running).await?;
+    let c = kube(&s)?;
+    let now = k8s_openapi::jiff::Timestamp::now();
+    let idle = w.status.as_ref().and_then(|st| st.idle_since.as_deref());
+    // A merge patch of desiredState + wakeAt: the wake must land strictly after the idle verdict,
+    // which a bare desiredState (already Running when idle-stopped) cannot express.
+    Api::<crd::Workspace>::all(c.clone())
+        .patch(&id, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle))))
+        .await
+        .map_err(kube_err)?;
+    if idle.is_some() && !crd::wants_pod(&w) {
+        tracing::info!(kind = "workspace", id, by = "start", "idle.wake");
+    }
+    wake_followers(c, &w, &id, now).await;
     Ok(StatusCode::ACCEPTED.into_response())
+}
+
+/// `max(now, idleSince + 1 s)`: a wake must land strictly after the idle verdict it ends, even
+/// when the agent's clock runs ahead of ours.
+pub(crate) fn wake_at(now: k8s_openapi::jiff::Timestamp, idle_since: Option<&str>) -> String {
+    let after = idle_since
+        .and_then(|s| s.parse::<k8s_openapi::jiff::Timestamp>().ok())
+        .and_then(|t| t.checked_add(k8s_openapi::jiff::SignedDuration::from_secs(1)).ok());
+    crd::whole_second(after.filter(|a| *a > now).unwrap_or(now)).to_string()
+}
+
+pub(crate) fn wake_patch(at: &str) -> serde_json::Value {
+    serde_json::json!({ "spec": { "desiredState": DesiredState::Running, "wakeAt": at } })
+}
+
+/// Environments an idle-stopped follower's start must bring back: asked to run but idle-stopped,
+/// and either the workspace's space environment or intercepted through it.
+pub(crate) fn envs_to_wake(ws: &str, space_env: Option<&str>, envs: &[crd::Environment]) -> Vec<String> {
+    envs.iter()
+        .filter(|e| e.spec.desired_state == DesiredState::Running && !crd::wants_running(e))
+        .filter(|e| {
+            let id = kube::ResourceExt::name_any(*e);
+            space_env == Some(id.as_str()) || e.spec.intercepts.iter().any(|i| i.workspace == ws)
+        })
+        .map(kube::ResourceExt::name_any)
+        .collect()
+}
+
+/// A workspace that starts must find its environment awake: otherwise the agent's follower
+/// check would see a running workspace over a stopped environment and the person waits on a
+/// second start. Failures here are logged, never the workspace's problem.
+async fn wake_followers(c: &kube::Client, w: &crd::Workspace, id: &str, now: k8s_openapi::jiff::Timestamp) {
+    let space = Api::<crd::SpaceEnvironment>::all(c.clone())
+        .get_opt(&crd::space_name(&w.spec.owner, &w.spec.team))
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.spec.environment);
+    let envs = match Api::<crd::Environment>::all(c.clone()).list(&ListParams::default()).await {
+        Ok(l) => l.items,
+        Err(e) => {
+            tracing::warn!(id, error = %e, "idle.wake follower list failed");
+            return;
+        }
+    };
+    let api = Api::<crd::Environment>::all(c.clone());
+    for eid in envs_to_wake(id, space.as_deref(), &envs) {
+        let idle = envs.iter().find(|e| kube::ResourceExt::name_any(*e) == eid).and_then(|e| e.status.as_ref()?.idle_since.clone());
+        match api.patch(&eid, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle.as_deref())))).await {
+            Ok(_) => tracing::info!(kind = "environment", id = eid, by = "follower", "idle.wake"),
+            Err(e) => tracing::warn!(id = eid, error = %e, "idle.wake follower patch failed"),
+        }
+    }
 }
 
 
@@ -956,5 +1022,64 @@ mod tests {
         let healthy = [crd::condition(crd::PACKAGES_READY, true, "Ready", "ok", 4)];
         assert!(super::node_dead_warning("n1", &healthy).is_none());
         assert!(super::node_dead_warning("n1", &[]).is_none());
+    }
+
+    fn ts(s: &str) -> k8s_openapi::jiff::Timestamp {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn wake_at_after_idle() {
+        let now = ts("2026-10-12T10:00:00Z");
+        assert_eq!(super::wake_at(now, None), "2026-10-12T10:00:00Z");
+        assert_eq!(super::wake_at(now, Some("2026-10-12T09:00:00Z")), "2026-10-12T10:00:00Z");
+        // agent clock ahead of ours: still strictly after the idle
+        assert_eq!(super::wake_at(now, Some("2026-10-12T10:00:05Z")), "2026-10-12T10:00:06Z");
+        assert_eq!(super::wake_at(now, Some("garbage")), "2026-10-12T10:00:00Z");
+        assert_eq!(super::wake_patch("x"), serde_json::json!({"spec":{"desiredState":"running","wakeAt":"x"}}));
+    }
+
+    #[test]
+    fn ws_doc_shows_idle_since_only_when_idle_stopped() {
+        let mut w = ws_fixture();
+        w.status.get_or_insert_with(Default::default).idle_since = Some("2026-10-12T10:00:00Z".into());
+        assert_eq!(ws_doc(&w, &Default::default()).idle_since.as_deref(), Some("2026-10-12T10:00:00Z"));
+        w.spec.desired_state = crd::DesiredState::Stopped;
+        assert_eq!(ws_doc(&w, &Default::default()).idle_since, None, "stopped by the person");
+        w.spec.desired_state = crd::DesiredState::Running;
+        w.spec.wake_at = Some("2026-10-12T10:00:01Z".into());
+        assert_eq!(ws_doc(&w, &Default::default()).idle_since, None, "woken");
+    }
+
+    fn env(id: &str, intercept: Option<&str>, idle: bool) -> crd::Environment {
+        let mut e = crd::Environment::new(
+            id,
+            crd::EnvironmentSpec {
+                owner: "karthik".into(),
+                name: id.into(),
+                region: "centralindia".into(),
+                services: vec![],
+                storage: None,
+                desired_state: crd::DesiredState::Running,
+                wake_at: None,
+                restore: None,
+                intercepts: intercept
+                    .map(|w| crd::Intercept { service: "s".into(), workspace: w.into(), ports: vec![] })
+                    .into_iter()
+                    .collect(),
+                system: None,
+            },
+        );
+        if idle {
+            e.status = Some(crd::EnvironmentStatus { idle_since: Some("2026-10-12T10:00:00Z".into()), ..Default::default() });
+        }
+        e
+    }
+
+    #[test]
+    fn follower_envs_to_wake() {
+        let envs = vec![env("e1", None, true), env("e2", Some("w1"), true), env("e3", Some("w1"), false)];
+        assert_eq!(super::envs_to_wake("w1", Some("e1"), &envs), vec!["e1".to_string(), "e2".to_string()]);
+        assert!(super::envs_to_wake("w1", None, &[env("e3", Some("w1"), false)]).is_empty());
     }
 }

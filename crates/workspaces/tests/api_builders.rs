@@ -269,7 +269,7 @@ async fn the_builder_is_invisible_to_every_environment_route() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 10, "every environment-id route, both methods of `/{{id}}`");
+    assert_eq!(checked, 11, "every environment-id route, both methods of `/{{id}}`");
     // The two that name an environment from somewhere other than the path.
     let extra: Vec<(&str, String, Value)> = vec![
         ("PUT", format!("{}/v1/me/environments/karthik", s.base), json!({"environment": "bld-karthik"})),

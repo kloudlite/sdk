@@ -668,6 +668,27 @@ async fn starting_an_interrupted_environment_is_a_409_too() {
     assert_eq!(r.text().await.unwrap(), "environment is interrupted: its node is down; it resumes when the node returns");
 }
 
+/// A hold is one annotation PATCH and a 204; a stranger gets the refusal `get_env` gives.
+#[tokio::test]
+async fn hold_stamps_only_the_annotation_and_refuses_a_stranger() {
+    let e = placed_env("env-0000000000000001", "karthik");
+    let url = format!("{API}/environments/env-0000000000000001");
+    let s = server(vec![get(url.clone(), e.clone()), Route { method: "PATCH", path: url.clone(), status: 200, body: e }]).await;
+    let c = reqwest::Client::new();
+    let hold = format!("{}/v1/environments/env-0000000000000001/hold", s.base);
+    let r = c.post(&hold).bearer_auth(token(&s.jwt, "karthik")).send().await.unwrap();
+    assert_eq!(r.status(), 204);
+    let sent = &s.rec.sent("PATCH", &url);
+    assert_eq!(sent.len(), 1);
+    let body = sent[0].as_object().unwrap();
+    assert_eq!(body.keys().collect::<Vec<_>>(), ["metadata"], "hold must not touch spec: {body:?}");
+    assert!(sent[0]["metadata"]["annotations"]["kloudlite.io/held-at"].is_string());
+    let denied = c.post(&hold).bearer_auth(token(&s.jwt, "mallory")).send().await.unwrap();
+    let want = c.get(format!("{}/v1/environments/env-0000000000000001", s.base)).bearer_auth(token(&s.jwt, "mallory")).send().await.unwrap();
+    assert_eq!(denied.status(), want.status());
+    assert!(denied.status() == 404 || denied.status() == 403);
+}
+
 /// A stopped parent on a dead node is NOT interrupted — it was flushed on the way down, so it
 /// starts as soon as an up-to-date node claims it. Only a parent carrying `NodeDead` is refused.
 #[tokio::test]
