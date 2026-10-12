@@ -4,6 +4,10 @@ mod common;
 use common::*;
 use kloudlite_storage::HubKind;
 use serde_json::{json, Value};
+use kloudlite_gitbase::objects::{apply_changes, write_commit, Change, NewCommit, Staging};
+use kloudlite_gitbase::refs::UpdateRefsExt;
+use kloudlite_storage::refmeta::RefUpdate;
+use std::collections::BTreeMap;
 
 struct Hub {
     base: String,
@@ -117,4 +121,176 @@ async fn delete_by_owner_only() {
     assert_eq!(del(h.alice.clone()).await.status(), 200);
     assert!(!h.e.store.hub_exists(HubKind::Model, "alice", "bert").await.unwrap());
     assert_eq!(del(h.alice.clone()).await.status(), 404);
+}
+
+/// Commit `files` onto `main` of a hub repo straight through the store — the read tests must not
+/// depend on the commit endpoint.
+async fn seed_hub(h: &Hub, kind: HubKind, owner: &str, name: &str, public: bool, files: &[(&str, &[u8])]) -> String {
+    let s = &h.e.store;
+    if !s.hub_exists(kind, owner, name).await.unwrap() {
+        s.hub_create(kind, owner, name, !public).await.unwrap();
+    }
+    let repo = s.hub_open(kind, owner, name).await.unwrap().unwrap();
+    let parent = s.get_ref(&repo, "refs/heads/main").await.unwrap();
+    let mut changes = BTreeMap::new();
+    for (p, b) in files {
+        changes.insert(p.to_string(), Change::Upsert { content: b.to_vec(), executable: None });
+    }
+    let mut staging = Staging::default();
+    let odb = repo.odb().unwrap();
+    let tree = apply_changes(&odb, parent.and_then(|c| tree_of(&odb, c)), changes, &mut staging).unwrap();
+    staging.write(s, &repo).await.unwrap();
+    let commit = write_commit(s, &repo, NewCommit {
+        tree,
+        parents: parent.into_iter().collect(),
+        message: "seed".into(),
+        author_name: owner.into(),
+        author_email: format!("{owner}@test"),
+        time: 1_700_000_000,
+    })
+    .await
+    .unwrap();
+    let r = s.update_refs(&repo, &[RefUpdate { name: "refs/heads/main".into(), old: parent, new: Some(commit) }]).await.unwrap();
+    assert_eq!(r, vec![None]);
+    commit.to_string()
+}
+
+fn tree_of(odb: &gix_odb::Handle, commit: gix_hash::ObjectId) -> Option<gix_hash::ObjectId> {
+    use gix_object::Find;
+    let mut buf = Vec::new();
+    let c = odb.try_find(&commit, &mut buf).ok()??;
+    gix_object::CommitRef::from_bytes(c.data, gix_hash::Kind::Sha1).ok().map(|c| c.tree())
+}
+
+const SHA_A: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+#[tokio::test]
+async fn info_lists_siblings_with_lfs() {
+    let h = hub().await;
+    let ptr = format!("version https://git-lfs.github.com/spec/v1\noid sha256:{SHA_A}\nsize 5\n");
+    let sha = seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("config.json", b"{}"), ("model.bin", ptr.as_bytes())]).await;
+    let v: Value = client().get(format!("{}/api/models/alice/bert", h.base)).send().await.unwrap().json().await.unwrap();
+    assert_eq!(v["id"], "alice/bert");
+    assert_eq!(v["sha"], sha);
+    assert_eq!(v["private"], false);
+    let sib = v["siblings"].as_array().unwrap();
+    assert_eq!(sib.len(), 2);
+    assert_eq!(sib[1]["rfilename"], "model.bin");
+    assert_eq!(sib[1]["size"], 5);
+    assert_eq!(sib[1]["lfs"]["sha256"], SHA_A);
+    assert_eq!(sib[1]["lfs"]["pointerSize"], ptr.len());
+    assert_eq!(sib[0]["size"], 2);
+    assert!(sib[0].get("lfs").is_none());
+}
+
+#[tokio::test]
+async fn info_of_empty_repo_has_no_sha() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    let r = client().get(format!("{}/api/models/alice/bert", h.base)).bearer_auth(&h.alice).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
+    assert!(v["sha"].is_null());
+    assert_eq!(v["siblings"], json!([]));
+}
+
+#[tokio::test]
+async fn private_repo_is_401_anonymous_and_404_stranger() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "secret", false, &[("a", b"1")]).await;
+    let url = format!("{}/api/models/alice/secret", h.base);
+    let anon = client().get(&url).send().await.unwrap();
+    assert_eq!(anon.status(), 401);
+    assert_eq!(anon.headers()["x-error-code"], "RepoNotFound");
+    let bob = client().get(&url).bearer_auth(&h.bob).send().await.unwrap();
+    assert_eq!(bob.status(), 404);
+    assert_eq!(bob.headers()["x-error-code"], "RepoNotFound");
+    assert_eq!(client().get(&url).bearer_auth(&h.alice).send().await.unwrap().status(), 200);
+    let missing = client().get(format!("{}/api/models/alice/nope", h.base)).bearer_auth(&h.bob).send().await.unwrap();
+    assert_eq!(missing.status(), 404);
+}
+
+#[tokio::test]
+async fn revision_by_branch_tag_and_sha() {
+    let h = hub().await;
+    let sha = seed_hub(&h, HubKind::Dataset, "alice", "squad", true, &[("train.csv", b"a,b\n")]).await;
+    for rev in ["main", sha.as_str()] {
+        let v: Value = client().get(format!("{}/api/datasets/alice/squad/revision/{rev}", h.base)).send().await.unwrap().json().await.unwrap();
+        assert_eq!(v["sha"], sha);
+    }
+    let r = client().get(format!("{}/api/datasets/alice/squad/revision/nope", h.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    assert_eq!(r.headers()["x-error-code"], "RevisionNotFound");
+}
+
+#[tokio::test]
+async fn tree_lists_and_pages() {
+    let h = hub().await;
+    let names: Vec<String> = (0..1001).map(|i| format!("d/f{i:04}")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), b"x" as &[u8])).chain([("top.txt", b"t" as &[u8])]).collect();
+    seed_hub(&h, HubKind::Model, "alice", "many", true, &files).await;
+    let top: Value = client().get(format!("{}/api/models/alice/many/tree/main", h.base)).send().await.unwrap().json().await.unwrap();
+    let top = top.as_array().unwrap();
+    assert_eq!(top.len(), 2);
+    assert_eq!(top[0]["type"], "directory");
+    assert_eq!(top[0]["path"], "d");
+    assert_eq!(top[1]["path"], "top.txt");
+    let r = client().get(format!("{}/api/models/alice/many/tree/main/d", h.base)).send().await.unwrap();
+    let next = r.headers()["link"].to_str().unwrap().to_string();
+    assert!(next.contains("rel=\"next\""), "{next}");
+    let page: Value = r.json().await.unwrap();
+    assert_eq!(page.as_array().unwrap().len(), 1000);
+    let url = next.trim_start_matches('<').split('>').next().unwrap().to_string();
+    let rest: Value = client().get(url).send().await.unwrap().json().await.unwrap();
+    assert_eq!(rest.as_array().unwrap().len(), 1);
+    assert_eq!(rest[0]["path"], "d/f1000");
+}
+
+#[tokio::test]
+async fn tree_with_dotdot_is_entry_not_found() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("a", b"1")]).await;
+    let r = client().get(format!("{}/api/models/alice/bert/tree/main/a%2F..%2F..", h.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    assert_eq!(r.headers()["x-error-code"], "EntryNotFound");
+}
+
+#[tokio::test]
+async fn paths_info_returns_known_paths_in_order() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("a.txt", b"1"), ("dir/b.txt", b"22")]).await;
+    let r = client()
+        .post(format!("{}/api/models/alice/bert/paths-info/main", h.base))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("paths=dir%2Fb.txt&paths=missing&paths=dir")
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    let v = v.as_array().unwrap();
+    assert_eq!(v.len(), 2);
+    assert_eq!(v[0]["path"], "dir/b.txt");
+    assert_eq!(v[0]["size"], 2);
+    assert_eq!(v[1]["type"], "directory");
+}
+
+#[tokio::test]
+async fn refs_lists_branches() {
+    let h = hub().await;
+    let sha = seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("a", b"1")]).await;
+    let v: Value = client().get(format!("{}/api/models/alice/bert/refs", h.base)).send().await.unwrap().json().await.unwrap();
+    assert_eq!(v["branches"], json!([{"name": "main", "ref": "refs/heads/main", "targetCommit": sha}]));
+    assert_eq!(v["tags"], json!([]));
+    assert_eq!(v["converts"], json!([]));
+}
+
+#[tokio::test]
+async fn tree_root_next_link_has_no_trailing_slash() {
+    let h = hub().await;
+    let names: Vec<String> = (0..1001).map(|i| format!("f{i:04}")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), b"x" as &[u8])).collect();
+    seed_hub(&h, HubKind::Model, "alice", "flat", true, &files).await;
+    let r = client().get(format!("{}/api/models/alice/flat/tree/main", h.base)).send().await.unwrap();
+    let next = r.headers()["link"].to_str().unwrap().to_string();
+    assert!(next.contains("/tree/main?recursive=false&cursor=f0999>"), "{next}");
 }
