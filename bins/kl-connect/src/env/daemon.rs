@@ -281,6 +281,11 @@ impl Daemon {
             Err(Error::Unauthorized) => return self.logged_out(Error::Unauthorized.to_string()).await,
             Err(e) => return fail(self, e.to_string(), &space.environment),
         };
+        // Laptop slept past the idle window: nothing else starts an idle-stopped environment, and
+        // the hold beat alone never does. Wake it before resolving names against it.
+        if let Err(e) = wake_if_idle(&cfg, &doc).await {
+            return fail(self, e.to_string(), &space.environment);
+        }
         let names: Vec<String> = doc.services.iter().map(|s| s.name.clone()).collect();
         let id = doc.id.clone();
         let asked = names.clone();
@@ -376,6 +381,13 @@ fn rfc3339(t: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+async fn wake_if_idle(cfg: &crate::config::Config, doc: &api::EnvDoc) -> Result<(), Error> {
+    if doc.idle_since.is_some() {
+        api::ensure_running(cfg, api::Kind::Environment, &doc.id).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +435,39 @@ mod tests {
         assert_eq!(read_team(d.path()), None);
         std::fs::write(d.path().join("env.json"), r#"{"team":"acme"}"#).unwrap();
         assert_eq!(read_team(d.path()).as_deref(), Some("acme"));
+    }
+
+    #[tokio::test]
+    async fn an_idle_environment_is_started_and_awaited() {
+        use axum::{extract::State, routing::{get, post}, Json, Router};
+        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+        let started = Arc::new(AtomicBool::new(false));
+        let app = Router::new()
+            .route(
+                "/v1/environments/e1",
+                get(|State(s): State<Arc<AtomicBool>>| async move {
+                    Json(if s.load(Ordering::SeqCst) {
+                        serde_json::json!({"state": "running", "ready": true})
+                    } else {
+                        serde_json::json!({"state": "stopped", "idle_since": "2026-10-12T10:00:00Z"})
+                    })
+                }),
+            )
+            .route(
+                "/v1/environments/e1/start",
+                post(|State(s): State<Arc<AtomicBool>>| async move {
+                    s.store(true, Ordering::SeqCst);
+                    axum::http::StatusCode::ACCEPTED
+                }),
+            )
+            .with_state(started.clone());
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = crate::config::Config { api: format!("http://{}", l.local_addr().unwrap()), token: "t".into(), expires_at: String::new(), username: "u".into() };
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let doc = |idle: Option<&str>| api::EnvDoc { id: "e1".into(), name: "e".into(), services: vec![], idle_since: idle.map(Into::into) };
+        wake_if_idle(&cfg, &doc(None)).await.is_ok().then_some(()).expect("wake");
+        assert!(!started.load(Ordering::SeqCst), "a running environment is left alone");
+        wake_if_idle(&cfg, &doc(Some("2026-10-12T10:00:00Z"))).await.is_ok().then_some(()).expect("wake");
+        assert!(started.load(Ordering::SeqCst), "idle-stopped is started");
     }
 }
