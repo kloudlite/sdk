@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { anyPodTools, podGet, podHold, podTools, touched } from "./pod.ts";
+import { anyPodTools, podGet, podHold, inflight, podTools, touched } from "./pod.ts";
 
 const realFetch = globalThis.fetch;
 let log: { url: string; auth: string | null }[] = [];
@@ -144,4 +144,31 @@ test("podHold posts /hold to a ready workspace", async () => {
   handler = (u) => (u.endsWith("/tools") && u.includes("/v1/") ? j({ address: "10.0.0.5:7788" }) : new Response(null, { status: 204 }));
   await podHold("w1");
   expect(log.at(-1)!.url).toBe("http://10.0.0.5:7788/hold");
+});
+
+test("a second NotReady after the wake throws: one retry only", async () => {
+  handler = () => j({ error: "idle" }, 409);
+  let woke = 0;
+  const t = await podTools("w1", { ensure: (async () => void woke++) as any });
+  await expect(t[0]!.run({})).rejects.toThrow("workspace not ready");
+  expect(woke).toBe(1);
+});
+
+test("an ensure failure surfaces instead of the NotReady", async () => {
+  handler = () => j({ error: "idle" }, 409);
+  const t = await podTools("w1", { ensure: (async () => { throw new Error("w1 is stopped; start it with `workspace_start`"); }) as any });
+  await expect(t[0]!.run({})).rejects.toThrow("workspace_start");
+});
+
+test("call() is activity: no x-kl-watch header, and inflight returns to empty", async () => {
+  let seen: any;
+  handler = (u, init) => {
+    if (u.endsWith("/v1/workspaces/w1/tools")) return j({ address: "10.0.0.5:7788" });
+    if (u.includes("/tools/")) seen = init.headers;
+    return j({ ok: 1 });
+  };
+  const t = await podTools("w1");
+  await t[0]!.run({});
+  expect(seen["x-kl-watch"]).toBeUndefined();
+  expect(inflight.has("w1")).toBe(false);
 });

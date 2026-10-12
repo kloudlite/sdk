@@ -25,6 +25,8 @@ export const podFence = (ws: string): PodFence | undefined => fences.get(ws);
 
 /** Last call per workspace: the hold beat (daemon.ts) pings only workspaces a running turn has used. */
 export const touched = new Map<string, number>();
+/** Calls in flight per workspace: a Claude Code session has no turn in the backend, but its call is running. */
+export const inflight = new Map<string, number>();
 
 class NotReady extends Error {}
 
@@ -91,6 +93,7 @@ export async function podTools(ws: string, o: { ensure?: typeof ensureRunning } 
     try {
       let res: Response | undefined;
       touched.set(ws, Date.now());
+      inflight.set(ws, (inflight.get(ws) ?? 0) + 1);
       // a stale address (pod restarted, token rotated) shows as a network error or 401: re-resolve once.
       // Never after our own timeout: the pod got the call and may still be running it, so a resend
       // runs a second `go test` beside the first (2026-10-10: one exec became nine minutes).
@@ -103,11 +106,7 @@ export async function podTools(ws: string, o: { ensure?: typeof ensureRunning } 
           // an idle-stopped workspace has no address: wake it once (a person's stop throws from ensure) and go again
           if (e instanceof NotReady && !woke) {
             woke = true;
-            await (o.ensure ?? ensureRunning)("workspaces", ws).catch((x) => {
-              // a lookup failure inside ensure says less than the NotReady we already have
-              if (/is stopped; start it|did not become ready/.test(String(x?.message))) throw x;
-              throw e;
-            });
+            await (o.ensure ?? ensureRunning)("workspaces", ws);
             attempt--;
           } else if (e instanceof NotReady || attempt || e?.name === "TimeoutError") throw e;
         }
@@ -130,6 +129,9 @@ export async function podTools(ws: string, o: { ensure?: typeof ensureRunning } 
       // a failed call throws (a codemode script stops, a direct call shows as failed); a command that ran and exited non-zero is a 200 and stays a result
       if (e instanceof NotReady) throw new Error(`${name}: workspace not ready: ${e.message}`);
       throw e?.message?.startsWith(`${name} `) ? e : new Error(`${name}: ${e?.message ?? e}`);
+    } finally {
+      const n = (inflight.get(ws) ?? 1) - 1;
+      n > 0 ? inflight.set(ws, n) : inflight.delete(ws);
     }
   }
 

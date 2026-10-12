@@ -6,7 +6,23 @@ import { apiJson, seg } from "./platform.ts";
 const POLL_MS = 2_000;
 const TIMEOUT_MS = 180_000;
 
-export async function ensureRunning(
+/** Concurrent callers of one idle target share a single wake (one POST /start). */
+const waking = new Map<string, Promise<void>>();
+
+export function ensureRunning(
+  kind: "workspaces" | "environments",
+  id: string,
+  o: { api?: typeof apiJson; sleep?: (ms: number) => Promise<void>; timeoutMs?: number } = {},
+): Promise<void> {
+  const key = `${kind}/${id}`;
+  const cur = waking.get(key);
+  if (cur) return cur;
+  const p = wake(kind, id, o).finally(() => waking.delete(key));
+  waking.set(key, p);
+  return p;
+}
+
+async function wake(
   kind: "workspaces" | "environments",
   id: string,
   o: { api?: typeof apiJson; sleep?: (ms: number) => Promise<void>; timeoutMs?: number } = {},
@@ -20,9 +36,20 @@ export async function ensureRunning(
   if (d?.idle_since) await api("POST", `${path}/start`);
   else if (d?.state === "stopped") throw new Error(`${id} is stopped; start it with \`${kind === "workspaces" ? "workspace_start" : "env_start"}\``);
   const until = Date.now() + (o.timeoutMs ?? TIMEOUT_MS);
+  let failed = false;
   for (;;) {
-    d = await api("GET", path);
+    // one failed GET mid-poll is a blip; the second in a row is real
+    try {
+      d = await api("GET", path);
+      failed = false;
+    } catch (e) {
+      if (failed) throw e;
+      failed = true;
+      await sleep(POLL_MS);
+      continue;
+    }
     if (ready(d)) return;
+    if (d?.state === "error" || d?.state === "deleted") throw new Error(`${id} is ${d.state}: ${reason(d)}`);
     if (Date.now() >= until) throw new Error(`${id} did not become ready: ${reason(d)}`);
     await sleep(POLL_MS);
   }

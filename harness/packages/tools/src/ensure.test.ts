@@ -41,4 +41,28 @@ describe("ensureRunning", () => {
     ]);
     await expect(ensureRunning("workspaces", "w1", { api: f.api as any, sleep, timeoutMs: 0 })).rejects.toThrow("KeysNotReady");
   });
+  test("two concurrent calls on an idle target start it once", async () => {
+    const f = fakeApi([doc({ state: "stopped", idle_since: "x" }), doc({ state: "ready" })]);
+    await Promise.all([ensureRunning("workspaces", "wc", { api: f.api as any, sleep }), ensureRunning("workspaces", "wc", { api: f.api as any, sleep })]);
+    expect(f.calls.filter((c) => c.startsWith("POST"))).toEqual(["POST /v1/workspaces/wc/start"]);
+  });
+  test("error and deleted end the wait at once", async () => {
+    const f = fakeApi([doc({ state: "stopped", idle_since: "x" }), doc({ state: "error", degraded: { status: "False", reason: "Boom" } })]);
+    await expect(ensureRunning("workspaces", "we", { api: f.api as any, sleep })).rejects.toThrow("is error: Boom");
+    const g = fakeApi([doc({ state: "stopped", idle_since: "x" }), doc({ state: "deleted" })]);
+    await expect(ensureRunning("workspaces", "wd", { api: g.api as any, sleep })).rejects.toThrow("is deleted");
+  });
+  test("one failed GET mid-poll is tolerated, two in a row throw", async () => {
+    let n = 0;
+    const mk = (fails: number) => async (m: string) => {
+      if (m === "POST") return {} as any;
+      n++;
+      if (n === 1) return { state: "stopped", idle_since: "x" } as any;
+      if (n <= 1 + fails) throw new Error("blip");
+      return { state: "ready" } as any;
+    };
+    await ensureRunning("workspaces", "wb", { api: mk(1) as any, sleep });
+    n = 0;
+    await expect(ensureRunning("workspaces", "wb2", { api: mk(2) as any, sleep })).rejects.toThrow("blip");
+  });
 });

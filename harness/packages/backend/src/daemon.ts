@@ -14,7 +14,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import type { Backend } from "./index.ts";
 import { serve } from "./serve.ts";
 import { Peer } from "./wire.ts";
-import { podHold, touched } from "@kloudlite-tui/tools";
+import { envHold, followedEnvs, inflight, podHold, touched } from "@kloudlite-tui/tools";
 
 export const sockPath = () => process.env.KL_HOST_SOCK ?? join(homedir(), ".kl", "host.sock");
 
@@ -36,6 +36,29 @@ export function attach(backend: Backend) {
 /** Workspaces used since the oldest running turn began: those turns may still need them. */
 export const holdTargets = (t: Map<string, number>, oldest: number | undefined): string[] =>
   oldest === undefined ? [] : [...t].filter(([, ms]) => ms >= oldest).map(([ws]) => ws);
+
+export type HoldDeps = {
+  busy: () => number;
+  oldest: () => number | undefined;
+  touched: Map<string, number>;
+  inflight: Map<string, number>;
+  podHold: (ws: string) => Promise<void>;
+  envHold: (env: string) => Promise<void>;
+  listEnvs: () => Promise<string[]>;
+};
+
+/** One hold pass: workspaces with a call in flight (Claude Code sessions run no backend turn) plus,
+ * while a backend turn runs, those touched since it began; then every followed environment if any
+ * workspace is held. Best effort, never throws. */
+export async function holdBeat(d: HoldDeps): Promise<void> {
+  try {
+    const held = new Set(d.inflight.keys());
+    if (d.busy() > 0) for (const ws of holdTargets(d.touched, d.oldest())) held.add(ws);
+    if (!held.size) return;
+    await Promise.all([...held].map((ws) => d.podHold(ws).catch(() => {})));
+    for (const e of await d.listEnvs()) await d.envHold(e).catch(() => {});
+  } catch {}
+}
 
 export function host(backend: Backend, sock: string): Promise<Server> {
   rmSync(sock, { force: true }); // a crashed daemon leaves its socket file behind
@@ -98,7 +121,7 @@ if (import.meta.main) {
   let ticks = 0;
   setInterval(() => {
     beat();
-    if (++ticks % 12 === 0 && b.busyCount > 0) for (const ws of holdTargets(touched, b.oldestTurnStart())) void podHold(ws);
+    if (++ticks % 12 === 0) void holdBeat({ busy: () => b.busyCount, oldest: () => b.oldestTurnStart(), touched, inflight, podHold, envHold, listEnvs: followedEnvs });
   }, 5000);
   await b.resumeAsks();
 }
