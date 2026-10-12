@@ -75,7 +75,9 @@ pub async fn put_shard(os: &dyn ObjectStore, owner: &str, body: &[u8]) -> Result
     let mut new = false;
     for (fh, rec) in records {
         let key = keys::file(owner, &fh);
-        if os.head(&key).await.is_ok() {
+        // Skip on the LAST key written: a crash between the two puts leaves files/ without sha/,
+        // and testing files/ would skip every retry and never write the mapping.
+        if os.head(&keys::sha(owner, &rec.sha256)).await.is_ok() {
             continue;
         }
         let body = serde_json::to_vec(&rec).map_err(|e| e.to_string())?;
@@ -122,6 +124,19 @@ mod tests {
         assert_eq!(f.terms.len(), 1);
         let sha = os.get(&crate::keys::sha("alice", &f.sha256)).await.unwrap().bytes().await.unwrap();
         assert_eq!(&sha[..], b.file_hash.hex().as_bytes());
+    }
+
+    #[tokio::test]
+    async fn retry_after_partial_write_restores_sha_mapping() {
+        let os = InMemory::new();
+        let b = build(&[b"hello ", b"world"]);
+        put_xorb(&os, "alice", &b.xorb_hash, Bytes::from(b.xorb.clone())).await.unwrap();
+        put_shard(&os, "alice", &b.shard).await.unwrap();
+        let f = read_file(&os, "alice", &b.file_hash).await.unwrap().unwrap();
+        let sha = crate::keys::sha("alice", &f.sha256);
+        os.delete(&sha).await.unwrap();
+        assert!(put_shard(&os, "alice", &b.shard).await.unwrap());
+        assert!(os.head(&sha).await.is_ok());
     }
 
     #[tokio::test]
