@@ -572,3 +572,23 @@ test("asks a workspace answers in one turn deliver one reply per caller", async 
   expect(main.sent).toEqual(["prompt:[from w] all three done"]);
   expect(other.sent).toEqual(["prompt:[from w] all three done"]);
 });
+
+test("main_tell done names the sender's open tasks, still delivers; all done or blocked adds no note", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kl-board-"));
+  const own = tasksFile("w", dir);
+  addTask(own, { title: "a" });
+  addTask(own, { title: "b" });
+  updateTask(own, "T1", { state: "running" });
+  const main = fake();
+  const tell = tellOf(D({ messages: join(mkdtempSync(join(tmpdir(), "kl-msgs-")), "m.json"), tasks: dir, open: route(fake(), main) }), "w");
+  const r = await tell.run({ kind: "done", text: "shipped" });
+  expect(r).toContain("Your board still has open tasks: T1 (running), T2 (queued). Move each with task_update now:");
+  await flush();
+  expect(main.sent.at(-1)).toBe("prompt:[from w] done: shipped");
+  // blocked never gets the note, even with tasks open
+  addTask(own, { title: "c" });
+  expect(await tell.run({ kind: "blocked", text: "x" })).toBe("told main");
+  // the done close-out marked everything done, so a second report has nothing open
+  await tell.run({ kind: "done", text: "closing" });
+  expect(await tell.run({ kind: "done", text: "again" })).toBe("told main");
+});

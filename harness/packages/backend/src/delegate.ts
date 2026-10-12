@@ -368,6 +368,11 @@ export function delegateTools(kind: "main" | "workspace", ws: string | undefined
       async run(i: { kind: "done" | "blocked" | "need"; text: string }) {
         const to = deps.lastCaller?.get(ws!) ?? "main";
         const msg = `[from ${ws}] ${i.kind}: ${i.text}`;
+        // read before the close-out below: what the sender left open is what the note names
+        const open =
+          i.kind === "done"
+            ? readTasks(tasksFile(ws!, deps.tasks ?? tasksDir())).filter((t) => t.state === "running" || t.state === "queued")
+            : [];
         if (i.kind !== "need") {
           deps.reported?.add(ws!);
           // the platform keeps main's row for this ask (see header)
@@ -381,7 +386,10 @@ export function delegateTools(kind: "main" | "workspace", ws: string | undefined
         }
         recordMessage(deps.messages ?? messagesFile(), { from: base(ws!), to: base(to), text: msg, kind: i.kind, reply: deps.lastAsk?.get(ws!) });
         await deliver(deps, to, callerSettings(deps, ws!, caller), msg, ws!);
-        return `told ${to}`;
+        // never refuse the report; remind the session that its own board disagrees with it
+        return open.length
+          ? `told ${to}. Your board still has open tasks: ${open.map((t) => `${t.id} (${t.state})`).join(", ")}. Move each with task_update now: done with summary and verified if finished, failed or blocked if not.`
+          : `told ${to}`;
       },
     };
     return [tell, subagent(ws!, deps, caller, callerKey)];
