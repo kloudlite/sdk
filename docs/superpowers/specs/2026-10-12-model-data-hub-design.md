@@ -237,8 +237,10 @@ Only the sweep deletes hub bytes.
 
 - Live lists: after every ref change the owning node rewrites
   `hub/{owner}/live/{kind}/{name}` with every sha256 reachable from any ref in all history:
-  incrementally on push, in full on a ref delete. Repo delete drops the list.
-- Sweep: a beat in `bins/server/src/lanes.rs` every 6 h, one owner at a time.
+  rebuilt in full on every ref change, serialised per process (`ponytail:` incremental walk
+  when rebuilds take over a second). A failed rebuild deletes the list. Repo delete drops it.
+- Sweep: a worker lane beside `gc_lane` (`bins/worker/src/main.rs`) every 6 h, one owner at a
+  time.
   1. Read the owner's repo list, then every live list. A missing or unreadable list aborts that
      owner.
   2. List `sha/` and `lfs/`. Delete entries no live list names and older than the 24 h grace:
