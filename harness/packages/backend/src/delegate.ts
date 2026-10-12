@@ -15,7 +15,8 @@
 //! the ask it answers (`reply`).
 //! Delegated sessions ask through `deps.permit`, the daemon's gate: the card is raised for the caller's key on every connected TUI.
 //! The answer is the last assistant text seen before `agent_end`, tracked from the events. It only counts after
-//! the asked user message was seen (a busy target's message is routed: steered into its run or queued) (a busy session ends its CURRENT run before a queued message runs).
+//! the asked user message was seen (a busy target's message is routed: steered into its CURRENT run, or
+//! queued, and then that run ends before the queued message runs).
 //! A `workspace_ask` is saved to disk (asks.ts) while it is in flight and resent after a bench
 //! restart (`resumeAsks`), at most twice.
 import type { Cards } from "./cards.ts";
