@@ -333,7 +333,7 @@ test("an answer without main_tell closes the caller's ask row; a failed ask mark
   expect(readTasks(tasks).map((t) => t.state)).toEqual(["done", "queued", "failed"]);
 });
 
-test("main_tell blocked blocks the sender's running steps; done finishes every open step", async () => {
+test("main_tell blocked blocks the sender's running steps; done finishes running ones, leaves queued", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kl-board-"));
   const own = tasksFile("w", dir);
   for (const n of ["a", "b", "c"]) addTask(own, { title: n });
@@ -344,8 +344,9 @@ test("main_tell blocked blocks the sender's running steps; done finishes every o
   expect(readTasks(own).map((t) => t.state)).toEqual(["done", "running", "queued"]);
   await tell().run({ kind: "blocked", text: "b" });
   expect(readTasks(own).map((t) => t.state)).toEqual(["done", "blocked", "queued"]);
+  updateTask(own, "T3", { state: "running" });
   await tell().run({ kind: "done", text: "d" });
-  expect(readTasks(own).map((t) => t.state)).toEqual(["done", "done", "done"]);
+  expect(readTasks(own).map((t) => t.state)).toEqual(["done", "blocked", "done"]);
   await flush();
 });
 
@@ -573,7 +574,7 @@ test("asks a workspace answers in one turn deliver one reply per caller", async 
   expect(other.sent).toEqual(["prompt:[from w] all three done"]);
 });
 
-test("main_tell done names the sender's open tasks, still delivers; all done or blocked adds no note", async () => {
+test("main_tell done closes the running step, names queued ones, still delivers; blocked adds no note", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kl-board-"));
   const own = tasksFile("w", dir);
   addTask(own, { title: "a" });
@@ -582,13 +583,12 @@ test("main_tell done names the sender's open tasks, still delivers; all done or 
   const main = fake();
   const tell = tellOf(D({ messages: join(mkdtempSync(join(tmpdir(), "kl-msgs-")), "m.json"), tasks: dir, open: route(fake(), main) }), "w");
   const r = await tell.run({ kind: "done", text: "shipped" });
-  expect(r).toContain("Your board still has open tasks: T1 (running), T2 (queued). Move each with task_update now:");
+  expect(r).toContain("Your board still has queued tasks: T2. Move each with task_update now:");
+  expect(readTasks(own).map((t) => t.state)).toEqual(["done", "queued"]);
   await flush();
   expect(main.sent.at(-1)).toBe("prompt:[from w] done: shipped");
   // blocked never gets the note, even with tasks open
-  addTask(own, { title: "c" });
   expect(await tell.run({ kind: "blocked", text: "x" })).toBe("told main");
-  // the done close-out marked everything done, so a second report has nothing open
-  await tell.run({ kind: "done", text: "closing" });
+  updateTask(own, "T2", { state: "done" });
   expect(await tell.run({ kind: "done", text: "again" })).toBe("told main");
 });
