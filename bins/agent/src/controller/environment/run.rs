@@ -750,6 +750,7 @@ mod status_tests {
                 services: vec![],
                 storage: None,
                 desired_state: DesiredState::Running,
+                wake_at: None,
                 restore: restore.then(|| crd::RestoreWish { snapshot_id: "snap-1".into(), volume: "vol-1".into(), owner: None, region: None, requested_at: String::new() }),
                 intercepts: vec![],
                 system: None,

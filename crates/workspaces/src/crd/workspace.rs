@@ -54,6 +54,10 @@ pub struct WorkspaceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<WorkspaceStorage>,
     pub desired_state: DesiredState,
+    /// RFC 3339, written by `/v1` when a client asks for a pod that idled away. A pod is wanted
+    /// again only while this is later than `status.idleSince`. A bench reads `bench.wakeAt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_at: Option<String>,
     #[serde(default)]
     pub resources: PodResources,
     /// The package list, written by the API. Lives on `spec`, not a file in the workspace's own
@@ -231,30 +235,31 @@ pub fn is_bench(w: &Workspace) -> bool {
 }
 
 
-/// Whether a pod should exist now. An ordinary workspace runs while it is asked to; a bench also
-/// sleeps when idle, and a wake only counts if it came after the sleep it is meant to end.
+/// Whether a pod should exist now: asked to run, and not idle-stopped since the last wake. A wake
+/// only counts if it came AFTER the idle it is meant to end, so a stale wake never undoes a newer
+/// idle verdict. A bench reads its own `bench.wakeAt`; every other workspace reads `spec.wakeAt`.
 pub fn wants_pod(w: &Workspace) -> bool {
     if w.spec.desired_state != DesiredState::Running {
         return false;
     }
-    let Some(bench) = w.spec.bench.as_ref() else {
-        return true;
+    let wake_at = match w.spec.bench.as_ref() {
+        Some(_) if w.spec.access == Access::Paused => return false,
+        Some(b) => b.wake_at.as_deref(),
+        None => w.spec.wake_at.as_deref(),
     };
-    if w.spec.access == Access::Paused {
-        return false;
-    }
-    let Some(idle_since) = w.status.as_ref().and_then(|s| s.idle_since.as_deref()) else {
-        return true;
-    };
-    let Ok(idle_since) = chrono::DateTime::parse_from_rfc3339(idle_since) else {
-        return true;
-    };
-    match bench.wake_at.as_deref().and_then(|w| chrono::DateTime::parse_from_rfc3339(w).ok()) {
-        Some(wake_at) => wake_at > idle_since,
-        None => false,
-    }
+    awake(w.status.as_ref().and_then(|s| s.idle_since.as_deref()), wake_at)
 }
 
+/// `idle_since` unset or unparsable: awake. Otherwise only a `wake_at` strictly after it wakes.
+pub fn awake(idle_since: Option<&str>, wake_at: Option<&str>) -> bool {
+    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok();
+    let Some(idle) = idle_since.and_then(parse) else { return true };
+    wake_at.and_then(parse).is_some_and(|w| w > idle)
+}
+
+/// `Ready=False` reason: a workspace was stopped for sitting idle. Not a failure — the next
+/// connection wakes it.
+pub const IDLE: &str = "Idle";
 
 /// `Ready=False` reason: a bench slept because nothing used it. Not a failure — the next
 /// connection wakes it.
@@ -446,15 +451,28 @@ mod tests {
         assert!(!wants_pod(&w), "stopped refuses a wake");
     }
 
-    /// An ordinary workspace has no idle clock: a stale `idleSince` (from a bench that stopped
-    /// being one) must never stop it starting.
     #[test]
-    fn an_ordinary_workspace_ignores_the_idle_clock() {
+    fn awake_table() {
+        let t0 = "2026-10-12T10:00:00Z";
+        let t1 = "2026-10-12T10:00:01Z";
+        assert!(awake(None, None), "never idle");
+        assert!(!awake(Some(t0), None), "idle, never woken");
+        assert!(!awake(Some(t1), Some(t0)), "woken before the idle it must end");
+        assert!(!awake(Some(t0), Some(t0)), "same instant is not after");
+        assert!(awake(Some(t0), Some(t1)), "woken after idle");
+        assert!(awake(Some("garbage"), None), "unparsable idle_since is ignored");
+    }
+
+    #[test]
+    fn wants_pod_ordinary_workspace() {
         let mut w = ws(false);
-        w.status = Some(WorkspaceStatus { idle_since: Some("2026-09-13T10:00:00Z".into()), ..Default::default() });
         assert!(wants_pod(&w));
+        w.status = Some(WorkspaceStatus { idle_since: Some("2026-10-12T10:00:00Z".into()), ..Default::default() });
+        assert!(!wants_pod(&w), "idle-stopped");
+        w.spec.wake_at = Some("2026-10-12T10:00:01Z".into());
+        assert!(wants_pod(&w), "woken");
         w.spec.desired_state = DesiredState::Stopped;
-        assert!(!wants_pod(&w));
+        assert!(!wants_pod(&w), "explicit stop wins");
     }
 
     /// `is_bench` is the only predicate, so no other minter may produce a name that reads like one:

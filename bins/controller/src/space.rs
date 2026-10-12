@@ -429,6 +429,7 @@ mod tests {
                 services: vec![],
                 storage: None,
                 desired_state: crd::DesiredState::Running,
+                wake_at: None,
                 restore: None,
                 intercepts: vec![],
                 system: None,

@@ -58,6 +58,7 @@ pub(super) fn ws_spec() -> WorkspaceSpec {
         image: "nginx:alpine".into(),
         storage: Some(crate::crd::WorkspaceStorage { quota_gb: 10, source: None }),
         desired_state: DesiredState::Running,
+        wake_at: None,
         resources: PodResources::default(),
         packages: vec![],
         locks: vec![],

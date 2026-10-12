@@ -341,6 +341,7 @@ mod tests {
                     image: "i".into(),
                     storage: None,
                     desired_state: desired,
+                    wake_at: None,
                     resources: Default::default(),
                     packages: vec![],
                     locks: vec![],

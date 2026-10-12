@@ -503,6 +503,7 @@ mod inputs_tests {
                 image: String::new(),
                 storage: None,
                 desired_state: DesiredState::Running,
+                wake_at: None,
                 resources: crd::PodResources::default(),
                 packages: packages.iter().map(|p| p.to_string()).collect(),
                 locks,
