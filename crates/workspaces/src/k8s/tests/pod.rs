@@ -431,6 +431,8 @@ pub(crate) fn the_login_env_redirects_every_cache_into_the_volume() {
     // History is in the volume too: it travels with a clone, a restore and a move.
     assert_eq!(get("HISTFILE"), format!("{HOME_DIR}/.cache/zsh/history"));
     assert_eq!(get("DO_NOT_TRACK"), "1");
+    // The Nix-Python wheel-library preload the image ships (`deploy/workspace-image/sitecustomize.py`).
+    assert_eq!(get("PYTHONPATH"), "/etc/kloudlite/python");
 }
 
 

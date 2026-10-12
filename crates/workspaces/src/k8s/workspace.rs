@@ -78,6 +78,10 @@ pub(super) fn login_env(
         // is snapshotted, replicated and cloned with it, so a start on another node or a restore
         // finds what was typed, where the per-node state dir left every move blank.
         var("HISTFILE", format!("{HOME_DIR}/.cache/zsh/history")),
+        // A Nix Python finds the profile's libstdc++/zlib for pip wheels through this preload
+        // (`deploy/workspace-image/sitecustomize.py`), never a global `LD_LIBRARY_PATH`: that would
+        // hand Nix's newer libstdc++ to the image's Debian-glibc node and the VS Code server.
+        var("PYTHONPATH", "/etc/kloudlite/python".into()),
     ];
     // Unset rather than empty when the agent has no `WS_API_URL`, exactly as the bench pod does:
     // `kl` then fails closed with "not in a workspace" instead of dialling an empty host.
