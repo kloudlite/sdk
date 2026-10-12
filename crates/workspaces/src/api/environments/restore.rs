@@ -236,6 +236,17 @@ pub(crate) struct CloneBody {
     quota_gb: Option<u64>,
 }
 
+/// Everything a new environment grown from a snapshot takes from the request. Shared by clone
+/// (`CloneBody`) and create (`NewEnvironment`) so the guards below exist once.
+pub(super) struct FromSnapshot {
+    pub name: String,
+    pub snapshot_id: String,
+    pub owner: Option<String>,
+    pub services: Option<Vec<Service>>,
+    pub region: Option<String>,
+    pub quota_gb: Option<u64>,
+}
+
 /// A NEW environment from this one: its live state, or one of its snapshots (`snapshot_id`).
 /// Live clone: names no node, for the same reason `clone_ws` does not, and the source's
 /// already-validated services carry over untouched.
@@ -250,7 +261,16 @@ pub(crate) async fn clone_env(
     let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
     let src = find_env(&s, &caller_id, &id).await?;
     if body.snapshot_id.is_some() {
-        return clone_from_snapshot(&s, &caller_id, src, body).await;
+        let source_volume = env_volume(&src).ok_or_else(not_ready)?.to_string();
+        let from = FromSnapshot {
+            name: body.name,
+            snapshot_id: body.snapshot_id.unwrap_or_default(),
+            owner: body.owner,
+            services: body.services,
+            region: body.region,
+            quota_gb: body.quota_gb,
+        };
+        return clone_from_snapshot(&s, &caller_id, Some(&source_volume), from).await;
     }
     // Refused rather than ignored: a caller who sent `services` expects them to run.
     if body.owner.is_some() || body.services.is_some() || body.region.is_some() || body.quota_gb.is_some() {
@@ -322,16 +342,16 @@ pub(crate) async fn clone_env(
 /// environment's data without its services is not the environment. A non-empty body list overrides
 /// it; an empty one means the same as none. An environment always has services.
 ///
-/// ponytail: the snapshot must belong to a LIVE environment of the caller (`{id}` goes through
-/// `find_env`). The old restore-to-new took a bare snapshot id, so it also reached the snapshots of
-/// a deleted environment's volume; that way in is gone until a route for it is wanted.
-async fn clone_from_snapshot(
+/// ponytail: two callers. `clone_env` passes the source environment's volume, so the snapshot must
+/// be that volume's. `create_env` passes `None`: any Ready snapshot whose owner is the caller's
+/// (the old restore-to-new rule), which is the way in for the snapshots of a DELETED environment.
+pub(super) async fn clone_from_snapshot(
     s: &Arc<ApiState>,
     caller_id: &crate::api::Caller,
-    src: crd::Environment,
-    body: CloneBody,
+    source_volume: Option<&str>,
+    body: FromSnapshot,
 ) -> Result<Response, Response> {
-    let snapshot_id = body.snapshot_id.clone().unwrap_or_default();
+    let snapshot_id = body.snapshot_id.clone();
     // A caller-authored list is refused before anything is read or written, as it always was; the
     // resolved list is checked again below, because it may instead come from the snapshot.
     if let Some(svcs) = &body.services {
@@ -349,8 +369,7 @@ async fn clone_from_snapshot(
     // A clone at a named snapshot under the snapshot model — see `restore_ws`'s matching comment.
     // `find_snapshot` is the ownership check: CR exists, Ready, same volume as the source, and the
     // caller may read `spec.owner`.
-    let source_volume = env_volume(&src).ok_or_else(not_ready)?.to_string();
-    let snap = find_snapshot(s, caller_id, Some(&source_volume), &snapshot_id).await?;
+    let snap = find_snapshot(s, caller_id, source_volume, &snapshot_id).await?;
     let (volume, src_owner) = (snap.spec.volume.clone(), snap.spec.owner.clone());
     // Twin of restore_ws's guard: a workspace's frozen state under an environment clone would
     // mount nothing and silently ignore the image/packages it froze. `None` stays "absent means

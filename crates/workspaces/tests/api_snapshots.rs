@@ -5,7 +5,7 @@ use common::token;
 
 use kloudlite_core::jwt::Jwt;
 use kloudlite_workspaces::api::{router, ApiState};
-use kloudlite_workspaces::kube_test::{get, mock_client, not_found, Recorder, Route};
+use kloudlite_workspaces::kube_test::{get, mock_client, not_found, post, Recorder, Route};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -134,7 +134,7 @@ async fn push_creates_a_working_snapshot_with_worktree_and_parent() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
 
     let req = s.rec.sent("POST", &format!("{API}/snapshots")).remove(0);
     assert_eq!(req["spec"]["volume"], "ws-0000000000000001");
@@ -1041,7 +1041,7 @@ async fn a_push_records_the_workspace_definition_on_the_snapshot() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
 
     let req = s.rec.sent("POST", &format!("{API}/snapshots")).remove(0);
     assert_eq!(req["spec"]["state"]["kind"], "workspace");
@@ -1072,7 +1072,7 @@ async fn a_push_records_the_environment_services_on_the_snapshot() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
 
     let req = s.rec.sent("POST", &format!("{API}/snapshots")).remove(0);
     assert_eq!(req["spec"]["state"]["kind"], "environment");
@@ -1115,4 +1115,70 @@ async fn a_clone_cut_records_the_source_definition() {
     let cut = s.rec.sent("POST", &format!("{API}/snapshots")).into_iter().find(|b| b["metadata"]["name"].as_str().unwrap().starts_with("clone-")).unwrap();
     assert_eq!(cut["spec"]["state"]["kind"], "workspace");
     assert_eq!(cut["spec"]["state"]["image"], "alpine:3.20");
+}
+
+// Environment CREATE with `snapshot_id`: the way in for the snapshots of a DELETED environment —
+// `/clone` needs a live source, create does not.
+
+async fn create_from(s: &Server, body: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/environments", s.base))
+        .bearer_auth(token(&s.jwt, "karthik"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_from_a_snapshot_of_a_deleted_environment_writes_a_clone_of_it() {
+    // No `Environment` route for env-...0009: it is gone. Only its snapshot and volume remain.
+    let snap = snapshot_with_state(
+        "env-0000000000000009-aaaaaaaa",
+        "env-0000000000000009",
+        "karthik",
+        "env-0000000000000009",
+        "",
+        "ready",
+        Some(env_state(json!([svc("db", &["data"])]), 30)),
+    );
+    let s = server(vec![
+        get(format!("{API}/snapshots/env-0000000000000009-aaaaaaaa"), snap),
+        get(format!("{API}/snapshots"), json!({"apiVersion": "kloudlite.io/v1alpha1", "kind": "SnapshotList", "metadata": {}, "items": []})),
+        post(format!("{API}/environments"), placed_env("env-new", "karthik")),
+    ])
+    .await;
+    let resp = create_from(&s, json!({"name": "back", "snapshot_id": "env-0000000000000009-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
+    let e = s.rec.sent("POST", &format!("{API}/environments")).remove(0);
+    assert_eq!(e["spec"]["storage"]["source"]["cloneOf"]["volume"], "env-0000000000000009");
+    assert_eq!(e["spec"]["storage"]["source"]["cloneOf"]["commit"], "env-0000000000000009-aaaaaaaa");
+    assert_eq!(e["spec"]["services"][0]["name"], "db");
+    assert_eq!(e["spec"]["storage"]["quotaGb"], 30, "the frozen quota wins over the default");
+}
+
+#[tokio::test]
+async fn create_from_a_foreign_snapshot_is_not_found() {
+    let snap = snapshot("env-0000000000000009-aaaaaaaa", "env-0000000000000009", "bob", "env-0000000000000009", "", "ready");
+    let s = server(vec![get(format!("{API}/snapshots/env-0000000000000009-aaaaaaaa"), snap)]).await;
+    let resp = create_from(&s, json!({"name": "back", "snapshot_id": "env-0000000000000009-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 404);
+    assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty(), "nothing written");
+}
+
+#[tokio::test]
+async fn create_from_a_workspace_snapshot_is_400() {
+    let snap = snapshot_with_state("ws-0000000000000001-aaaaaaaa", "ws-0000000000000001", "karthik", "ws-0000000000000001", "", "ready", Some(workspace_state("nginx", &[], 20)));
+    let s = server(vec![get(format!("{API}/snapshots/ws-0000000000000001-aaaaaaaa"), snap)]).await;
+    let resp = create_from(&s, json!({"name": "back", "snapshot_id": "ws-0000000000000001-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 400);
+    assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty(), "nothing written");
+}
+
+#[tokio::test]
+async fn create_without_snapshot_or_region_is_400() {
+    let s = server(vec![]).await;
+    let resp = create_from(&s, json!({"name": "plain"})).await;
+    assert_eq!(resp.status(), 400);
+    assert!(resp.text().await.unwrap().contains("region is required"));
 }

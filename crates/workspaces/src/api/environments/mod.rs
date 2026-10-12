@@ -79,17 +79,23 @@ pub(super) fn env_doc(e: &crd::Environment, pushed: &HashSet<String>) -> Environ
 #[derive(serde::Deserialize)]
 pub(crate) struct NewEnvironment {
     name: String,
-    region: String,
+    /// Required unless `snapshot_id` is set (then the snapshot's volume names it).
+    #[serde(default)]
+    region: Option<String>,
+    /// Grow the environment from this snapshot of the caller's, also one of a deleted
+    /// environment. `services` then default to the ones the snapshot froze.
+    #[serde(default)]
+    snapshot_id: Option<String>,
     #[serde(default)]
     services: Vec<Service>,
     /// A team slug — makes this a team-owned environment, run on the team's bound node.
     /// `None`/equal to the caller means an ordinary personal environment.
     #[serde(default)]
     owner: Option<String>,
-    /// An environment's subvolume holds every service's data. Defaults to the same 20 GB the web
-    /// app sends for a workspace.
-    #[serde(default = "default_env_quota")]
-    quota_gb: u64,
+    /// An environment's subvolume holds every service's data. Absent: the 20 GB default, or with
+    /// `snapshot_id` the snapshot's frozen quota first.
+    #[serde(default)]
+    quota_gb: Option<u64>,
 }
 
 pub(super) fn default_env_quota() -> u64 {
@@ -192,15 +198,29 @@ pub(crate) async fn create_env(
     Json(mut body): Json<NewEnvironment>,
 ) -> Result<Response, Response> {
     let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
+    if let Some(snapshot_id) = body.snapshot_id {
+        let from = restore::FromSnapshot {
+            name: body.name,
+            snapshot_id,
+            owner: body.owner,
+            services: Some(body.services),
+            region: body.region,
+            quota_gb: body.quota_gb,
+        };
+        return restore::clone_from_snapshot(&s, &caller_id, None, from).await;
+    }
+    let Some(region) = body.region else {
+        return Err((StatusCode::BAD_REQUEST, "region is required").into_response());
+    };
     // Mounts name volumes (folders inside the env's own subvolume), not workspaces. The name is
     // joined onto the env's subvolume by a root agent, so it is a security boundary, not a
     // formality — see `validate_mount`. Checked before anything is written, deliberately.
     check_services(&body.services)?;
     check_name(&body.name)?;
-    check_region(&s, &body.region).await?;
+    check_region(&s, &region).await?;
     let owner = resolve_new_owner(&s, &caller_id, body.owner).await?;
     let c = kube(&s)?;
-    let quota_gb = clamp_quota(&s, body.quota_gb);
+    let quota_gb = clamp_quota(&s, body.quota_gb.unwrap_or_else(default_env_quota));
     guard_alloc(&s, &owner, owner != caller_id.name, &environment_cost(body.services.len())).await?;
     super::image_pin::pin_images(&s, &owner, &mut body.services).await;
     let id = rid("env");
@@ -211,7 +231,7 @@ pub(crate) async fn create_env(
         crd::EnvironmentSpec {
             owner,
             name: body.name,
-            region: body.region,
+            region,
             services: body.services,
             storage: Some(crd::WorkspaceStorage { quota_gb, source: None }),
             desired_state: DesiredState::Running,
