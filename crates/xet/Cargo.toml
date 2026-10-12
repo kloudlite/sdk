@@ -18,6 +18,7 @@ slatedb = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+chrono = { workspace = true }
 rand = { workspace = true }
 xet-core-structures = { workspace = true }
 

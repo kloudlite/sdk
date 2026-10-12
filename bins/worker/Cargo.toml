@@ -12,6 +12,7 @@ path = "src/main.rs"
 tracing = { workspace = true }
 metrics = { workspace = true }
 kloudlite-core = { path = "../../crates/core" }
+kloudlite-xet = { path = "../../crates/xet" }
 kloudlite-storage = { path = "../../crates/storage" }
 kloudlite-pulls = { path = "../../crates/pulls" }     # model + jobs + merge_worker; NO check
 kloudlite-registry = { path = "../../crates/registry" }
