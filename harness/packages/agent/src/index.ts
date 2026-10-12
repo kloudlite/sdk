@@ -13,6 +13,7 @@ import {
 import type { Api, AuthInteraction, AuthType, Credential, Model } from "@earendil-works/pi-ai";
 import type { Registry } from "@kloudlite-tui/tools";
 import { budgeted, budgetExtension } from "./budget.ts";
+import { guardExtension } from "./guard.ts";
 import { orphansExtension } from "./orphans.ts";
 import { CAVEMAN_SKILL, CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
 
@@ -465,6 +466,7 @@ export async function createSession({
     extensionFactories: [
       { name: "orphans", factory: orphansExtension },
       { name: "budget", factory: budgetExtension(dir) },
+      { name: "guard", factory: guardExtension },
       ...(codemode ? [{ name: "codemode", factory: withCodemodeExtras(createCodemodeExtension({ mode: "on" }), () => (live?.getSteeringMessages().length ?? 0) > 0) }] : []),
     ],
     appendSystemPrompt: systemAppends(codemode, role),
