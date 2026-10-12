@@ -225,10 +225,10 @@ function derive(src: SessionHandle, over: Partial<SessionHandle>): SessionHandle
   }) as SessionHandle;
 }
 
-/** Context now against the window pi compacts at; undefined when pi has no model/window. */
 /** A busy session's routing fork gets this long before the message is just queued. */
 export const ROUTE_TIMEOUT_MS = 20_000;
 
+/** Context now against the window pi compacts at; undefined when pi has no model/window. */
 const contextOf = (agent: any): SessionState["context"] => {
   const u = agent.getContextUsage?.();
   return u && { tokens: u.tokens, window: u.contextWindow };
