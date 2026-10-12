@@ -6,12 +6,14 @@
 //! credential helper (`docker-credential-kl`) is their login.
 //!
 //! `kl pkg` and `kl env` DO call `/v1`, with the `workspace-token` the keys beat projects into the
-//! pod (`api.rs`). `kl ide serve` is the workspace tool server, started by the pod prelude — a
+//! pod (`api.rs`). `kl hf` runs Hugging Face's `hf` against Hugging Face or, with
+//! `--provider kloudlite`, our hub (`hf.rs`). `kl ide serve` is the workspace tool server, started by the pod prelude — a
 //! hidden verb, because no person types it.
 
 mod api;
 mod docker;
 mod env;
+mod hf;
 mod images;
 mod pkg;
 mod refs;
@@ -46,6 +48,15 @@ enum Cmd {
     Env {
         #[command(subcommand)]
         cmd: EnvCmd,
+    },
+    /// Hugging Face's `hf` CLI, against Hugging Face (default) or the kloudlite hub:
+    /// `kl hf --provider kloudlite download acme/model`
+    Hf {
+        /// huggingface or kloudlite. Put it before the hf arguments; a later one is refused.
+        #[arg(long, default_value = "huggingface")]
+        provider: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// The workspace tool server: files, exec, watch and graft over a plain HTTP tool API
     #[command(hide = true)]
@@ -156,6 +167,7 @@ fn real_main() -> Result<(), String> {
                 PkgCmd::Update => pkg::update(&api, &id),
             }
         }
+        Cmd::Hf { provider, args } => hf::run(&provider, &args),
         Cmd::Env { cmd } => {
             let (api, team) = (api::Api::from_env()?, env("KL_TEAM")?);
             match cmd {
@@ -270,12 +282,24 @@ mod tests {
     }
 
     #[test]
+    fn hf_takes_provider_first_and_leaves_a_late_one_in_args() {
+        let Cmd::Hf { provider, args } = Cli::try_parse_from(["kl", "hf", "--provider", "kloudlite", "download", "acme/m", "--repo-type", "dataset"]).unwrap().cmd else { panic!() };
+        assert_eq!(provider, "kloudlite");
+        assert_eq!(args, ["download", "acme/m", "--repo-type", "dataset"]);
+        // clap stops at the first positional, so a late `--provider` lands in args;
+        // `hf::check_args` then refuses it before hf runs.
+        let Cmd::Hf { provider, args } = Cli::try_parse_from(["kl", "hf", "download", "x", "--provider", "kloudlite"]).unwrap().cmd else { panic!() };
+        assert_eq!(provider, "huggingface");
+        assert_eq!(args, ["download", "x", "--provider", "kloudlite"]);
+    }
+
+    #[test]
     fn help_lists_the_three_verbs_and_hides_ide() {
         let help = Cli::command().render_help().to_string();
         for v in ["container", "pkg", "env"] {
             assert!(help.contains(v), "{v} missing from:\n{help}");
         }
-        assert!(!help.contains("ide"), "ide should be hidden:\n{help}");
+        assert!(!help.contains("  ide "), "ide should be hidden:\n{help}");
     }
 
     #[test]
