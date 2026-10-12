@@ -33,7 +33,12 @@ pub fn child_env(provider: &str, hub_url: Option<String>, token: Option<String>,
             let mut set = vec![("HF_ENDPOINT", url), ("HF_HUB_CACHE", format!("{home}/.cache/kloudlite/hub"))];
             let mut remove = vec![];
             match token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-                Some(t) => set.push(("HF_TOKEN", t)),
+                // OIDC outranks HF_TOKEN in huggingface_hub, and a person's implicit-token switch
+                // would keep ours from being sent: only our token may reach our hub.
+                Some(t) => {
+                    set.push(("HF_TOKEN", t));
+                    remove.extend(["HF_OIDC_RESOURCE", "HF_HUB_DISABLE_IMPLICIT_TOKEN"]);
+                }
                 // Anonymous still reads public repos; what it must not do is send the person's
                 // Hugging Face token to our hub. `token=True` calls (whoami) read every source
                 // directly and bypass the implicit-token switch, so close them all.
@@ -97,7 +102,7 @@ mod tests {
         assert_eq!(get(&e, "HF_ENDPOINT"), Some("https://hub.khost.dev"), "trailing slash trimmed");
         assert_eq!(get(&e, "HF_TOKEN"), Some("tok"), "token file newline trimmed");
         assert_eq!(get(&e, "HF_HUB_CACHE"), Some("/home/kl/.cache/kloudlite/hub"));
-        assert!(e.remove.is_empty());
+        assert_eq!(e.remove, vec!["HF_OIDC_RESOURCE", "HF_HUB_DISABLE_IMPLICIT_TOKEN"]);
         assert_eq!(get(&e, "HF_HUB_DISABLE_IMPLICIT_TOKEN"), None);
     }
 
