@@ -16,6 +16,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![allow(clippy::result_large_err)]
 
+pub mod gc;
 pub mod keys;
 pub mod lfs;
 pub mod recon;

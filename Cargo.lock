@@ -4944,6 +4944,7 @@ dependencies = [
  "kloudlite-pulls",
  "kloudlite-registry",
  "kloudlite-storage",
+ "kloudlite-xet",
  "metrics",
  "rand 0.8.7",
  "reqwest",
@@ -5003,6 +5004,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
+ "chrono",
  "futures",
  "hex",
  "hmac 0.12.1",

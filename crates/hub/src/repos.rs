@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use kloudlite_core::httpx::Trusted;
 use kloudlite_storage::HubKind;
+use object_store::ObjectStoreExt;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -76,6 +77,13 @@ pub async fn create(
     }
     // ponytail: exists-then-create can race two creators; the loser's create fails inside the
     // store and surfaces as a 500. A conditional create in `hub_create` closes it if it matters.
+    // The empty live list goes first: a repo with no list aborts its owner's sweep, so create can
+    // never leave a window where the sweep reads "no list" as "keep nothing". A crash between this
+    // put and `hub_create` leaves a list with no repo, which keeps nothing extra.
+    let empty = serde_json::to_vec(&kloudlite_xet::gc::LiveList::default()).unwrap_or_default();
+    if let Err(e) = store.os.put(&kloudlite_xet::keys::live(&owner, kind.ns(), &name), empty.into()).await {
+        return internal(e);
+    }
     match store.hub_create(kind, &owner, &name, b.private.unwrap_or(true)).await {
         Ok(()) => Json(json!({ "url": url })).into_response(),
         Err(e) if e.to_string().contains("invalid") => hub_err(StatusCode::BAD_REQUEST, None, "invalid repository name"),
@@ -108,7 +116,11 @@ pub async fn delete(
         Err(e) => return internal(e),
     }
     match st.app.store.hub_delete(kind, &owner, &name).await {
-        Ok(()) => StatusCode::OK.into_response(),
+        Ok(()) => {
+            // A list left behind by a failed delete over-keeps, never under-keeps.
+            let _ = st.app.store.os.delete(&kloudlite_xet::keys::live(&owner, kind.ns(), &name)).await;
+            StatusCode::OK.into_response()
+        }
         Err(e) => internal(e),
     }
 }

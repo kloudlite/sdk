@@ -34,3 +34,29 @@ pub fn sha(owner: &str, sha_hex: &str) -> Path {
 pub fn lfs(owner: &str, sha_hex: &str) -> Path {
     Path::from(format!("lfs/{owner}/sha256/{sha_hex}"))
 }
+
+/// `hub/{owner}/live/{mdl|ds}/{name}`: every sha256 any ref of that repo reaches. Written only by
+/// the owning node; read only by the sweep. `tag` is `HubKind::ns()`.
+pub fn live(owner: &str, tag: &str, name: &str) -> Path {
+    Path::from(format!("hub/{owner}/live/{tag}/{name}"))
+}
+pub fn live_prefix(owner: &str) -> Path {
+    Path::from(format!("hub/{owner}/live"))
+}
+pub fn sha_prefix(owner: &str) -> Path {
+    Path::from(format!("xet/{owner}/sha"))
+}
+pub fn file_prefix(owner: &str) -> Path {
+    Path::from(format!("xet/{owner}/files"))
+}
+/// Xorbs and their `.idx` siblings share this directory.
+pub fn xorb_prefix(owner: &str) -> Path {
+    Path::from(format!("xet/{owner}/xorbs"))
+}
+pub fn lfs_prefix(owner: &str) -> Path {
+    Path::from(format!("lfs/{owner}/sha256"))
+}
+/// Staging uploads (`lfs.rs` writes `{oid}-{rand}` here before the rename into place).
+pub fn lfs_tmp_prefix(owner: &str) -> Path {
+    Path::from(format!("lfs/{owner}/tmp"))
+}

@@ -738,3 +738,33 @@ async fn lfs_locks_are_404() {
     let r = client().post(format!("{}/alice/m.git/info/lfs/locks/verify", h.base)).basic_auth("alice", Some(&h.alice)).body("{}").send().await.unwrap();
     assert_eq!(r.status(), 404);
 }
+
+async fn live_of(h: &Hub, tag: &str, owner: &str, name: &str) -> Option<kloudlite_xet::gc::LiveList> {
+    use slatedb::object_store::ObjectStoreExt;
+    match h.e.store.os.get(&kloudlite_xet::keys::live(owner, tag, name)).await {
+        Ok(g) => Some(serde_json::from_slice(&g.bytes().await.unwrap()).unwrap()),
+        Err(_) => None,
+    }
+}
+
+#[tokio::test]
+async fn create_writes_an_empty_live_list_and_delete_drops_it() {
+    let h = hub().await;
+    assert_eq!(create(&h, Some(&h.alice), json!({"name": "m"})).await.status(), 200);
+    assert!(live_of(&h, "mdl", "alice", "m").await.unwrap().shas.is_empty());
+    let r = client().delete(format!("{}/api/repos/delete", h.base)).bearer_auth(&h.alice).json(&json!({"name": "m"})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(live_of(&h, "mdl", "alice", "m").await.is_none());
+}
+
+#[tokio::test]
+async fn ref_changes_rebuild_the_live_list() {
+    let h = hub().await;
+    let sha = "c".repeat(64);
+    let ptr = kloudlite_hub::pointer::text(&sha, 10);
+    seed_hub(&h, HubKind::Model, "alice", "m", false, &[("w.bin", ptr.as_bytes()), ("a.txt", b"plain")]).await;
+    assert!(live_of(&h, "mdl", "alice", "m").await.is_none(), "seed_hub bypasses the API");
+    assert_eq!(post_json(&h, "/api/models/alice/m/branch/dev", &h.alice, json!({})).await.status(), 200);
+    let l = live_of(&h, "mdl", "alice", "m").await.unwrap();
+    assert_eq!(l.shas.into_iter().collect::<Vec<_>>(), vec![sha]);
+}

@@ -145,8 +145,11 @@ async fn run() -> Result<()> {
     let gc_store = Arc::clone(&store);
     let gc_cache = cache.clone();
     let gc_central = central.clone();
-    let mut tasks =
-        vec![tokio::spawn(async move { gc_lane(&gc_store, grace, &gc_cache, gc_central).await })];
+    let hub_store = Arc::clone(&store);
+    let mut tasks = vec![
+        tokio::spawn(async move { gc_lane(&gc_store, grace, &gc_cache, gc_central).await }),
+        tokio::spawn(async move { hub_gc_lane(&hub_store).await }),
+    ];
     for i in 0..lanes {
         let alive = cache.join(format!("worker-alive.{i}"));
         let w = Worker {
@@ -533,6 +536,29 @@ const GC_OWNER_GAP: std::time::Duration = std::time::Duration::from_secs(5);
 // The between-passes gap is now `central.load().gc_interval_secs`, read at the top of `gc_lane`'s
 // loop (`CentralSettings::from_env`'s default, 60, is what this constant used to be) — an admin
 // change takes effect on the next pass instead of the next restart.
+
+const HUB_GC_GAP: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+const HUB_GC_GRACE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Hub bytes (Xet and plain LFS). Owners come from both byte prefixes: an owner who only ever
+/// used plain git-lfs has nothing under `xet/`.
+async fn hub_gc_lane(store: &kloudlite_storage::store::Store) {
+    loop {
+        let mut owners = owners_under(store, "xet/").await;
+        owners.extend(owners_under(store, "lfs/").await);
+        owners.sort();
+        owners.dedup();
+        for owner in &owners {
+            match kloudlite_xet::gc::sweep_owner(&*store.os, owner, HUB_GC_GRACE).await {
+                Ok(n) if n > 0 => tracing::info!(%owner, count = n, "hub.gc.swept"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(%owner, error = %e, "hub.gc.failed"),
+            }
+            tokio::time::sleep(GC_OWNER_GAP).await;
+        }
+        tokio::time::sleep(HUB_GC_GAP).await;
+    }
+}
 
 /// Every owner with anything under any image prefix. `blobs/` alone misses an owner whose layers
 /// were all deleted but whose manifests remain, and one whose image database exists with nothing

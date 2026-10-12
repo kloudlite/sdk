@@ -383,6 +383,7 @@ pub async fn commit(
         Ok(_) => return stale(),
         Err(e) => return internal(e),
     }
+    crate::live::after_update(&st, &a).await;
     let url = format!("{}/{}{owner}/{name}/commit/{new}", st.base, kind.url_prefix());
     Json(json!({ "commitUrl": url, "commitOid": new.to_string(), "pullRequestUrl": null })).into_response()
 }
