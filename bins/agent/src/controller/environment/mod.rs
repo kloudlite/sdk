@@ -192,11 +192,16 @@ pub async fn apply_environment(e: &crd::Environment, ctx: &Arc<Ctx>) -> Result<A
         if idle {
             tracing::info!(kind = "environment", id = %e.name_any(), idle_secs, last_activity = ?prev.unfollowed_since, "idle.verdict");
             prev.idle_since = Some(k8s_openapi::jiff::Timestamp::now().to_string());
-            prev.unfollowed_since = unfollowed;
+            // Cleared with the stop, or the wake would carry the old clock and re-idle on its first
+            // Running pass.
+            prev.unfollowed_since = None;
             return stop_environment(e, &vol, &ns, &deployments, prev, gen, ctx, idle::idle_condition(gen)).await;
         }
         // Carried by the `..prev` status writes below.
         prev.unfollowed_since = unfollowed;
+    } else {
+        // Not running (a start in flight) or not eligible: every start begins a fresh window.
+        prev.unfollowed_since = None;
     }
     // Starts spread, exactly as a workspace's does — same decision, same one-caller rule: only the
     // owner, only when nothing on the volume is running. An environment has no `podRef`, so
