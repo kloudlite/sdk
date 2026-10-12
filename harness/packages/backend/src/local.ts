@@ -20,6 +20,7 @@ import {
   offered,
   piBtw,
   piRoute,
+  piWatch,
   resolveModel,
   writeSettings,
   type ModelRef,
@@ -29,6 +30,7 @@ import { Cards } from "./cards.ts";
 import { WORKSPACE_DIR, delegateTools, resumeAsks, type DelegateDeps } from "./delegate.ts";
 import { asksDir, listAsks } from "./asks.ts";
 import { forgetSessions } from "./forget.ts";
+import { boardWatcher } from "./watch.ts";
 import { SpaceWatch } from "./spacewatch.ts";
 import * as git from "./git.ts";
 import { BECAUSE_SCHEMA, TurnWords, consented } from "./consent.ts";
@@ -730,6 +732,7 @@ export class LocalBackend implements Backend {
     const note = this.#notices.get(key);
     this.#notices.delete(key);
     if (note) setTimeout(() => handle.notice(note), 0);
+    if (sessionKind(key).kind !== "subagent") handle.subscribe(boardWatcher({ key, file: tasksFile(key, this.#tasks), ask: (board) => piWatch(agent, board) }));
     let doneBefore = new Set<string>();
     handle.subscribe((e) => {
       if (e.type === "agent_start") {

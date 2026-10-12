@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { btwPrompt, piBtw, piRoute, ROUTE_SYSTEM } from "./btw.ts";
+import { btwPrompt, parseWatch, piBtw, piRoute, ROUTE_SYSTEM } from "./btw.ts";
 
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 });
 const assistant = (text: string) => ({
@@ -67,4 +67,12 @@ test("piRoute parses STEER and QUEUE, rejects garbage, and sends <new_message>",
   expect(a.f.seen[0][1].systemPrompt).toBe(ROUTE_SYSTEM);
   expect((await run("\nqueue - later")).r).toEqual({ steer: false, reason: "- later" });
   await expect(run("maybe")).rejects.toThrow("unparsable route: maybe");
+});
+
+test("parseWatch reads the first non-empty line: RUNNING: <id> or nothing", () => {
+  expect(parseWatch("RUNNING: T3")).toBe("T3");
+  expect(parseWatch("\n  running:T12 extra words")).toBe("T12");
+  expect(parseWatch("NONE")).toBeNull();
+  expect(parseWatch("")).toBeNull();
+  expect(parseWatch("NONE\nRUNNING: T1")).toBeNull();
 });

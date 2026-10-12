@@ -17,7 +17,7 @@ import { guardExtension } from "./guard.ts";
 import { orphansExtension } from "./orphans.ts";
 import { CAVEMAN_SKILL, CODEMODE_SKILL, KLOUDLITE_SKILL, roleSkill, type Role } from "./roles.ts";
 
-export { btwPrompt, piBtw, piRoute } from "./btw.ts";
+export { btwPrompt, piBtw, piRoute, piWatch } from "./btw.ts";
 
 export type {
   AgentSession,

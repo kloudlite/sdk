@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addTask, blockers, boardTools, boardText, ready, readTasks, taskTools, tasksFile, updateTask } from "./tasks.ts";
+import { addTask, blockers, markRunning, boardTools, boardText, ready, readTasks, taskTools, tasksFile, updateTask } from "./tasks.ts";
 
 const tmp = () => join(mkdtempSync(join(tmpdir(), "kl-tasks-")), "tasks.json");
 
@@ -92,4 +92,26 @@ test("task_update refuses done without summary or verified, and an over-long sum
   expect(readTasks(f)[0]!.state).toBe("queued");
   expect(await upd.run({ id: "T1", state: "done", summary: "did it", verified: "bun test: pass" })).toContain("[done]");
   expect(readTasks(f)[0]).toMatchObject({ state: "done", summary: "did it", verified: "bun test: pass" });
+});
+
+test("markRunning marks a queued task when nothing runs; refuses otherwise", () => {
+  const f = tmp();
+  addTask(f, { title: "a" });
+  addTask(f, { title: "b" });
+  expect(markRunning(f, "T1")).toBe(true);
+  expect(readTasks(f)[0]).toMatchObject({ state: "running", by: "watcher" });
+  expect(boardText(readTasks(f))).toContain("T1 [running] (watcher)");
+  expect(markRunning(f, "T2")).toBe(false); // something already runs
+  expect(markRunning(f, "T1")).toBe(false); // not queued
+  expect(markRunning(f, "T9")).toBe(false);
+});
+
+test("task_update clears the watcher's mark", async () => {
+  const f = tmp();
+  addTask(f, { title: "a" });
+  markRunning(f, "T1");
+  const update = taskTools(f).find((t) => t.name === "task_update")!;
+  await update.run({ id: "T1", note: "mine" });
+  expect(readTasks(f)[0]!.by).toBeUndefined();
+  expect(boardText(readTasks(f))).not.toContain("(watcher)");
 });
