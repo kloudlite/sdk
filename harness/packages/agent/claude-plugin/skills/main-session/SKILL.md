@@ -64,7 +64,7 @@ A tool with the mark **card** shows a permission card to the person before it ru
 | `env_list`, `env_get` | See the environments, their services, and the intercepts. |
 | `env_create`, `env_clone`, `env_start` | Make, copy or start an environment. |
 | `env_stop` **card**, `env_delete` **card** | Stop or delete an environment. |
-| `env_push`, `env_restore`, `env_restore_in_place` **card** | Make a snapshot of an environment, make a copy from a snapshot, or write a snapshot over the environment. |
+| `env_push`, `env_restore` **card** | Make a snapshot of an environment, or put this environment back to a snapshot. To copy a snapshot into a new environment, use `env_clone`. |
 | `service_add`, `service_update` **card**, `service_remove` **card** | Add, change or remove the services of an environment. Use these for standard services, for example a database. A workspace adds and changes its own service. |
 | `service_logs` | Read the logs of a service. |
 | `space_env_current`, `space_env_switch`, `space_env_clear` | Select the environment that the DNS of a workspace follows. |

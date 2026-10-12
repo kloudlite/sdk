@@ -36,7 +36,7 @@ export function target(name: string, args: any, self?: string): string | string[
       return args?.name;
     case "env_delete":
     case "env_stop":
-    case "env_restore_in_place":
+    case "env_restore":
       return args?.env;
     case "service_remove":
       return args?.service;
