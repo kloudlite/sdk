@@ -57,7 +57,7 @@ export type SpaceEnvironment = {
   snapshot?: string;
 };
 export type TaskState = "queued" | "running" | "blocked" | "done" | "failed";
-export type BoardTask = { id: string; title: string; priority: number; dependsOn: string[]; state: TaskState; note?: string; /** What changed and where; with `verified`, required to mark done (tasks.ts). */ summary?: string; verified?: string; created: number };
+export type BoardTask = { id: string; title: string; priority: number; dependsOn: string[]; state: TaskState; note?: string; /** What changed and where; with `verified`, required to mark done (tasks.ts). */ summary?: string; verified?: string; /** Set when the board watcher (watch.ts) moved the task, not the session; any session write clears it. */ by?: "watcher"; created: number };
 export type SpaceView = {
   available: boolean;
   error?: string;

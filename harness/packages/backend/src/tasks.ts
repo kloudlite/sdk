@@ -85,9 +85,20 @@ export function updateTask(file: string, id: string, p: Partial<Pick<BoardTask, 
     const bad = badDeps(ts, id, p.dependsOn);
     if (bad) return bad;
   }
-  const next = { ...cur, ...Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) } as BoardTask;
+  const { by: _watcher, ...own } = cur; // the session's own write always wins over the watcher's mark
+  const next = { ...own, ...Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) } as BoardTask;
   write(file, ts.map((t) => (t.id === id ? next : t)));
   return next;
+}
+
+/** The board watcher's only write (watch.ts): queued -> running, marked `by: "watcher"`, and only while
+ * nothing else runs. Re-reads the board so a session update that landed first is never overwritten. */
+export function markRunning(file: string, id: string): boolean {
+  const ts = readTasks(file);
+  const cur = ts.find((t) => t.id === id);
+  if (!cur || cur.state !== "queued" || ts.some((t) => t.state === "running")) return false;
+  write(file, ts.map((t) => (t.id === id ? { ...t, state: "running" as const, by: "watcher" as const } : t)));
+  return true;
 }
 
 /** Dependencies of `t` that are not done. A deleted dependency counts as blocking. */
@@ -100,7 +111,7 @@ export const ready = (ts: BoardTask[]): BoardTask[] => ts.filter((t) => t.state 
 
 const line = (ts: BoardTask[], t: BoardTask): string => {
   const w = blockers(ts, t);
-  return `${t.id} [${t.state}] p${t.priority} ${t.title}${w.length ? `  waits on ${w.join(", ")}` : ""}`;
+  return `${t.id} [${t.state}]${t.by ? " (watcher)" : ""} p${t.priority} ${t.title}${w.length ? `  waits on ${w.join(", ")}` : ""}`;
 };
 
 export function boardText(ts: BoardTask[]): string {

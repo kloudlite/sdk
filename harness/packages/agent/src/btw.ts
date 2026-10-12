@@ -93,3 +93,21 @@ export async function piRoute(session: any, text: string): Promise<{ steer: bool
   if (!m) throw new Error(`unparsable route: ${line.slice(0, 80)}`);
   return { steer: m[1]!.toUpperCase() === "STEER", reason: m[2]!.trim() };
 }
+
+export const WATCH_SYSTEM =
+  "You read a coding agent's most recent steps and its task board. Reply with exactly one line: RUNNING: <task id> when the steps are clearly working on that queued task, otherwise NONE.";
+
+/** The task id of a `RUNNING: <id>` first line, else null. Pure, so the format is tested without a model. */
+export function parseWatch(reply: string): string | null {
+  const line = reply.split("\n").find((l) => l.trim()) ?? "";
+  return /^RUNNING:\s*(\S+)/i.exec(line.trim())?.[1] ?? null;
+}
+
+/** Throwaway read of the newest steps (3000 tokens) against the board: which queued task is being worked on. Throws on a request error. */
+export async function piWatch(session: any, board: string): Promise<string | null> {
+  const build = () => {
+    const selected = selectMessages(session.messages, 3000);
+    return `<board>\n${board}\n</board>\n\n<conversation>\n${serializeConversation(convertToLlm(selected))}\n</conversation>`;
+  };
+  return parseWatch(await sideCall(session, WATCH_SYSTEM, build, 50));
+}
