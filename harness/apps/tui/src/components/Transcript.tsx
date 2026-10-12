@@ -160,21 +160,22 @@ function More({
   hidden,
   open,
   onToggle,
-  hover,
 }: {
   hidden: number;
   open: boolean;
   onToggle?: () => void;
-  /** the pointer is over this entry — the row brightens to say it is clickable */
-  hover?: boolean;
 }) {
+  // the row brightens under the pointer to say it is the clickable part
+  const [hover, setHover] = useState(false);
   return (
     <box
       height={1}
       width="100%"
-      // the cell around this row also toggles on a click (mouseup); without
-      // the stop, one click opened here and closed again on release (2026-10-08)
+      // this row is the only toggle: a click on links or text in the block
+      // must not collapse it (2026-10-12)
       onMouseDown={onToggle && ((e: { stopPropagation(): void }) => (e.stopPropagation(), onToggle()))}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
     >
       <text fg={hover ? theme.fg : theme.muted} selectable={false}>
         {open ? "" : `… +${hidden} lines  `}
@@ -272,7 +273,6 @@ function Row({
   open,
   onOpen,
   width,
-  hover,
   streaming,
   names,
   to,
@@ -283,8 +283,6 @@ function Row({
   onOpen?: () => void;
   /** columns the row is drawn into — collapse counts wrapped rows at it */
   width: number;
-  /** the pointer is over this entry and it can collapse */
-  hover?: boolean;
   /** the last entry, so markdown may still be mid-token */
   streaming?: boolean;
   /** names of the sessions a message card is between */
@@ -337,19 +335,16 @@ function Row({
       // the expander stays visible once open, so the block can be re-collapsed
       const long = rowCount(entry.text, width - 3) > COLLAPSE_MAX;
       return (
-        // hovering a collapsible block tints it, the way a desktop list row
-        // lights up under the pointer — subtle, one step off the background
-        // a long block keeps one row above and below at all times, so the tint
-        // has room around the text and hovering never shifts the layout
+        // a long block keeps one row above and below at all times, so opening
+        // or closing it never shifts the text against its neighbours
         <box
           flexDirection="column"
           paddingLeft={3}
           paddingTop={long ? 1 : 0}
           paddingBottom={long ? 1 : 0}
-          backgroundColor={hover ? theme.surface : undefined}
         >
           <Md text={body.text} streaming={streaming} />
-          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} hover={hover} />}
+          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} />}
         </box>
       );
     }
@@ -393,7 +388,6 @@ function Row({
           border={["left"]}
           borderColor={theme.border}
           paddingLeft={2}
-          backgroundColor={hover ? theme.surface : undefined}
         >
           <text fg={theme.muted} attributes={TextAttributes.ITALIC | TextAttributes.BOLD}>
             Thinking
@@ -401,7 +395,7 @@ function Row({
           <text fg={theme.muted} attributes={TextAttributes.ITALIC}>
             {body.text}
           </text>
-          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} hover={hover} />}
+          {long && <More hidden={body.hidden} open={open} onToggle={onOpen} />}
         </box>
       );
     }
@@ -423,7 +417,7 @@ function Row({
             paddingLeft={2}
             paddingTop={1}
             paddingBottom={1}
-            backgroundColor={hover ? theme.surfaceRaised : theme.surface}
+            backgroundColor={theme.surface}
           >
             {entry.name === "codemode" ? (
               <box flexDirection="column">
@@ -446,7 +440,7 @@ function Row({
             {out.text !== "" && <text fg={theme.muted}>{out.text}</text>}
             {shellHidden(entry, width) > 0 && (
               // a long codemode script collapses too, so its cut rows count as hidden
-              <More hidden={script.hidden + out.hidden} open={open} onToggle={onOpen} hover={hover} />
+              <More hidden={script.hidden + out.hidden} open={open} onToggle={onOpen} />
             )}
             {entry.error && <text fg={theme.error}>{entry.error}</text>}
             {entry.display?.map((md, i) => (
@@ -572,13 +566,6 @@ export function Transcript({
   // expand-everything key, so neither do we
   const [open, setOpen] = useState<Set<string>>(new Set());
   // the entry the pointer is over, so its expander can light up
-  const [hover, setHover] = useState<string | null>(null);
-  // where the button went down, so an up in the same cell is a click and an
-  // up somewhere else is the end of a text selection. opentui marks every up
-  // isDragging once a mousedown over selectable text has started a selection,
-  // so that flag alone cannot tell the two apart.
-  const downAt = useRef<{ x: number; y: number } | null>(null);
-
   // ponytail: opentui's scrollbox has no onScroll, so "am I at the bottom?"
   // is sampled on a timer — cheap, and the only hook the wheel also trips
   useEffect(() => {
@@ -671,8 +658,6 @@ export function Transcript({
       <box height={1} />
       {visible.map((entry, i) => {
         const key = "id" in entry && entry.id ? entry.id : `e${i}`;
-        // the whole cell is the expander, so a long block does not have to be
-        // scrolled past to reach its "… +N lines" row
         const canCollapse = collapsible(entry, width);
         const toggle = () =>
           setOpen((prev) => {
@@ -689,24 +674,10 @@ export function Transcript({
           marginTop={
             i === 0 ? 0 : isInlineTool(entry) && isInlineTool(visible[i - 1]!) ? 0 : 1
           }
-          // mouseup, not mousedown: a mousedown on the body starts a text
-          // selection, so toggling there would make a block impossible to
-          // select from. A click is an up within a cell of where it went down.
-          onMouseDown={canCollapse ? (e: { x: number; y: number }) => {
-            downAt.current = { x: e.x, y: e.y };
-          } : undefined}
-          onMouseUp={canCollapse ? (e: { x: number; y: number }) => {
-            const from = downAt.current;
-            downAt.current = null;
-            if (from && Math.abs(from.x - e.x) < 2 && from.y === e.y) toggle();
-          } : undefined}
-          onMouseOver={canCollapse ? () => setHover(key) : undefined}
-          onMouseOut={canCollapse ? () => setHover((h) => (h === key ? null : h)) : undefined}
         >
           <Row
             width={width}
             entry={entry}
-            hover={canCollapse && hover === key}
             // only the final entry can still be mid-token; settling the
             // earlier ones lets their trailing markdown parse as final
             streaming={i === visible.length - 1}
