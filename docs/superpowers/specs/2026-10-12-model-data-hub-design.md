@@ -88,7 +88,7 @@ is `{owner}/{name}`.
 
 `HEAD` and `GET /{p}{repo}/resolve/{rev}/{path}`. `rev` is a branch, tag or 40-hex commit.
 
-- Every response, including a 404, carries `X-Repo-Commit` (full commit sha).
+- Every response that resolved a commit, including a 404 for a missing file, carries `X-Repo-Commit` (full commit sha).
 - `X-Linked-Etag`: sha256 hex for LFS/Xet files, the git blob id otherwise. `X-Linked-Size`: file
   size.
 - Files stored in Xet also carry `X-Xet-Hash` and `Link: <…/xet-read-token/{rev}>; rel="xet-auth"`.

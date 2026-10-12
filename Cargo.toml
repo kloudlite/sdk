@@ -175,6 +175,7 @@ kloudlite-vcs = { path = "crates/git" }
 kloudlite-registry = { path = "crates/registry" }
 kloudlite-hub = { path = "crates/hub" }
 kloudlite-xet = { path = "crates/xet", features = ["testkit"] }
+hex = { workspace = true }
 kloudlite-workspaces = { path = "crates/workspaces" }
 kloudlite-api = { path = "crates/api" }
 # The integration tests in `tests/` drive the composed server; the router/lanes they exercise
