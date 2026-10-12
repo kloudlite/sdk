@@ -94,6 +94,7 @@ export class RemoteBackend implements Backend {
       prompt: call("prompt"),
       steer: call("steer"),
       followUp: call("followUp"),
+      route: (text: string, images?: unknown[]) => this.peer.request<{ kind: "steer" | "followUp" | "prompt"; reason: string }>("session.call", { key, method: "route", args: [text, images] }),
       clearQueue: call("clearQueue"),
       btw: (q: string) => this.peer.request<string>("session.call", { key, method: "btw", args: [q] }),
       compact: call("compact"),

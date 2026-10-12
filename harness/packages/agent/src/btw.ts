@@ -1,4 +1,5 @@
-//! `/btw`: a side question answered from the conversation so far, never recorded.
+//! Two side calls over the conversation so far, neither ever recorded: `/btw` (a side question) and
+//! `piRoute` (a throwaway fork that decides whether a message arriving mid-turn steers or queues).
 //!
 //! Same pattern as pi's own `summarizeForBugReport`: the conversation is serialized into ONE plain
 //! user message, so there are no tool_use blocks to replay, no tool definitions to send and no
@@ -38,25 +39,57 @@ export function btwPrompt(messages: any[], question: string, contextWindow: numb
     .join("\n\n");
 }
 
-/** `session` is a pi AgentSession; `_getSummarizationRequestAuth` is private in the types only. */
-export async function piBtw(session: any, question: string): Promise<string> {
+export const ROUTE_SYSTEM = "You route a new message that arrived while a coding agent is working. Answer with one line only.";
+
+const ROUTE_INSTRUCTION =
+  "A new message from the person arrived while the agent is working. Reply STEER if it changes, corrects, stops or adds to the work in progress, so the agent must see it now. Reply QUEUE if it is separate work that can wait until the current work is finished. Reply with exactly one line: `STEER: <short reason>` or `QUEUE: <short reason>`.";
+
+/** Same `<conversation>` block as btwPrompt, then the new message and the routing instruction. */
+function routePrompt(messages: any[], text: string, contextWindow: number): string {
+  const selected = selectMessages(messages, Math.floor((contextWindow > 0 ? contextWindow : 128_000) * 0.6));
+  return [
+    selected.length < messages.length ? `Note: only the last ${selected.length} of ${messages.length} messages are shown.` : undefined,
+    `<conversation>\n${serializeConversation(convertToLlm(selected))}\n</conversation>`,
+    `<new_message>\n${text}\n</new_message>`,
+    ROUTE_INSTRUCTION,
+  ]
+    .filter((p) => p !== undefined)
+    .join("\n\n");
+}
+
+/** One stateless request to the session's own model. `build` gets the model's context window. */
+async function sideCall(session: any, system: string, build: (contextWindow: number) => string, maxTokens: number): Promise<string> {
   if (!session.model) throw new Error("No model selected");
   const auth = await session._getSummarizationRequestAuth(session.model, undefined);
   const { model } = auth;
   const context = {
-    systemPrompt: BTW_SYSTEM,
-    messages: [{ role: "user", content: [{ type: "text", text: btwPrompt(session.messages, question, model.contextWindow) }], timestamp: Date.now() }],
+    systemPrompt: system,
+    messages: [{ role: "user", content: [{ type: "text", text: build(model.contextWindow) }], timestamp: Date.now() }],
   };
   const options = {
     apiKey: auth.apiKey,
     headers: auth.headers,
     env: auth.env,
-    maxTokens: Math.min(4096, model.maxTokens > 0 ? model.maxTokens : Infinity),
+    maxTokens: Math.min(maxTokens, model.maxTokens > 0 ? model.maxTokens : Infinity),
     cacheRetention: "none",
   };
   const stream = session.agent.streamFunction ?? streamSimple;
   const res = await (await stream(model, context, options)).result();
   if (res.stopReason === "error") throw new Error(res.errorMessage ?? "request failed");
-  const text = res.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("").trim();
+  return res.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("").trim();
+}
+
+/** `session` is a pi AgentSession; `_getSummarizationRequestAuth` is private in the types only. */
+export async function piBtw(session: any, question: string): Promise<string> {
+  const text = await sideCall(session, BTW_SYSTEM, (cw) => btwPrompt(session.messages, question, cw), 4096);
   return text || "(no answer)";
+}
+
+/** Throwaway fork: steer or queue a message that arrived while the session is busy. */
+export async function piRoute(session: any, text: string): Promise<{ steer: boolean; reason: string }> {
+  const reply = await sideCall(session, ROUTE_SYSTEM, (cw) => routePrompt(session.messages, text, cw), 200);
+  const line = reply.split("\n").find((l) => l.trim()) ?? "";
+  const m = /^(STEER|QUEUE)\s*:?\s*(.*)$/i.exec(line.trim());
+  if (!m) throw new Error(`unparsable route: ${line.slice(0, 80)}`);
+  return { steer: m[1]!.toUpperCase() === "STEER", reason: m[2]!.trim() };
 }

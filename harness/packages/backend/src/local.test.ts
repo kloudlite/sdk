@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalBackend, DESTRUCTIVE, asking, baseHandle, mustAsk, roleCard, stripCard, shareable, installGate, mcpTools, registryFor, sessionCwd, sessionKind } from "./local.ts";
+import { LocalBackend, DESTRUCTIVE, asking, baseHandle, ROUTE_TIMEOUT_MS, mustAsk, roleCard, stripCard, shareable, installGate, mcpTools, registryFor, sessionCwd, sessionKind } from "./local.ts";
 import { toolDiff } from "./diff.ts";
 import { Cards } from "./cards.ts";
 import { PROTOCOL } from "./wire.ts";
@@ -494,4 +494,74 @@ test("an assistant message_end fills state.context from pi's context usage", () 
     fire({ type: "message_end", message: { role: "assistant" } });
     expect(state.context).toEqual(want);
   }
+});
+
+/** An agent whose routing fork answers `reply` (or throws / hangs); records every call that reaches pi. */
+function routeAgent(fork: "hang" | "throw" | string, busy: { v: boolean }, onFork?: () => void) {
+  const calls: string[] = [];
+  const agent: any = {
+    calls,
+    messages: [],
+    model: { id: "m" },
+    subscribe: () => () => {},
+    prompt: async (t: string) => void calls.push(`prompt:${t.split("\n").pop()}`),
+    steer: async (t: string) => void calls.push(`steer:${t}`),
+    followUp: async (t: string) => void calls.push(`followUp:${t}`),
+    _getSummarizationRequestAuth: async () => ({ model: { id: "m", contextWindow: 100_000, maxTokens: 8000 }, apiKey: "k" }),
+    agent: {
+      streamFunction: async () => {
+        onFork?.();
+        if (fork === "throw") throw new Error("boom");
+        if (fork === "hang") await new Promise(() => {});
+        return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: fork }] }) };
+      },
+    },
+  };
+  const hooks = { busy: { has: () => busy.v, add() {}, delete() {} } as any, onEnd() {}, onDispose() {}, state: blank() };
+  return { agent, h: baseHandle(agent, "main", hooks) };
+}
+
+test("route: idle prompts without a fork", async () => {
+  let forked = 0;
+  const r = routeAgent("STEER: x", { v: false }, () => forked++);
+  expect(await r.h.route("hi")).toEqual({ kind: "prompt", reason: "" });
+  expect(r.agent.calls).toEqual(["prompt:hi"]);
+  expect(forked).toBe(0);
+});
+
+test("route: busy + STEER steers, QUEUE follows up", async () => {
+  const a = routeAgent("STEER: it changes the work", { v: true });
+  expect(await a.h.route("stop")).toEqual({ kind: "steer", reason: "it changes the work" });
+  expect(a.agent.calls).toEqual(["steer:stop"]);
+  const b = routeAgent("QUEUE: later", { v: true });
+  expect(await b.h.route("more")).toEqual({ kind: "followUp", reason: "later" });
+  expect(b.agent.calls).toEqual(["followUp:more"]);
+});
+
+test("route: a fork that throws or answers garbage queues", async () => {
+  for (const fork of ["throw", "perhaps"]) {
+    const r = routeAgent(fork, { v: true });
+    expect(await r.h.route("x")).toEqual({ kind: "followUp", reason: "fork failed, queued" });
+    expect(r.agent.calls).toEqual(["followUp:x"]);
+  }
+});
+
+test("route: a fork slower than 20 s queues", async () => {
+  jest.useFakeTimers();
+  try {
+    const r = routeAgent("hang", { v: true });
+    const p = r.h.route("x");
+    await Promise.resolve(); await Promise.resolve(); jest.advanceTimersByTime(ROUTE_TIMEOUT_MS + 1);
+    expect(await p).toEqual({ kind: "followUp", reason: "fork failed, queued" });
+    expect(r.agent.calls).toEqual(["followUp:x"]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("route: idle by the time the fork answers prompts", async () => {
+  const busy = { v: true };
+  const r = routeAgent("STEER: x", busy, () => void (busy.v = false));
+  expect(await r.h.route("x")).toEqual({ kind: "prompt", reason: "x" });
+  expect(r.agent.calls).toEqual(["prompt:x"]);
 });

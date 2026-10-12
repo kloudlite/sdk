@@ -45,6 +45,7 @@ function fake(reply = "done", o: { reject?: boolean } = {}) {
       queueMicrotask(() => fire(t));
     },
     followUp: async (t: string) => void (sent.push(`followUp:${t}`), queueMicrotask(() => fire(t))),
+    route: async (t: string) => (sent.push(`route:${t}`), queueMicrotask(() => fire(t)), { kind: "steer", reason: "" }),
     dispose: async () => void h.disposed++,
     subscribe: (cb: any) => (subs.add(cb), () => subs.delete(cb)),
   };
@@ -54,7 +55,7 @@ function fake(reply = "done", o: { reject?: boolean } = {}) {
 /** open(): `ws` for the asked workspace key, `main` for the caller's key. */
 const route = (ws: SessionHandle, main: SessionHandle) => async (k: string) => (k === "main" ? main : ws);
 
-test("workspace_ask prompts an idle workspace, follows up a busy one, disposes its own view", async () => {
+test("workspace_ask prompts an idle workspace, routes a busy one (steer or queue), disposes its own view", async () => {
   const busy = new Set<string>();
   const idle = fake("ok");
   const main = fake();
@@ -68,7 +69,7 @@ test("workspace_ask prompts an idle workspace, follows up a busy one, disposes i
   const [ask2] = delegateTools("main", undefined, D({ busy, open: route(hot, main) }), caller);
   await ask2!.run({ workspace: "w1", request: "b" });
   await flush();
-  expect(hot.sent).toEqual(["followUp:[from main session] b"]);
+  expect(hot.sent).toEqual(["route:[from main session] b"]);
   expect(hot.disposed).toBe(1);
 });
 
@@ -86,7 +87,7 @@ test("workspace_ask returns at once, then delivers [from ws] into the caller via
   busy.add("main");
   await ask!.run({ workspace: "ws-a", request: "y" });
   await flush();
-  expect(main.sent[1]).toBe("followUp:[from ws-a] built");
+  expect(main.sent[1]).toBe("route:[from ws-a] built");
 });
 
 test("an agent_end before the user message of the ask is ignored (fake fires one first)", async () => {
@@ -162,7 +163,7 @@ test("main_tell delivers the tagged message into main: prompt when idle, followU
   busy.add("main");
   await tell.run({ kind: "blocked", text: "y" });
   await flush();
-  expect(main.sent[1]).toBe("followUp:[from ws-a] blocked: y");
+  expect(main.sent[1]).toBe("route:[from ws-a] blocked: y");
 });
 
 test("main_tell goes to the session that last asked the workspace, else main", async () => {
