@@ -403,7 +403,7 @@ pub(crate) async fn start_env(
     let idle = e.status.as_ref().and_then(|st| st.idle_since.as_deref());
     let patch = super::workspaces::wake_patch(&super::workspaces::wake_at(k8s_openapi::jiff::Timestamp::now(), idle));
     Api::<crd::Environment>::all(kube(&s)?.clone()).patch(&id, &PatchParams::default(), &Patch::Merge(&patch)).await.map_err(kube_err)?;
-    if idle.is_some() && !crd::wants_running(&e) {
+    if idle.is_some() && e.spec.desired_state == DesiredState::Running && !crd::wants_running(&e) {
         tracing::info!(kind = "environment", id, by = "start", "idle.wake");
     }
     let pushed = pushed_volumes(&s, kube(&s)?, &e.spec.owner).await?;
