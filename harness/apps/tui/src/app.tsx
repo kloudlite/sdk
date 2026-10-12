@@ -214,6 +214,10 @@ export function App({
 
   // index into the active session's queue while editing it, else null
   const [queuePick, setQueuePick] = useState<number | null>(null);
+  // messages whose steer-or-queue fork has not answered yet (shown as `deciding`), and the fork's reason
+  // for each queued one; TUI memory only, per session key
+  const [routing, setRouting] = useState<Record<string, string[]>>({});
+  const reasons = useRef<Record<string, Map<string, string>>>({});
   // the /btw panel: never in a transcript, closed by esc. `n` numbers requests so a late answer for a
   // closed or replaced panel is dropped
   const [btw, setBtw] = useState<(BtwState & { key: string }) | null>(null);
@@ -1123,17 +1127,28 @@ export function App({
       patchSession(map, key, (s) => ({ history: [...s.history, trimmed] })),
     );
     setHistIdx(null);
+    const pending = (on: boolean) =>
+      setRouting((r) => {
+        const cur = r[key] ?? [];
+        const next = on ? [...cur, trimmed] : cur.filter((x, i) => i !== cur.indexOf(trimmed));
+        return { ...r, [key]: next };
+      });
+    const routed = streaming && !steer;
+    if (routed) pending(true);
     ensureAgent(key)
       .then((agent) =>
         streaming
-          ? // mid-turn: plain enter queues behind the turn, ctrl+enter (or ^s)
-            // cuts in. Both carry the images; dropping them loses the paste.
-            void (steer
-              ? agent.steer(trimmed, sent.length ? sent : undefined)
-              : agent.followUp(trimmed, sent.length ? sent : undefined))
+          ? // mid-turn: ctrl+enter (or ^s) cuts in with no fork; plain enter lets a throwaway fork of the
+            // session decide steer or queue. Both carry the images; dropping them loses the paste.
+            steer
+              ? void agent.steer(trimmed, sent.length ? sent : undefined)
+              : agent.route(trimmed, sent.length ? sent : undefined).then((r) => {
+                  if (r.reason) (reasons.current[key] ??= new Map()).set(trimmed, r.reason);
+                })
           : agent.prompt(trimmed, sent.length ? { images: sent } : undefined),
       )
-      .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }));
+      .catch((err) => append(key, { kind: "error", text: cleanError(String(err)) }))
+      .finally(() => routed && pending(false));
   }
 
   type JumpItem = { label: string; hint: string; group: string; run: () => void };
@@ -1387,6 +1402,8 @@ export function App({
           <Plan rows={planAll(Math.max(6, Math.floor(rows * 0.4)))} width={contentWidth} />
           <Queue
             messages={session.queued}
+            pending={routing[activeKey] ?? []}
+            reasons={reasons.current[activeKey]}
             selected={queuePick}
             width={contentWidth}
             onSelect={(i) => setQueuePick(i)}

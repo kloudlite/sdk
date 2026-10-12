@@ -53,3 +53,17 @@ test("an empty queue renders nothing", async () => {
   expect(t.captureCharFrame()).not.toContain("QUEUED");
   t.renderer.destroy();
 });
+
+test("a pending route shows a deciding row; a queued row shows the fork's reason", async () => {
+  const t = await testRender(
+    <Queue messages={msgs} pending={["what about tests"]} reasons={new Map([["then summarise for the ticket", "separate work"]])} selected={null} width={78} />,
+    { width: 80, height: 10 },
+  );
+  await new Promise((r) => setTimeout(r, 40));
+  await t.renderOnce();
+  const f = t.captureCharFrame();
+  expect(f).toContain("QUEUED  3");
+  expect(f).toContain("deciding what about tests");
+  expect(f).toContain("separate work");
+  t.renderer.destroy();
+});
