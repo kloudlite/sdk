@@ -65,6 +65,17 @@ pub(crate) async fn put_lfs(
     Query(q): Query<HashMap<String, String>>,
     body: Body,
 ) -> Response {
+    put_lfs_capped(st, owner, oid, q, body, MAX_LFS_OBJECT).await
+}
+
+async fn put_lfs_capped(
+    st: CasState,
+    owner: String,
+    oid: String,
+    q: HashMap<String, String>,
+    body: Body,
+    max: u64,
+) -> Response {
     if !signed(&st, &owner, &oid, &q) {
         return refuse(StatusCode::FORBIDDEN, "bad or expired signature");
     }
@@ -94,11 +105,15 @@ pub(crate) async fn put_lfs(
             }
         };
         n += chunk.len() as u64;
-        if n > MAX_LFS_OBJECT {
+        if n > max {
             let _ = w.abort().await;
             return refuse(StatusCode::PAYLOAD_TOO_LARGE, "object over 5 GiB");
         }
         hasher.update(&chunk);
+        if let Err(e) = w.wait_for_capacity(8).await {
+            let _ = w.abort().await;
+            return internal(e);
+        }
         w.write(&chunk);
     }
     if let Err(e) = w.finish().await {
@@ -108,8 +123,10 @@ pub(crate) async fn put_lfs(
     let result = if got != oid {
         refuse(StatusCode::BAD_REQUEST, &format!("body hashes to {got}, not {oid}"))
     } else {
-        match st.os.copy_if_not_exists(&tmp, &dest).await {
-            Ok(()) | Err(slatedb::object_store::Error::AlreadyExists { .. }) => StatusCode::OK.into_response(),
+        // Plain copy: S3 has no conditional copy without extra config, and the key is content-addressed
+        // with the sha256 just verified, so a racing overwrite writes identical bytes.
+        match st.os.copy(&tmp, &dest).await {
+            Ok(()) => StatusCode::OK.into_response(),
             Err(e) => internal(e),
         }
     };
@@ -185,6 +202,20 @@ mod tests {
         assert_eq!(s, StatusCode::FORBIDDEN);
         let url = local(&super::lfs_url(&st, "alice", "NOTHEX", 600));
         assert_eq!(call(&app, "PUT", &url, b"x".to_vec()).await.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn over_cap_is_413_and_leaves_nothing() {
+        let (_, st) = setup();
+        let oid = hex::encode(Sha256::digest(b"0123456789"));
+        let url = local(&super::lfs_url(&st, "alice", &oid, 600));
+        let q = url.split_once('?').unwrap().1.split('&').map(|kv| {
+            let (k, v) = kv.split_once('=').unwrap();
+            (k.to_string(), v.to_string())
+        }).collect();
+        let r = super::put_lfs_capped(st.clone(), "alice".into(), oid, q, Body::from(b"0123456789".to_vec()), 4).await;
+        assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(st.os.list(Some(&"lfs/alice".into())).next().await.is_none());
     }
 
     #[tokio::test]
