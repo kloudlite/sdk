@@ -130,11 +130,30 @@ fn owned_by(owner: &str) -> ListParams {
     ListParams::default().labels(&format!("{OWNER_LABEL}={owner}"))
 }
 
-/// A live working copy: the person's desired state is Running. A stopped workspace still holds its
-/// disk (counted under `diskGb`) but is not holding cpu or memory on any node, and charging for
-/// capacity nobody is occupying is what would make stopping pointless.
-fn live(d: crd::DesiredState) -> bool {
-    d == crd::DesiredState::Running
+/// cpu (milli-cores) and memory (MiB) an ordinary workspace holds on a node right now. Only while a
+/// pod is wanted: a stopped workspace still holds its disk (counted under `diskGb`) but no cpu or
+/// memory, and neither does an idle-stopped one (desiredState stays Running there, so the desired
+/// state alone would keep charging capacity nobody occupies).
+fn ws_capacity(w: &crd::Workspace) -> (u64, u64) {
+    if !crd::wants_pod(w) {
+        return (0, 0);
+    }
+    // The one workspace container: the person's terminal runs inside it now (owner ruling
+    // 2026-09-25), so there is no sidecar to charge separately any more.
+    (millicores(&w.spec.resources.cpu_limit), mebibytes(&w.spec.resources.memory_limit))
+}
+
+/// Same rule for an environment: every service gets the env unit (one definition, in
+/// `k8s::env_unit_resources`, used by the StatefulSet and the LimitRange) unless it names its own
+/// (the builder does). Reading what the StatefulSet reads keeps the accounting and what runs one number.
+fn env_capacity(e: &crd::Environment) -> (u64, u64) {
+    if !crd::wants_running(e) {
+        return (0, 0);
+    }
+    e.spec.services.iter().fold((0, 0), |(c, m), svc| {
+        let unit = svc.resources.clone().unwrap_or_else(crate::k8s::env_unit_resources);
+        (c + millicores(&unit.cpu_limit), m + mebibytes(&unit.memory_limit))
+    })
 }
 
 /// Milli-cores from a Kubernetes cpu quantity. `0` for anything unrecognised: a hand-edited spec
@@ -237,12 +256,9 @@ pub async fn usage(c: &kube::Client, owner: &str) -> Result<Usage, kube::Error> 
             continue;
         }
         u.workspaces += 1;
-        if live(w.spec.desired_state) {
-            // The one workspace container: the person's terminal runs inside it now (owner
-            // ruling 2026-09-25), so there is no sidecar to charge separately any more.
-            millis += millicores(&w.spec.resources.cpu_limit);
-            mib += mebibytes(&w.spec.resources.memory_limit);
-        }
+        let (c, m) = ws_capacity(&w);
+        millis += c;
+        mib += m;
     }
     for e in env_own.items {
         if e.spec.owner != owner {
@@ -254,17 +270,9 @@ pub async fn usage(c: &kube::Client, owner: &str) -> Result<Usage, kube::Error> 
         if e.spec.system.is_none() {
             u.environments += 1;
         }
-        if live(e.spec.desired_state) {
-            // Every service gets the env unit — one definition, in `k8s::env_unit_resources`, used
-            // by the StatefulSet and by the namespace's LimitRange — unless the service names its
-            // own (the builder does). Reading what the StatefulSet reads is what keeps the
-            // accounting and what actually runs from being two numbers.
-            for svc in &e.spec.services {
-                let unit = svc.resources.clone().unwrap_or_else(crate::k8s::env_unit_resources);
-                millis += millicores(&unit.cpu_limit);
-                mib += mebibytes(&unit.memory_limit);
-            }
-        }
+        let (c, m) = env_capacity(&e);
+        millis += c;
+        mib += m;
     }
     // Detached volumes included: disk kept by snapshots after a working copy is deleted is still
     // the owner's disk, and deleting the snapshots is how they get it back.
@@ -457,5 +465,33 @@ mod tests {
         let used = Usage { workspaces: 5, ..Default::default() };
         let msg = check(Dim::Workspaces, &limit, &used, 1).unwrap_err();
         assert_eq!(msg, "workspaces: 5 of 5 in use; request more under Quota");
+    }
+
+    /// An idle stop leaves desiredState Running; the capacity must still free at once, and come
+    /// back when a wake lands (so a wake at the limit is judged against the resource's own cpu).
+    #[test]
+    fn idle_stopped_resources_hold_no_cpu_or_memory() {
+        let spec: crd::WorkspaceSpec = serde_json::from_value(serde_json::json!({
+            "owner": "alice", "name": "w", "region": "r", "image": "i", "desiredState": "running"
+        }))
+        .unwrap();
+        let mut w = crd::Workspace::new("ws-1", spec);
+        let held = ws_capacity(&w);
+        assert!(held.0 > 0 && held.1 > 0);
+        w.status = Some(crd::WorkspaceStatus { idle_since: Some("2026-10-12T10:00:00Z".into()), ..Default::default() });
+        assert_eq!(ws_capacity(&w), (0, 0), "idle-stopped frees cpu and memory");
+        w.spec.wake_at = Some("2026-10-12T10:00:01Z".into());
+        assert_eq!(ws_capacity(&w), held, "woken holds them again");
+
+        let espec: crd::EnvironmentSpec = serde_json::from_value(serde_json::json!({
+            "owner": "t", "name": "e", "region": "r", "desiredState": "running",
+            "services": [{"name": "a", "image": "i", "command": [], "env": {}, "mounts": [], "ports": []}]
+        }))
+        .unwrap();
+        let mut e = crd::Environment::new("e", espec);
+        let held = env_capacity(&e);
+        assert!(held.0 > 0);
+        e.status = Some(crd::EnvironmentStatus { idle_since: Some("2026-10-12T10:00:00Z".into()), ..Default::default() });
+        assert_eq!(env_capacity(&e), (0, 0));
     }
 }
