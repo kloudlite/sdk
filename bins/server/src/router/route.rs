@@ -454,8 +454,108 @@ async fn route_inner(
         Routing::BadRepoPath => return (StatusCode::BAD_REQUEST, "invalid repository path").into_response(),
         Routing::Repo(repo) => repo,
     };
+    let create = may_create(req.method(), &path);
+    route_key(app, req, next, repo, create, "").await
+}
+
+/// Hub routes that open the repo database, after `/api/{models|datasets}/{owner}/{name}/`. Held by
+/// `every_hub_route_is_routable`; a new `{api}` route is added here or it is served unrouted.
+#[cfg(test)]
+pub(crate) const HUB_TAILS: &[&str] = &[
+    "revision/main", "tree/main", "tree/main/a/b", "paths-info/main", "refs", "preupload/main",
+    "commit/main", "branch/dev", "tag/main", "xet-read-token/main", "xet-write-token/main", "settings",
+];
+
+/// The ownership key of a hub path (hub listener paths, or peer paths after the `/hub` nest strips
+/// its prefix). `None` = serve locally: whoami, create/delete (routed by body in `route_hub`).
+pub(crate) fn hub_repo_of(path: &str) -> Option<String> {
+    use kloudlite_storage::{hub_routing_key, HubKind};
+    let p = path.trim_start_matches('/');
+    let (kind, rest) = if let Some(r) = p.strip_prefix("api/models/") {
+        (HubKind::Model, r)
+    } else if let Some(r) = p.strip_prefix("api/datasets/") {
+        (HubKind::Dataset, r)
+    } else if p.starts_with("api/") {
+        return None;
+    } else if let Some(r) = p.strip_prefix("datasets/") {
+        (HubKind::Dataset, r)
+    } else {
+        (HubKind::Model, p)
+    };
+    let mut it = rest.split('/');
+    let (owner, name) = (it.next()?, it.next()?);
+    let (owner, name) = crate::protocol::parse_repo_pair(owner, name)?;
+    Some(hub_routing_key(kind, &owner, &name))
+}
+
+const HUB_CREATE_MAX: usize = 64 * 1024;
+
+/// Hub listener (public) and the peer listener's `/hub` nest: both see un-prefixed paths and both
+/// forward with `/hub` in front, because the peer listener's root already serves git.
+pub(crate) async fn route_hub(
+    State(app): State<Arc<App>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    if let Some(key) = hub_repo_of(&path) {
+        return route_key(app, req, next, key, false, "/hub").await;
+    }
+    if !matches!(path.as_str(), "/api/repos/create" | "/api/repos/delete") {
+        return next.run(req).await;
+    }
+    // create/delete name the repo in the body; the caller decides the owner when it is omitted.
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, HUB_CREATE_MAX).await else {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response();
+    };
+    let trusted = parts.extensions.get::<Trusted>().cloned();
+    let key = match serde_json::from_slice::<kloudlite_hub::repos::RepoBody>(&bytes) {
+        Ok(b) => match kloudlite_hub::auth::caller(&app, trusted.as_ref(), &parts.headers).await {
+            Ok(c) => match kloudlite_hub::repos::target(&b, c.as_deref()) {
+                Ok((kind, owner, name)) => Some(kloudlite_storage::hub_routing_key(kind, &owner, &name)),
+                Err(r) => return r,
+            },
+            Err(r) => return r,
+        },
+        // Malformed: the handler answers 400 locally; nothing is opened.
+        Err(_) => None,
+    };
+    let req = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+    match key {
+        Some(k) => route_key(app, req, next, k, path == "/api/repos/create", "/hub").await,
+        None => next.run(req).await,
+    }
+}
+
+/// `req` with `prefix` in front of its path, for the forwarder only: the peer listener serves the
+/// hub under `/hub`, and a request served locally keeps the path its router expects.
+fn prefixed(req: axum::extract::Request, prefix: &str) -> axum::extract::Request {
+    if prefix.is_empty() {
+        return req;
+    }
+    let (mut parts, body) = req.into_parts();
+    let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    // A valid path with a literal prefix always parses; keep the original URI if it somehow does not.
+    if let Ok(uri) = format!("{prefix}{pq}").parse() {
+        parts.uri = uri;
+    }
+    axum::extract::Request::from_parts(parts, body)
+}
+
+/// The routing decision for one repo key: serve here, forward to the owner (under `forward_prefix`
+/// when the owner's listener mounts these routes below it), or refuse. `create` is the
+/// `may_create` exemption for a key whose prefix is still empty.
+async fn route_key(
+    app: Arc<App>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+    repo: String,
+    create: bool,
+    forward_prefix: &'static str,
+) -> Response {
     let hops = hops_of(req.headers());
-    let route = app.route_for(&repo, may_create(req.method(), &path)).await;
+    let route = app.route_for(&repo, create).await;
     // The leader says nobody owns this key and its prefix is empty: there is nobody to forward to
     // and nothing worth claiming, so serve it HERE — the handler then answers after authenticating,
     // exactly as it did before this gate existed. Answering 404 from the middleware would say "no
@@ -519,9 +619,9 @@ async fn route_inner(
                     req.extensions().clone(),
                 )
             });
-            match app.forwarder.forward(&peer.addr, &owner, hops, req).await {
+            match app.forwarder.forward(&peer.addr, &owner, hops, prefixed(req, forward_prefix)).await {
                 Ok(res) => res,
-                Err(e) => recover_after_forward(&app, &repo, &peer, &owner, hops, replay, e, next).await,
+                Err(e) => recover_after_forward(&app, &repo, &peer, &owner, hops, replay, forward_prefix, e, next).await,
             }
         }
     }
@@ -618,6 +718,7 @@ async fn recover_after_forward(
     owner: &str,
     hops: u32,
     replay: Option<(axum::http::Method, axum::http::Uri, axum::http::HeaderMap, axum::http::Extensions)>,
+    forward_prefix: &str,
     e: kloudlite_core::Error,
     next: axum::middleware::Next,
 ) -> Response {
@@ -669,7 +770,7 @@ async fn recover_after_forward(
                 // attempt: this is a fresh decision, and the node's address is
                 // whatever it is NOW.
                 let addr = (app.addr_of)(&peer.name);
-                match app.forwarder.forward(&addr, owner, hops, rebuild()).await {
+                match app.forwarder.forward(&addr, owner, hops, prefixed(rebuild(), forward_prefix)).await {
                     Ok(res) => return res,
                     Err(again) if !crate::proxy::is_connect_error(&again) => {
                         tracing::error!(repo = %repo, peer = %peer.name, error = %again, "route.forward.failed");
@@ -708,7 +809,7 @@ async fn recover_after_forward(
                 Recovery::ForwardTo(node) => {
                     let addr = (app.addr_of)(&node);
                     if let Ok(res) =
-                        app.forwarder.forward(&addr, owner, hops, rebuild()).await
+                        app.forwarder.forward(&addr, owner, hops, prefixed(rebuild(), forward_prefix)).await
                     {
                         return res;
                     }
@@ -846,6 +947,26 @@ mod tests {
                 "BROWSE_TAILS lists `{tail}` but browse_routes registers no such route",
             );
         }
+    }
+
+    /// Every hub route that opens a repo database must yield its `mdl/`/`ds/` key, as
+    /// `every_browse_route_is_routable` holds for git. A new hub route goes in `HUB_TAILS`.
+    #[test]
+    fn every_hub_route_is_routable() {
+        for (prefix_api, prefix_repo, tag) in [("/api/models", "", "mdl"), ("/api/datasets", "/datasets", "ds")] {
+            let want = Some(format!("{tag}/alice/m"));
+            assert_eq!(hub_repo_of(&format!("{prefix_api}/alice/m")), want);
+            for tail in HUB_TAILS {
+                assert_eq!(hub_repo_of(&format!("{prefix_api}/alice/m/{tail}")), want, "{tail}");
+            }
+            for tail in ["resolve/main/a.bin", "info/refs", "git-upload-pack", "git-receive-pack", "info/lfs/objects/batch"] {
+                assert_eq!(hub_repo_of(&format!("{prefix_repo}/alice/m.git/{tail}")), want, "{tail}");
+                assert_eq!(hub_repo_of(&format!("{prefix_repo}/alice/m/{tail}")), want, "{tail}");
+            }
+        }
+        assert_eq!(hub_repo_of("/api/whoami-v2"), None);
+        assert_eq!(hub_repo_of("/api/repos/create"), None);
+        assert_eq!(hub_repo_of("/api/models/../x/tree/main"), None);
     }
 
     fn entry(node: &str) -> crate::ownership::Entry {

@@ -13,7 +13,7 @@
 //! Module map: `auth` (caller, visibility), `repos` (create, delete, whoami), `rev` (revision
 //! names), `pointer` (LFS pointer text), `read` (info, tree, paths-info, refs), `resolve` (file
 //! bytes), `commit` (preupload, NDJSON commit), `refs_api` (branches, tags), `tokens` (Xet
-//! tokens), `lfs_batch` (git-lfs batch).
+//! tokens), `lfs_batch` (git-lfs batch), `settings` (visibility).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 // The error side of every guard is the finished HTTP response; boxing it buys nothing.
 #![allow(clippy::result_large_err)]
@@ -28,11 +28,12 @@ pub mod refs;
 pub mod repos;
 pub mod resolve;
 pub mod rev;
+pub mod settings;
 pub mod xet;
 
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use kloudlite_app::App;
 use kloudlite_storage::HubKind;
@@ -113,6 +114,7 @@ fn per_kind(kind: HubKind) -> Router<HubState> {
         .route(&format!("{api}/tag/{{rev}}"), post(refs::tag_create).delete(refs::tag_delete))
         .route(&format!("{api}/xet-read-token/{{rev}}"), get(xet::read_token))
         .route(&format!("{api}/xet-write-token/{{rev}}"), get(xet::write_token))
+        .route(&format!("{api}/settings"), put(settings::put))
         .route(&format!("{repo}/info/lfs/objects/batch"), post(lfs::batch))
         .route(&format!("{repo}/info/lfs/locks"), get(lfs::locks).post(lfs::locks))
         .route(&format!("{repo}/info/lfs/locks/{{*rest}}"), get(lfs::locks).post(lfs::locks))

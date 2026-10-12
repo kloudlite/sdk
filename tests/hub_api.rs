@@ -768,3 +768,16 @@ async fn ref_changes_rebuild_the_live_list() {
     let l = live_of(&h, "mdl", "alice", "m").await.unwrap();
     assert_eq!(l.shas.into_iter().collect::<Vec<_>>(), vec![sha]);
 }
+
+#[tokio::test]
+async fn settings_flip_visibility() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "m", false, &[("a.txt", b"a")]).await;
+    let anon = || client().get(format!("{}/api/models/alice/m", h.base));
+    assert_eq!(anon().send().await.unwrap().status(), 401);
+    let r = client().put(format!("{}/api/models/alice/m/settings", h.base)).bearer_auth(&h.alice).json(&json!({"private": false})).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(anon().send().await.unwrap().status(), 200);
+    let r = client().put(format!("{}/api/models/alice/m/settings", h.base)).bearer_auth(&h.bob).json(&json!({"private": true})).send().await.unwrap();
+    assert_eq!(r.status(), 403);
+}

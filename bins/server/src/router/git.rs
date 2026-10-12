@@ -340,6 +340,13 @@ async fn info_refs(
         Ok(r) => r,
         Err(r) => return r,
     };
+    serve_info_refs(&app, repo, &service, &headers).await
+}
+
+/// Everything after the open, shared with the hub's git routes (`hub_git`), which authorize by
+/// their own rules and then speak exactly the same protocol.
+pub(crate) async fn serve_info_refs(app: &Arc<App>, repo: Repo, service: &str, headers: &HeaderMap) -> Response {
+    let service = service.to_string();
     // NOT the raw Path `owner`/`name`: those still carry the `.git` suffix (every real URL has
     // it), which would name a database that does not exist.
     let (o, n) = (repo.owner.clone(), repo.name.clone());
@@ -398,7 +405,7 @@ async fn info_refs(
     match res {
         Ok(out) => success(out),
         // See App::on_fenced. If routing still says we own it, reopen and run the request again.
-        Err(e) if crate::pool::is_fenced(&e) => match reopen_after_fence(&app, &o, &n).await {
+        Err(e) if crate::pool::is_fenced(&e) => match reopen_after_fence(app, &o, &n).await {
             None => fenced_elsewhere(),
             Some(repo) => match run_protocol(repo).await {
                 Ok(Ok(out)) => success(out),
@@ -424,6 +431,10 @@ async fn upload_pack(
         Ok(r) => r,
         Err(r) => return r,
     };
+    serve_upload_pack(&app, repo, &headers, body).await
+}
+
+pub(crate) async fn serve_upload_pack(app: &Arc<App>, repo: Repo, headers: &HeaderMap, body: Body) -> Response {
     let body = match read_body(body).await {
         Ok(b) => b,
         Err(r) => return r,
@@ -431,7 +442,7 @@ async fn upload_pack(
     metrics::counter!("git_pack_requests_total", "op" => "upload").increment(1);
     metrics::counter!("git_pack_bytes_in_total", "op" => "upload").increment(body.len() as u64);
     let input = move || -> Input { Ok(Box::new(Cursor::new(body.clone()))) };
-    respond("application/x-git-upload-pack-result", &app, repo, upload::serve, input, &headers).await
+    respond("application/x-git-upload-pack-result", app, repo, upload::serve, input, headers).await
 }
 
 async fn receive_pack(
@@ -445,6 +456,10 @@ async fn receive_pack(
         Ok(r) => r,
         Err(r) => return r,
     };
+    serve_receive_pack(&app, repo, &headers, body).await
+}
+
+pub(crate) async fn serve_receive_pack(app: &Arc<App>, repo: Repo, headers: &HeaderMap, body: Body) -> Response {
     // A short wait absorbs a burst of small pushes; anything longer and git is better off
     // failing fast and retrying than sitting on an open connection we cannot serve.
     let _permit = match tokio::time::timeout(Duration::from_secs(2), receive_permits().acquire()).await {
@@ -471,7 +486,7 @@ async fn receive_pack(
             }
         }
     };
-    respond("application/x-git-receive-pack-result", &app, repo, receive::serve, input, &headers).await
+    respond("application/x-git-receive-pack-result", app, repo, receive::serve, input, headers).await
 }
 
 /// Run the protocol; on a fence that routing says we may still own, run it once more against a
@@ -552,6 +567,77 @@ pub(crate) fn git_routes() -> Router<Arc<App>> {
         .route("/{owner}/{name}/info/refs", get(info_refs))
         .route("/{owner}/{name}/git-upload-pack", post(upload_pack))
         .route("/{owner}/{name}/git-receive-pack", post(receive_pack))
+}
+
+/// git over the hub listener for model and dataset repos. Auth is the hub's (`auth::open`), the
+/// bytes are git's; a push rebuilds the live list so the sweep never sees a ref it does not know.
+pub(crate) fn hub_git(st: kloudlite_hub::HubState) -> Router {
+    use kloudlite_storage::HubKind;
+    let mut r = Router::new();
+    for kind in [HubKind::Model, HubKind::Dataset] {
+        let p = format!("/{}{{owner}}/{{name}}", kind.url_prefix());
+        r = r.merge(
+            Router::new()
+                .route(&format!("{p}/info/refs"), get(hub_info_refs))
+                .route(&format!("{p}/git-upload-pack"), post(hub_upload_pack))
+                .route(&format!("{p}/git-receive-pack"), post(hub_receive_pack))
+                .layer(axum::Extension(kind)),
+        );
+    }
+    r.with_state(st)
+}
+
+fn bare(name: &str) -> &str {
+    name.strip_suffix(".git").unwrap_or(name)
+}
+
+async fn hub_info_refs(
+    State(st): State<kloudlite_hub::HubState>,
+    axum::Extension(kind): axum::Extension<kloudlite_storage::HubKind>,
+    trusted: Option<axum::Extension<Trusted>>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let service = q.get("service").cloned().unwrap_or_default();
+    let write = service == "git-receive-pack";
+    match kloudlite_hub::auth::open(&st, kind, trusted.as_deref(), &headers, &owner, bare(&name), write).await {
+        Ok(a) => serve_info_refs(&st.app, a.repo, &service, &headers).await,
+        Err(r) => r,
+    }
+}
+
+async fn hub_upload_pack(
+    State(st): State<kloudlite_hub::HubState>,
+    axum::Extension(kind): axum::Extension<kloudlite_storage::HubKind>,
+    trusted: Option<axum::Extension<Trusted>>,
+    Path((owner, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    match kloudlite_hub::auth::open(&st, kind, trusted.as_deref(), &headers, &owner, bare(&name), false).await {
+        Ok(a) => serve_upload_pack(&st.app, a.repo, &headers, body).await,
+        Err(r) => r,
+    }
+}
+
+async fn hub_receive_pack(
+    State(st): State<kloudlite_hub::HubState>,
+    axum::Extension(kind): axum::Extension<kloudlite_storage::HubKind>,
+    trusted: Option<axum::Extension<Trusted>>,
+    Path((owner, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let a = match kloudlite_hub::auth::open(&st, kind, trusted.as_deref(), &headers, &owner, bare(&name), true).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let res = serve_receive_pack(&st.app, a.repo.clone(), &headers, body).await;
+    if res.status().is_success() {
+        kloudlite_hub::live::after_update(&st, &a).await;
+    }
+    res
 }
 
 #[cfg(test)]
