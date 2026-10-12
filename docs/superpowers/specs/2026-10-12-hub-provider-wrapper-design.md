@@ -130,8 +130,12 @@ So every `hf` verb works against either hub with no wrapper code per verb: `down
 - `hf` not on `PATH`: error "hf not found. Add the package with `kl pkg add
   python3Packages.huggingface-hub`." Do not install it silently.
 - The token never appears in argv, logs or errors (env only).
-- `--provider` must come before the `hf` arguments; anything after is passed through as is
-  (`trailing_var_arg`).
+- `--provider` must come before the `hf` arguments (`trailing_var_arg`). A `--provider` among
+  the `hf` arguments is refused with an error saying to put it first, so a misplaced flag never
+  sends the call to Hugging Face silently (owner decision, 2026-10-12).
+- `kloudlite` with no kloudlite token is anonymous and sends no token at all: `HF_TOKEN` removed,
+  `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` (Python: `token=False`), so a person's Hugging Face token
+  never reaches our hub. Verified in huggingface_hub 2.2.0 `get_token_to_send`.
 
 File `bins/kl/src/hf.rs`, one `Cmd::Hf` variant in `main.rs`.
 
