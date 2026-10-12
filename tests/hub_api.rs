@@ -438,3 +438,143 @@ async fn resolve_xet_file_streams_from_xorbs() {
     let r = client().head(&url).bearer_auth(&h.alice).send().await.unwrap();
     assert_eq!(header(&r, "content-length"), b.bytes.len().to_string());
 }
+
+use base64::Engine;
+
+fn b64(b: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+async fn hub_commit(h: &Hub, token: Option<&str>, path: &str, lines: &[Value]) -> reqwest::Response {
+    let body = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    let mut r = client().post(format!("{}/api/{path}", h.base)).header("content-type", "application/x-ndjson").body(body);
+    if let Some(t) = token {
+        r = r.bearer_auth(t);
+    }
+    r.send().await.unwrap()
+}
+
+fn file_line(path: &str, content: &[u8]) -> Value {
+    json!({"key": "file", "value": {"path": path, "content": b64(content), "encoding": "base64"}})
+}
+
+async fn main_head(h: &Hub, kind: HubKind, name: &str) -> Option<String> {
+    let s = &h.e.store;
+    let repo = s.hub_open(kind, "alice", name).await.unwrap().unwrap();
+    s.get_ref(&repo, "refs/heads/main").await.unwrap().map(|o| o.to_string())
+}
+
+async fn fetch(h: &Hub, path: &str) -> (u16, Vec<u8>) {
+    let r = client().get(format!("{}/{path}", h.base)).bearer_auth(&h.alice).send().await.unwrap();
+    (r.status().as_u16(), r.bytes().await.unwrap().to_vec())
+}
+
+#[tokio::test]
+async fn preupload_picks_modes() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    let body = json!({"files": [
+        {"path": "config.json", "size": 2, "sample": b64(b"{}")},
+        {"path": "big.txt", "size": 10485760, "sample": b64(b"text")},
+        {"path": "w.bin", "size": 3, "sample": b64(b"a\0b")},
+    ]});
+    let r = client().post(format!("{}/api/models/alice/bert/preupload/main", h.base)).bearer_auth(&h.alice).json(&body).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
+    let modes: Vec<&str> = v["files"].as_array().unwrap().iter().map(|f| f["uploadMode"].as_str().unwrap()).collect();
+    assert_eq!(modes, ["regular", "lfs", "lfs"]);
+    assert_eq!(v["files"][0]["shouldIgnore"], false);
+    let r = client().post(format!("{}/api/models/alice/bert/preupload/main", h.base)).json(&body).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn commit_inline_files_then_read_back() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[
+        json!({"key": "header", "value": {"summary": "first", "description": ""}}),
+        file_line("config.json", b"{\"a\":1}"),
+        file_line("sub/readme.md", b"# hi"),
+    ]).await;
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
+    let oid = v["commitOid"].as_str().unwrap().to_string();
+    assert_eq!(v["commitUrl"], format!("{}/alice/bert/commit/{oid}", h.base));
+    assert_eq!(main_head(&h, HubKind::Model, "bert").await.as_deref(), Some(oid.as_str()));
+    assert_eq!(fetch(&h, "alice/bert/resolve/main/sub/readme.md").await, (200, b"# hi".to_vec()));
+}
+
+#[tokio::test]
+async fn stale_parent_is_412() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    let first: Value = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[file_line("a", b"1")]).await.json().await.unwrap();
+    let a = first["commitOid"].as_str().unwrap().to_string();
+    let hdr = |p: &str| json!({"key": "header", "value": {"summary": "s", "parentCommit": p}});
+    let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[hdr(&a), file_line("a", b"2")]).await;
+    assert_eq!(r.status(), 200);
+    let b: Value = r.json().await.unwrap();
+    let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[hdr(&a), file_line("a", b"3")]).await;
+    assert_eq!(r.status(), 412);
+    assert_eq!(main_head(&h, HubKind::Model, "bert").await.as_deref(), b["commitOid"].as_str());
+    assert_eq!(fetch(&h, "alice/bert/resolve/main/a").await.1, b"2");
+}
+
+#[tokio::test]
+async fn commit_refuses_dotdot_path() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    for p in ["../x", "a/../../x", "/etc/passwd", ".git/hooks/pre-receive"] {
+        let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[file_line(p, b"x")]).await;
+        assert_eq!(r.status(), 400, "{p}");
+    }
+    assert_eq!(main_head(&h, HubKind::Model, "bert").await, None);
+}
+
+#[tokio::test]
+async fn lfs_file_needs_uploaded_bytes_and_writes_gitattributes() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    let lfs = json!({"key": "lfsFile", "value": {"path": "model.bin", "algo": "sha256", "oid": SHA_A, "size": 5}});
+    let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", std::slice::from_ref(&lfs)).await;
+    assert_eq!(r.status(), 422);
+    assert!(r.text().await.unwrap().contains("model.bin"));
+
+    h.e.store.os.put(&kloudlite_xet::keys::lfs("alice", SHA_A), b"hello".to_vec().into()).await.unwrap();
+    let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[lfs]).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(fetch(&h, "alice/bert/resolve/main/model.bin").await, (200, b"hello".to_vec()));
+    let (_, attrs) = fetch(&h, "alice/bert/resolve/main/.gitattributes").await;
+    assert_eq!(String::from_utf8(attrs).unwrap(), "model.bin filter=lfs diff=lfs merge=lfs -text\n");
+}
+
+#[tokio::test]
+async fn deletes_file_and_folder() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert"})).await;
+    hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[file_line("logs/1", b"1"), file_line("logs/2/x", b"2"), file_line("keep", b"k"), file_line("old", b"o")]).await;
+    let r = hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main", &[
+        json!({"key": "deletedFolder", "value": {"path": "logs/"}}),
+        json!({"key": "deletedFile", "value": {"path": "old"}}),
+    ]).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(fetch(&h, "alice/bert/resolve/main/keep").await.0, 200);
+    for gone in ["logs/1", "logs/2/x", "old"] {
+        assert_eq!(fetch(&h, &format!("alice/bert/resolve/main/{gone}")).await.0, 404, "{gone}");
+    }
+}
+
+#[tokio::test]
+async fn commit_refusals() {
+    let h = hub().await;
+    create(&h, Some(&h.alice), json!({"name": "bert", "private": false})).await;
+    let line = [file_line("a", b"1")];
+    let path = "models/alice/bert/commit/main";
+    assert_eq!(hub_commit(&h, None, path, &line).await.status(), 401);
+    assert_eq!(hub_commit(&h, Some(&h.bob), path, &line).await.status(), 403);
+    assert_eq!(hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/main?create_pr=1", &line).await.status(), 404);
+    assert_eq!(hub_commit(&h, Some(&h.alice), "models/alice/bert/commit/dev", &line).await.status(), 404, "no such branch on an empty repo");
+    assert_eq!(hub_commit(&h, Some(&h.alice), path, &[]).await.status(), 400, "nothing to commit");
+    assert_eq!(hub_commit(&h, Some(&h.alice), "datasets/alice/bert/commit/main", &line).await.status(), 404, "a model is not a dataset");
+}

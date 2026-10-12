@@ -285,7 +285,9 @@ pub fn apply_changes(
             // directory would take everything under it with it, which is not what
             // "delete this file" asked for.
             Change::Delete => {
-                if editor.get(parts.iter()).is_none() {
+                // `Editor::get` sees only trees it has loaded (see the Upsert arm), so a nested
+                // path of the base tree reads as absent; ask the base tree too.
+                if editor.get(parts.iter()).is_none() && existing_kind(odb, base, &parts).is_none() {
                     return Err(err(format!("{path} is not in this branch")));
                 }
                 editor
