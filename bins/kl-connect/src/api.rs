@@ -239,6 +239,9 @@ pub struct EnvDoc {
     pub name: String,
     #[serde(default)]
     pub services: Vec<EnvService>,
+    /// Set while the environment is idle-stopped (the api drops it for a person's stop).
+    #[serde(default)]
+    pub idle_since: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
