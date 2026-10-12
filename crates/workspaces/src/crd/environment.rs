@@ -76,6 +76,9 @@ pub struct EnvironmentSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<WorkspaceStorage>,
     pub desired_state: DesiredState,
+    /// RFC 3339, written by `/v1` to start an idle-stopped environment; see `wants_running`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_at: Option<String>,
     /// The user's wish to put a past snapshot back into THIS environment's own disk, rather than
     /// into a new one. Additive and never cleared by a controller — see `RestoreWish`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,4 +199,36 @@ pub struct EnvironmentStatus {
     pub restored_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_requested_at: Option<String>,
+    /// RFC 3339, stamped by the owning node when it stops the environment for sitting idle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_since: Option<String>,
+    /// RFC 3339, when the environment last had no workspace following it (attached or
+    /// intercepting); the idle clock for an environment nobody uses runs from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unfollowed_since: Option<String>,
+}
+
+/// Same rule as `wants_pod`: asked to run and not idle-stopped since the last wake.
+pub fn wants_running(e: &Environment) -> bool {
+    e.spec.desired_state == DesiredState::Running
+        && super::workspace::awake(e.status.as_ref().and_then(|s| s.idle_since.as_deref()), e.spec.wake_at.as_deref())
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    #[test]
+    fn wants_running_table() {
+        let spec: EnvironmentSpec = serde_json::from_value(serde_json::json!({
+            "owner": "t", "name": "e", "region": "r", "services": [], "desiredState": "running"
+        }))
+        .unwrap();
+        let mut e = Environment::new("e", spec);
+        assert!(wants_running(&e));
+        e.status = Some(EnvironmentStatus { idle_since: Some("2026-10-12T10:00:00Z".into()), ..Default::default() });
+        assert!(!wants_running(&e));
+        e.spec.wake_at = Some("2026-10-12T10:00:01Z".into());
+        assert!(wants_running(&e));
+    }
 }

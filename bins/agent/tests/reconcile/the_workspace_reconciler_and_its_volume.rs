@@ -254,6 +254,7 @@ fn a_git_seeded_pod_carries_an_init_container_with_the_key_and_no_token() {
             source: Some(crd::VolumeSource::GitRepo { repo: "alice/site".into(), branch: "main".into() }),
         }),
         desired_state: crd::DesiredState::Running,
+        wake_at: None,
         resources: Default::default(),
         packages: vec![],
         locks: vec![],

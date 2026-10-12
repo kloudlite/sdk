@@ -619,6 +619,11 @@
                           "type": "object"
                         },
                         "type": "array"
+                      },
+                      "wakeAt": {
+                        "description": "RFC 3339, written by `/v1` when a client asks for a pod that idled away. A pod is wanted\nagain only while this is later than `status.idleSince`. A bench reads `bench.wakeAt`.",
+                        "nullable": true,
+                        "type": "string"
                       }
                     },
                     "required": [
@@ -1166,6 +1171,11 @@
                         "description": "Marks the hidden per-owner builder environment (`BUILDER_SYSTEM`) so the renderer can tell\nit apart from an ordinary one — `None` for every environment a person created, which is\nevery environment before this field existed too.",
                         "nullable": true,
                         "type": "string"
+                      },
+                      "wakeAt": {
+                        "description": "RFC 3339, written by `/v1` to start an idle-stopped environment; see `wants_running`.",
+                        "nullable": true,
+                        "type": "string"
                       }
                     },
                     "required": [
@@ -1224,6 +1234,11 @@
                       },
                       "head": {
                         "description": "Same meaning and same one-writer rule as `WorkspaceStatus::head` — the snapshot id this\nenvironment's worktree is checked out on, written only by the node running it.",
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "idleSince": {
+                        "description": "RFC 3339, stamped by the owning node when it stops the environment for sitting idle.",
                         "nullable": true,
                         "type": "string"
                       },
@@ -1304,6 +1319,11 @@
                           "type": "object"
                         },
                         "type": "array"
+                      },
+                      "unfollowedSince": {
+                        "description": "RFC 3339, when the environment last had no workspace following it (attached or\nintercepting); the idle clock for an environment nobody uses runs from here.",
+                        "nullable": true,
+                        "type": "string"
                       },
                       "volumeRef": {
                         "description": "The child `Volume`, reported rather than wished for: the reconciler creates it and then\nsays so here.",
@@ -2491,6 +2511,13 @@
                         "nullable": true,
                         "type": "integer"
                       },
+                      "envIdleSecs": {
+                        "description": "Same for an environment. 0 (off) or 60..=86400 seconds.",
+                        "format": "uint64",
+                        "minimum": 0.0,
+                        "nullable": true,
+                        "type": "integer"
+                      },
                       "gitInitImage": {
                         "description": "The init container that clones a workspace's seed repo over SSH. **Boot**, same reason.",
                         "nullable": true,
@@ -2610,6 +2637,13 @@
                       "treesPerWorkspace": {
                         "description": "How many live subagent trees one workspace may hold. 1..=32. Read by `/v1`, not the agent:\nthe agent cuts whatever spec names, and the ceiling is a refusal at the ask.",
                         "format": "uint32",
+                        "minimum": 0.0,
+                        "nullable": true,
+                        "type": "integer"
+                      },
+                      "wsIdleSecs": {
+                        "description": "How long a workspace with no client and nothing running stays up before it is stopped.\n0 (off) or 300..=86400 seconds.",
+                        "format": "uint64",
                         "minimum": 0.0,
                         "nullable": true,
                         "type": "integer"

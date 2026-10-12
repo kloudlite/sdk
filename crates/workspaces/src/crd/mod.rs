@@ -369,6 +369,7 @@ mod tests {
             image: "i".into(),
             storage: None,
             desired_state: DesiredState::Running,
+            wake_at: None,
             resources: PodResources::default(),
             packages: vec![],
             locks: vec![],
@@ -524,7 +525,7 @@ mod tests {
             bench: None,
             access: Default::default(),
             owner: "o".into(), team: String::new(), name: "n".into(), region: "r".into(),
-            image: "alpine:3.20".into(), storage: None, desired_state: DesiredState::Running,
+            image: "alpine:3.20".into(), storage: None, desired_state: DesiredState::Running, wake_at: None,
             resources: PodResources::default(), packages: vec!["jq".into()],
             locks: vec![Lock {
                 entry: "nodejs@20".into(), version: "20.20.2".into(), attr_path: "nodejs_20".into(),

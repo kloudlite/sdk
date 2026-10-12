@@ -326,6 +326,7 @@ pub(crate) async fn create_bench(
             image: crate::model::default_ws_image(),
             storage: Some(crd::WorkspaceStorage { quota_gb: clamp_quota(&s, crd::BENCH_QUOTA_GB), source }),
             desired_state: DesiredState::Running,
+            wake_at: None,
             resources: Default::default(),
             packages: Vec::new(),
             locks: Vec::new(),
