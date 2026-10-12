@@ -245,7 +245,7 @@ async fn the_builder_is_invisible_to_every_environment_route() {
             "/v1/environments/{id}" => (vec!["GET", "DELETE"], Value::Null),
             "/v1/environments/{id}/clone" => (vec!["POST"], json!({"name": "copy"})),
             "/v1/environments/{id}/push" => (vec!["POST"], json!({})),
-            "/v1/environments/{id}/restore-in-place" => (vec!["POST"], json!({"snapshot_id": "s1"})),
+            "/v1/environments/{id}/restore" => (vec!["POST"], json!({"snapshot_id": "s1"})),
             "/v1/environments/{id}/intercepts" => (
                 vec!["POST"],
                 json!({"service": "buildkit", "workspace": "ws-1", "ports": []}),

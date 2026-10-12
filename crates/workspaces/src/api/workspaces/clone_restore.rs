@@ -192,7 +192,7 @@ pub(crate) async fn restore_ws(
         Some(crd::SnapshotState::Environment { .. }) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "this snapshot was cut from an environment; use POST /v1/environments/restore",
+                "this snapshot was cut from an environment; use POST /v1/environments/{id}/clone with `snapshot_id`",
             )
                 .into_response())
         }
