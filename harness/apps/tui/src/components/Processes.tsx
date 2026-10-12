@@ -230,10 +230,11 @@ export function Processes({
           ) : (
             <>
               <box flexDirection="row" justifyContent="space-between" paddingLeft={2} paddingRight={2}>
-                <box flexGrow={1} height={1} overflow="hidden">
+                {/* the status keeps its width; a long command is the one clipped, never the status */}
+                <box flexGrow={1} flexBasis={0} minWidth={0} height={1} overflow="hidden">
                   <text fg={theme.fg}>{proc.command}</text>
                 </box>
-                <text fg={theme.muted}>
+                <text fg={theme.muted} flexShrink={0} paddingLeft={2}>
                   {proc.status} · {metaOf(proc) || "—"} · {lines.length} lines
                   {follow ? <span fg={theme.accent}>  following</span> : ""}
                 </text>
