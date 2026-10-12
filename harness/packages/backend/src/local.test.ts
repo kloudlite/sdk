@@ -508,9 +508,9 @@ function routeAgent(fork: "hang" | "throw" | string, busy: { v: boolean }, onFor
     messages: [],
     model: { id: "m" },
     subscribe: () => () => {},
-    prompt: async (t: string) => void calls.push(`prompt:${t.split("\n").pop()}`),
-    steer: async (t: string) => void calls.push(`steer:${t}`),
-    followUp: async (t: string) => void calls.push(`followUp:${t}`),
+    // pi's prompt: queues on the named queue while a run is active, starts one otherwise
+    prompt: async (t: string, o?: { streamingBehavior?: string }) =>
+      void calls.push(`${(busy.v && o?.streamingBehavior) || "prompt"}:${t.split("\n").pop()}`),
     _getSummarizationRequestAuth: async () => ({ model: { id: "m", contextWindow: 100_000, maxTokens: 8000 }, apiKey: "k" }),
     agent: {
       streamFunction: async () => {
@@ -568,6 +568,13 @@ test("route: idle by the time the fork answers prompts", async () => {
   const r = routeAgent("STEER: x", busy, () => void (busy.v = false));
   expect(await r.h.route("x")).toEqual({ kind: "prompt", reason: "x" });
   expect(r.agent.calls).toEqual(["prompt:x"]);
+});
+
+test("a steer or follow-up sent after the turn ended starts a run instead of waiting in pi's queue", async () => {
+  const r = routeAgent("", { v: false });
+  await r.h.steer("late");
+  await r.h.followUp("later");
+  expect(r.agent.calls).toEqual(["prompt:late", "prompt:later"]);
 });
 
 test("seen keeps what a compaction summarised away, and a kept message once", () => {

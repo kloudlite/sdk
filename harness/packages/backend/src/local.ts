@@ -329,7 +329,7 @@ export function baseHandle(
     }
     if (event.type === "agent_end") hooks.onEnd();
   });
-  const prompt: SessionHandle["prompt"] = async (text, o) =>
+  const prompt = async (text: string, o?: Parameters<SessionHandle["prompt"]>[1] & { streamingBehavior?: "steer" | "followUp" }) =>
     agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${text}` : text, o);
   return {
     get messages() {
@@ -350,12 +350,15 @@ export function baseHandle(
     },
     prompt,
     notice: (text) => emit({ type: "session_notice", text }),
-    steer: async (text, images) => agent.steer(text, images),
-    followUp: async (text, images) => agent.followUp(text, images),
+    // A steer sent as the turn ends (the TUI's busy flag lags agent_end; route's fork takes seconds) would
+    // sit in pi's queue with no run to deliver it, shown as QUEUED forever. pi's prompt decides in one
+    // place: queue while a run is active, start one otherwise.
+    steer: async (text, images) => prompt(text, { images, streamingBehavior: "steer" }),
+    followUp: async (text, images) => prompt(text, { images, streamingBehavior: "followUp" }),
     route: async (text, images) => {
       const busy = () => hooks.busy.has(key);
       const go = async (kind: "steer" | "followUp" | "prompt", reason: string) => {
-        await (kind === "prompt" ? prompt(text, { images }) : agent[kind](text, images));
+        await prompt(text, { images, streamingBehavior: kind === "prompt" ? "followUp" : kind });
         return { kind, reason };
       };
       if (!busy()) return go("prompt", "");
