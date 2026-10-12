@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use kloudlite_core::jwt::{CasClaims, Jwt};
 use serde_json::{json, Map, Value};
-use slatedb::object_store::{GetOptions, GetRange, ObjectStore};
+use slatedb::object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -172,20 +172,32 @@ async fn get_fetch(
     let Ok(range) = recon::parse_range(h.get(header::RANGE).and_then(|v| v.to_str().ok())) else {
         return status(StatusCode::RANGE_NOT_SATISFIABLE, "unsupported range");
     };
-    let opts = GetOptions {
-        range: range.map(|(s, e)| match e {
-            Some(e) => GetRange::Bounded(s..e + 1),
-            None => GetRange::Offset(s),
-        }),
-        ..Default::default()
+    let key = keys::xorb(&owner, &hash);
+    // Size first: an unsatisfiable start must be 416, and an end past the object is clamped.
+    let size = match st.os.head(&key).await {
+        Ok(m) => m.size,
+        Err(slatedb::object_store::Error::NotFound { .. }) => return status(StatusCode::NOT_FOUND, "no such xorb"),
+        Err(e) => return internal(e),
     };
-    let got = match st.os.get_opts(&keys::xorb(&owner, &hash), opts).await {
+    let range = match range {
+        Some((s, _)) if s >= size => return status(StatusCode::RANGE_NOT_SATISFIABLE, "range starts past the end"),
+        Some((s, e)) => Some((s, e.unwrap_or(u64::MAX).min(size - 1))),
+        None => None,
+    };
+    let opts = GetOptions { range: range.map(|(s, e)| GetRange::Bounded(s..e + 1)), ..Default::default() };
+    let got = match st.os.get_opts(&key, opts).await {
         Ok(g) => g,
         Err(slatedb::object_store::Error::NotFound { .. }) => return status(StatusCode::NOT_FOUND, "no such xorb"),
         Err(e) => return internal(e),
     };
+    let served = got.range.clone();
     match got.bytes().await {
-        Ok(b) if range.is_some() => (StatusCode::PARTIAL_CONTENT, b).into_response(),
+        Ok(b) if range.is_some() => (
+            StatusCode::PARTIAL_CONTENT,
+            [(header::CONTENT_RANGE, format!("bytes {}-{}/{size}", served.start, served.end - 1))],
+            b,
+        )
+            .into_response(),
         Ok(b) => (StatusCode::OK, b).into_response(),
         Err(e) => internal(e),
     }
@@ -306,6 +318,22 @@ mod tests {
         upload(&app, &a, &b).await;
         let (s, _) = call(&app, req("GET", &format!("/v1/reconstructions/{}", b.file_hash.hex()), &m, None, vec![])).await;
         assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn ranged_fetch_has_content_range_and_past_end_is_416() {
+        let (app, jwt) = setup();
+        let w = jwt.mint_cas("alice", "mdl/alice/bert", "main", true, 600).unwrap();
+        let b = build(&[b"hello ", b"world"]);
+        upload(&app, &w, &b).await;
+        let n = b.xorb.len();
+        let path = format!("/v1/fetch/alice/{}", b.xorb_hash.hex());
+        let url = sign::signed_url("", jwt.secret(), &path, 600);
+        let r = app.clone().oneshot(req("GET", &url, "", Some("bytes=2-999999"), vec![])).await.unwrap();
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(r.headers()["content-range"], format!("bytes 2-{}/{n}", n - 1).as_str());
+        let (s, _) = call(&app, req("GET", &url, "", Some(&format!("bytes={n}-")), vec![])).await;
+        assert_eq!(s, StatusCode::RANGE_NOT_SATISFIABLE);
     }
 
     #[tokio::test]
