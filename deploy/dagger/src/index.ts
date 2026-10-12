@@ -275,6 +275,7 @@ export class Kloudlite {
       )
       .withFile("/etc/profile.d/kl-build.sh", source.file("deploy/workspace-image/kl-build.sh"))
       .withFile("/etc/kloudlite/gitignore-global", source.file("deploy/workspace-image/gitignore-global"))
+      .withFile("/etc/kloudlite/python/sitecustomize.py", source.file("deploy/workspace-image/sitecustomize.py"))
       .withExec(["sh", "-c",
         "apt-get update && apt-get install -y --no-install-recommends python3 make g++ " +
         "&& npm install -g @nanonets/graft@0.18.0 " +
