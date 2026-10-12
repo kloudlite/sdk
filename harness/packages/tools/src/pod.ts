@@ -4,6 +4,7 @@
 //! description/schema replace the permissive fallback when it answers at construction.
 import type { ToolDef } from "./index.ts";
 import { api, apiJson } from "./platform.ts";
+import { ensureRunning } from "./ensure.ts";
 
 export const POD_TOOLS = [
   "read", "write", "edit", "patch", "glob", "grep", "exec",
@@ -22,6 +23,9 @@ const fences = new Map<string, PodFence>();
 /** The fence `podTools(ws)` last read; undefined when the server is older or was unreachable. */
 export const podFence = (ws: string): PodFence | undefined => fences.get(ws);
 
+/** Last call per workspace: the hold beat (daemon.ts) pings only workspaces a running turn has used. */
+export const touched = new Map<string, number>();
+
 class NotReady extends Error {}
 
 async function lookup(ws: string): Promise<Addr> {
@@ -39,7 +43,7 @@ async function lookup(ws: string): Promise<Addr> {
 async function podFetch<T>(ws: string, path: string, init: RequestInit, ms: number, text = false): Promise<T> {
   const a = await apiJson<Addr>("GET", `/v1/workspaces/${encodeURIComponent(ws)}/tools`);
   if (!a?.address) throw new Error("no address");
-  const res = await fetch(`http://${a.address}${path}`, { ...init, headers: { ...(init.headers as object), ...headers(a) }, signal: AbortSignal.timeout(ms) });
+  const res = await fetch(`http://${a.address}${path}`, { ...init, headers: { ...(init.headers as object), ...headers(a), "x-kl-watch": "1" }, signal: AbortSignal.timeout(ms) });
   if (!res.ok) throw new Error(`error ${res.status}`); // body withheld: it may echo the token
   return (text ? await res.text() : await res.json()) as T;
 }
@@ -51,7 +55,7 @@ export const podPost = <T>(ws: string, tool: string, args: unknown, ms = 5000) =
 
 const headers = (a: Addr): Record<string, string> => (a.token ? { authorization: `Bearer ${a.token}` } : {});
 
-export async function podTools(ws: string): Promise<ToolDef[]> {
+export async function podTools(ws: string, o: { ensure?: typeof ensureRunning } = {}): Promise<ToolDef[]> {
   let cache: Addr | undefined;
   const addr = async () => (cache ??= await lookup(ws));
 
@@ -86,15 +90,26 @@ export async function podTools(ws: string): Promise<ToolDef[]> {
       : name === "container_push" ? 180_000 : 60_000;
     try {
       let res: Response | undefined;
+      touched.set(ws, Date.now());
       // a stale address (pod restarted, token rotated) shows as a network error or 401: re-resolve once.
       // Never after our own timeout: the pod got the call and may still be running it, so a resend
       // runs a second `go test` beside the first (2026-10-10: one exec became nine minutes).
+      let woke = false;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           res = await post(name, args, timeout);
           if (res.status !== 401 || attempt) break;
         } catch (e: any) {
-          if (e instanceof NotReady || attempt || e?.name === "TimeoutError") throw e;
+          // an idle-stopped workspace has no address: wake it once (a person's stop throws from ensure) and go again
+          if (e instanceof NotReady && !woke) {
+            woke = true;
+            await (o.ensure ?? ensureRunning)("workspaces", ws).catch((x) => {
+              // a lookup failure inside ensure says less than the NotReady we already have
+              if (/is stopped; start it|did not become ready/.test(String(x?.message))) throw x;
+              throw e;
+            });
+            attempt--;
+          } else if (e instanceof NotReady || attempt || e?.name === "TimeoutError") throw e;
         }
         cache = undefined;
       }
@@ -127,6 +142,15 @@ export async function podTools(ws: string): Promise<ToolDef[]> {
       run: (args: any) => call(name, args),
     };
   });
+}
+
+/** Keeps a READY workspace from idling while a turn that needs it runs elsewhere. Never wakes:
+ * a stopped workspace stays stopped until a real call needs it. Errors are dropped. */
+export async function podHold(ws: string): Promise<void> {
+  try {
+    const a = await lookup(ws);
+    await fetch(`http://${a.address}/hold`, { method: "POST", headers: headers(a), signal: AbortSignal.timeout(5_000) });
+  } catch {}
 }
 
 export type ExecResult = { code: number; stdout: string; stderr: string };

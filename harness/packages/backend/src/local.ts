@@ -417,7 +417,19 @@ export function baseHandle(
 export class LocalBackend implements Backend {
   /** Open sessions (the agents' base handles), for workspace_ask to reach a running one. */
   #live = new Map<string, ReturnType<typeof baseHandle>>();
-  #busy = new Set<string>();
+  /** Busy keys; the shared Set is mutated from several places (agent_start/end hooks), so start times ride along in add/delete. */
+  #turnStart = new Map<string, number>();
+  #busy = ((start) =>
+    new (class extends Set<string> {
+      override add(k: string) {
+        if (!this.has(k)) start.set(k, Date.now());
+        return super.add(k);
+      }
+      override delete(k: string) {
+        start.delete(k);
+        return super.delete(k);
+      }
+    })())(this.#turnStart);
   #watchers = new Set<(list: LiveSessionMeta[]) => void>();
   #list = () => listSessions().map((m) => ({ ...m, busy: this.#busy.has(m.key) }));
   /** Every view's sidebar: the stored list with which keys are mid-turn right now. */
@@ -522,6 +534,10 @@ export class LocalBackend implements Backend {
   }
 
   /** Turns running now: the bench's idle clock must not stop a pod under one (daemon.ts). */
+  oldestTurnStart(): number | undefined {
+    return this.#turnStart.size ? Math.min(...this.#turnStart.values()) : undefined;
+  }
+
   get busyCount(): number {
     return this.#busy.size;
   }
