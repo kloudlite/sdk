@@ -83,6 +83,10 @@ pub async fn sweep_owner(os: &dyn ObjectStore, owner: &str, grace: Duration) -> 
     if read_live(os, owner).await?.1 != print {
         return Err("live lists changed during the sweep".into());
     }
+    // ponytail: a commit (or LFS batch "already have") that re-references an old, unreferenced
+    // object after the re-read above can still lose it: the grace window only protects fresh
+    // uploads. Close it with a per-owner lease shared by commit and sweep, or a live-list re-read
+    // before each delete, if re-referencing orphans turns out to be common.
 
     let mut n = 0;
     for m in &dead_sha {
