@@ -99,7 +99,7 @@ To give an image a new tag, use `container_push`. The `kl` command is not on the
 - *Sync points*: The platform makes them automatically while a workspace runs. They are only for recovery after a crash. They do not show in the history.
 - *Push* (`workspace_push`, `env_push`): Records a named snapshot in the history. The platform does not remove pushes. This push is not `git push`.
 - *Restore* (`env_restore`): Puts THIS environment back in time, services and data. Data written since the snapshot is lost. If the reply is 409 with `lost`, ask the person, then repeat with `discard`. `workspace_restore` still makes a new workspace from a snapshot.
-- *Clone* (`workspace_clone`, `env_clone`): Makes a NEW workspace or environment. `env_clone` takes `snapshot_id` to copy a snapshot instead of the live state. The `based_on` field in the reply tells you the age of the copy.
+- *Clone* (`workspace_clone`, `env_clone`): Makes a NEW workspace or environment. `env_clone` takes `snapshot_id` to copy a snapshot instead of the live state. The `based_on` field in the reply tells you the age of the copy. To grow a new environment from a snapshot of a deleted environment, call `env_create` (`POST /v1/environments`) with `snapshot_id`.
 - `volume_list`, `volume_history` and `volume_refs` read the history. `snapshot_delete` and `volume_delete` remove history.
 
 **Interrupted workspace.** If the node of a workspace stops, `workspace_start` answers 409. Then clone the workspace. The clone starts from the last sync point.
