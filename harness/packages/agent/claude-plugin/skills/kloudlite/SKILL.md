@@ -85,8 +85,8 @@ To give an image a new tag, use `container_push`. The `kl` command is not on the
 
 - *Sync points*: The platform makes them automatically while a workspace runs. They are only for recovery after a crash. They do not show in the history.
 - *Push* (`workspace_push`, `env_push`): Records a named snapshot in the history. The platform does not remove pushes. This push is not `git push`.
-- *Restore* (`workspace_restore`, `env_restore`): Makes a new copy from a snapshot. `env_restore_in_place` writes the snapshot over the environment.
-- *Clone* (`workspace_clone`, `env_clone`): Copies a workspace or environment. The `based_on` field in the reply tells you the age of the copy.
+- *Restore* (`env_restore`): Puts THIS environment back in time, services and data. Data written since the snapshot is lost. If the reply is 409 with `lost`, ask the person, then repeat with `discard`. `workspace_restore` still makes a new workspace from a snapshot.
+- *Clone* (`workspace_clone`, `env_clone`): Makes a NEW workspace or environment. `env_clone` takes `snapshot_id` to copy a snapshot instead of the live state. The `based_on` field in the reply tells you the age of the copy.
 - `volume_list`, `volume_history` and `volume_refs` read the history. `snapshot_delete` and `volume_delete` remove history.
 
 **Interrupted workspace.** If the node of a workspace stops, `workspace_start` answers 409. Then clone the workspace. The clone starts from the last sync point.
@@ -125,7 +125,7 @@ Each role has a different set of tools. Your role skill gives your tools and whe
 
 **Permission cards.** Some calls stop and show a card to the person. The person accepts or refuses the call.
 
-- These calls always show a card: `workspace_stop`, `workspace_delete`, `worktree_drop`, `env_stop`, `env_delete`, `env_restore_in_place`, `service_update`, `service_remove`, `volume_delete`, `snapshot_delete`, `repo_delete`, `branch_delete`, `image_tag_delete`, `image_delete`, `packages_remove`, `intercept`, `container_build`, `container_push`.
+- These calls always show a card: `workspace_stop`, `workspace_delete`, `worktree_drop`, `env_stop`, `env_delete`, `env_restore`, `service_update`, `service_remove`, `volume_delete`, `snapshot_delete`, `repo_delete`, `branch_delete`, `image_tag_delete`, `image_delete`, `packages_remove`, `intercept`, `container_build`, `container_push`.
 - One exception: a workspace session that stops its own workspace does not get a card.
 - These calls show a card if the sandbox and the network fence are not in force: `exec`, `bash`, `web_fetch`.
 

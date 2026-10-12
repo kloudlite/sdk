@@ -98,8 +98,8 @@ To give an image a new tag, use `container_push`. The `kl` command is not on the
 
 - *Sync points*: The platform makes them automatically while a workspace runs. They are only for recovery after a crash. They do not show in the history.
 - *Push* (`workspace_push`, `env_push`): Records a named snapshot in the history. The platform does not remove pushes. This push is not `git push`.
-- *Restore* (`workspace_restore`, `env_restore`): Makes a new copy from a snapshot. `env_restore_in_place` writes the snapshot over the environment.
-- *Clone* (`workspace_clone`, `env_clone`): Copies a workspace or environment. The `based_on` field in the reply tells you the age of the copy.
+- *Restore* (`env_restore`): Puts THIS environment back in time, services and data. Data written since the snapshot is lost. If the reply is 409 with `lost`, ask the person, then repeat with `discard`. `workspace_restore` still makes a new workspace from a snapshot.
+- *Clone* (`workspace_clone`, `env_clone`): Makes a NEW workspace or environment. `env_clone` takes `snapshot_id` to copy a snapshot instead of the live state. The `based_on` field in the reply tells you the age of the copy.
 - `volume_list`, `volume_history` and `volume_refs` read the history. `snapshot_delete` and `volume_delete` remove history.
 
 **Interrupted workspace.** If the node of a workspace stops, `workspace_start` answers 409. Then clone the workspace. The clone starts from the last sync point.
@@ -142,7 +142,7 @@ Each role has a different set of tools. Its role text gives its tools. If a tool
 | Build | `container_build`, `container_push`, `builder_status` |
 | Workspaces | `workspace_list`, `workspace_get`, `workspace_create`, `workspace_clone`, `workspace_restore`, `workspace_start`, `workspace_stop`, `workspace_delete`, `workspace_push`, `worktree_add`, `worktree_drop` |
 | Packages | `packages_list`, `packages_add`, `packages_remove`, `packages_update` |
-| Environments | `env_list`, `env_get`, `env_create`, `env_clone`, `env_start`, `env_stop`, `env_delete`, `env_push`, `env_restore`, `env_restore_in_place`, `service_add`, `service_update`, `service_remove`, `service_logs`, `intercept`, `release` |
+| Environments | `env_list`, `env_get`, `env_create`, `env_clone`, `env_start`, `env_stop`, `env_delete`, `env_push`, `env_restore`, `service_add`, `service_update`, `service_remove`, `service_logs`, `intercept`, `release` |
 | Spaces | `space_env_current`, `space_env_switch`, `space_env_clear` |
 | Repos | `repo_list`, `repo_get`, `repo_create`, `repo_update`, `repo_delete`, `protection_get`, `protection_set`, `branch_list`, `branch_delete`, `compare` |
 | Pull requests | `pr_list`, `pr_get`, `pr_create`, `pr_comment`, `pr_merge`, `pr_close` |
