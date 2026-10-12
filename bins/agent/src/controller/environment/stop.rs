@@ -6,6 +6,7 @@ use super::*;
 
 /// Tear the environment down, fail-closed: the services drain, the environment's own subvolume is
 /// pushed, and only a push that has LANDED lets the StatefulSets go.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stop_environment(
     e: &crd::Environment,
     vol: &crd::Volume,
@@ -14,6 +15,7 @@ pub(crate) async fn stop_environment(
     prev: crd::EnvironmentStatus,
     gen: i64,
     ctx: &Arc<Ctx>,
+    ready: Condition,
 ) -> Result<Action, ReconcileErr> {
     let id = vol.name_any();
 
@@ -27,7 +29,12 @@ pub(crate) async fn stop_environment(
     // only when it actually changed, so a converged environment is idle.
     if e.status.as_ref().is_some_and(|s| s.phase == crd::Phase::Stopped && s.observed_generation == Some(gen)) {
         let replicated = replicated_condition(ctx, &id, &e.name_any(), vol.spec.replicas, &prev.conditions, gen).await?;
-        let conditions = replaced(&cleared_node_dead(&prev.conditions), replicated);
+        let mut conditions = replaced(&cleared_node_dead(&prev.conditions), replicated);
+        // A wake that is stopped again, or an idle stop that became a plain stop, changes only
+        // the reason; without this the old `Idle` Ready stays on a stopped environment.
+        if let Some(c) = conditions.iter_mut().find(|c| c.type_ == ready.type_ && c.reason == crd::IDLE && ready.reason != crd::IDLE) {
+            *c = ready.clone();
+        }
         if !conditions_eq(&prev.conditions, &conditions) {
             let st = crd::EnvironmentStatus { conditions, ..prev };
             write_env_status(e, st, ctx).await?;
@@ -144,7 +151,7 @@ pub(crate) async fn stop_environment(
         observed_generation: Some(gen),
         volume_ref: Some(id),
         service_status: vec![],
-        conditions: vec![stopped_condition(gen), replicated],
+        conditions: vec![ready, replicated],
         ..prev
     };
     write_env_status(e, st, ctx).await?;

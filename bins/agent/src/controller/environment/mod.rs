@@ -28,6 +28,7 @@ pub(crate) use run::*;
 mod services;
 pub(crate) use services::*;
 mod intercept;
+mod idle;
 pub(crate) use intercept::*;
 // pub so the store-backed intercept decision is assertable from the integration suite.
 pub use intercept::{decide_intercept, Intercepting};
@@ -116,7 +117,7 @@ pub async fn apply_environment(e: &crd::Environment, ctx: &Arc<Ctx>) -> Result<A
         .await;
     }
     heal_labels(&Api::<crd::Environment>::all(ctx.client.clone()), e, &e.spec.owner, "", "environment").await?;
-    let prev = e.status.clone().unwrap_or_default();
+    let mut prev = e.status.clone().unwrap_or_default();
     let owner_ref = owner_ref_of_kind(e)?;
     // Same resolution as a workspace, including the release-1 adoption — an environment is
     // team-owned, so it has no team of its own.
@@ -168,8 +169,34 @@ pub async fn apply_environment(e: &crd::Environment, ctx: &Arc<Ctx>) -> Result<A
         return Ok(action);
     }
 
-    if e.spec.desired_state == DesiredState::Stopped {
-        return stop_environment(e, &vol, &ns, &deployments, prev, gen, ctx).await;
+    // Not `desired_state == Stopped` alone: an idle-stopped environment (`status.idleSince`, no
+    // later `wakeAt`) takes the same ordinary stop path as one somebody stopped.
+    if !crd::wants_running(e) {
+        let ready = if e.spec.desired_state == DesiredState::Stopped { stopped_condition(gen) } else { idle::idle_condition(gen) };
+        return stop_environment(e, &vol, &ns, &deployments, prev, gen, ctx, ready).await;
+    }
+    let idle_secs = ctx.settings.load().env_idle_secs;
+    if idle::eligible(e, idle_secs) && prev.phase == crd::Phase::Running {
+        let wss = ctx.workspaces().map(|s| s.state());
+        let f = idle::followed(
+            e,
+            wss.as_deref(),
+            |w| match crate::controller::space::space_environment(ctx, &w.spec.owner, &w.spec.team, crd::retired_attach(&w.metadata, w.spec.attached_environment.as_deref())) {
+                crate::controller::space::SpaceEnv::Unknown => None,
+                crate::controller::space::SpaceEnv::Known(c) => Some(c.map(|c| c.environment)),
+            },
+            std::time::SystemTime::now(),
+            idle_secs,
+        );
+        let (unfollowed, idle) = idle::step(prev.unfollowed_since.as_deref(), f, std::time::SystemTime::now(), idle_secs);
+        if idle {
+            tracing::info!(kind = "environment", id = %e.name_any(), idle_secs, last_activity = ?prev.unfollowed_since, "idle.verdict");
+            prev.idle_since = Some(k8s_openapi::jiff::Timestamp::now().to_string());
+            prev.unfollowed_since = unfollowed;
+            return stop_environment(e, &vol, &ns, &deployments, prev, gen, ctx, idle::idle_condition(gen)).await;
+        }
+        // Carried by the `..prev` status writes below.
+        prev.unfollowed_since = unfollowed;
     }
     // Starts spread, exactly as a workspace's does — same decision, same one-caller rule: only the
     // owner, only when nothing on the volume is running. An environment has no `podRef`, so
