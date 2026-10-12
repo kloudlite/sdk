@@ -17,12 +17,15 @@
 #![allow(clippy::result_large_err)]
 
 pub mod keys;
+pub mod recon;
+pub mod routes;
 pub mod shards;
 pub mod sign;
 pub mod xorbs;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
+pub use routes::{router, CasState};
 pub(crate) use kloudlite_core::{err, Result};
 
 pub const MAX_XET_OBJECT: usize = 64 * 1024 * 1024;

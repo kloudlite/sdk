@@ -4987,6 +4987,7 @@ dependencies = [
  "slatedb",
  "tempfile",
  "tokio",
+ "tower",
  "tracing",
  "xet-core-structures",
 ]
