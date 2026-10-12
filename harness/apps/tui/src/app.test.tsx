@@ -867,3 +867,58 @@ test("jobs row says running when the pod gave no start time", async () => {
   setup.renderer.destroy();
 });
 
+
+/** A busy session: agent_start is announced on subscribe, so the next enter is mid-turn. */
+function busySession(calls: { route: string[]; steer: string[]; followUp: string[] }, route: () => Promise<any>) {
+  const noop = async () => {};
+  return new Proxy(
+    {
+      messages: [],
+      busy: true,
+      state: { type: "session_state", model: hello().defaultModel, thinkingLevel: "medium", autoCompact: true, codemode: true, queued: { steering: [], followUp: [] } },
+      subscribe: (cb: any) => (cb({ type: "agent_start" }), () => {}),
+      route: async (t: string) => (calls.route.push(t), route()),
+      steer: async (t: string) => void calls.steer.push(t),
+      followUp: async (t: string) => void calls.followUp.push(t),
+    } as any,
+    { get: (o: any, k) => (k in o ? o[k] : k === "then" ? undefined : noop) },
+  );
+}
+
+async function withBusy(route: () => Promise<any>, run: (t: Awaited<ReturnType<typeof mount>>, calls: { route: string[]; steer: string[]; followUp: string[] }) => Promise<void>) {
+  const calls = { route: [] as string[], steer: [] as string[], followUp: [] as string[] };
+  const orig = LocalBackend.prototype.session;
+  LocalBackend.prototype.session = (async () => busySession(calls, route)) as any;
+  try {
+    const t = await mount({ vim: "off" });
+    await run(t, calls);
+    t.done();
+  } finally {
+    LocalBackend.prototype.session = orig;
+  }
+}
+
+test("enter while busy routes (a deciding row shows until it answers); ctrl+s steers with no fork", async () => {
+  let release!: (v: any) => void;
+  await withBusy(() => new Promise((r) => (release = r)), async (t, calls) => {
+    await t.frame();
+    await t.mockInput.typeText("and add tests");
+    await t.frame();
+    t.mockInput.pressEnter();
+    await until(t, () => calls.route.length > 0);
+    let f = await t.frame();
+    expect(calls.route).toEqual(["and add tests"]);
+    expect(calls.followUp).toEqual([]);
+    expect(f).toContain("deciding and add tests");
+    release({ kind: "followUp", reason: "separate" });
+    await t.frame();
+    f = await t.frame();
+    expect(f).not.toContain("deciding");
+    await t.mockInput.typeText("stop now");
+    await t.frame();
+    t.mockInput.pressKey("s", { ctrl: true });
+    await until(t, () => calls.steer.length > 0);
+    expect(calls.steer).toEqual(["stop now"]);
+    expect(calls.route).toEqual(["and add tests"]);
+  });
+});
