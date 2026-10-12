@@ -392,3 +392,15 @@ impl Drop for TestDirectory {
         });
     }
 }
+
+/// The hub listener alone, no routing middleware — single-node tests. Task 14 swaps the router
+/// for the server's routed one.
+pub async fn serve_hub(app: Arc<kloudlite_app::App>) -> u16 {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let st = kloudlite_hub::HubState::new(app, format!("http://127.0.0.1:{port}"));
+    tokio::spawn(async move {
+        axum::serve(l, kloudlite_hub::router(st)).await.unwrap();
+    });
+    port
+}
