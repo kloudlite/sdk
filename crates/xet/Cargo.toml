@@ -22,3 +22,6 @@ xet-core-structures = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+testkit = []
