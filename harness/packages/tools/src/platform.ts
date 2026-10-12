@@ -270,8 +270,8 @@ function basePlatformTools(kind: "main" | "workspace" | "all", wsId?: string): T
     def("env_delete", "Delete an environment permanently.", { env: ENV }, ["env"], async (a) => api("DELETE", `/v1/environments/${seg(a.env)}`)),
     def("env_start", "Start a stopped environment." + ASYNC, { env: ENV }, ["env"], async (a) => api("POST", `/v1/environments/${seg(a.env)}/start`)),
     def("env_stop", "Stop an environment that is up." + ASYNC, { env: ENV }, ["env"], async (a) => api("POST", `/v1/environments/${seg(a.env)}/stop`)),
-    def("env_create", "Create an environment of services in a region." + ASYNC, { name: S, region: S, services: { type: "array", items: SERVICE }, team: S, quota_gb: N }, ["name", "region"], async (a) =>
-      api("POST", "/v1/environments", strip({ name: a.name, region: a.region, services: a.services?.map(withServiceDefaults), owner: a.team, quota_gb: a.quota_gb }))),
+    def("env_create", "Create an environment of services in a region. With `snapshot_id`, grow it from one of your snapshots, also one of a deleted environment: the snapshot's services run unless you pass `services`." + ASYNC, { name: S, region: S, snapshot_id: S, services: { type: "array", items: SERVICE }, team: S, quota_gb: N }, ["name"], async (a) =>
+      api("POST", "/v1/environments", strip({ name: a.name, region: a.region, snapshot_id: a.snapshot_id, services: a.services?.map(withServiceDefaults), owner: a.team, quota_gb: a.quota_gb }))),
     def("env_clone", "Create a NEW environment from this one: from its live state, or from one of its snapshots when `snapshot_id` is given." + ASYNC, { env: ENV, name: S, snapshot_id: S, team: S, services: { type: "array", items: SERVICE }, region: S, quota_gb: N }, ["env", "name"], async (a) =>
       api("POST", `/v1/environments/${seg(a.env)}/clone`, strip({ name: a.name, snapshot_id: a.snapshot_id, owner: a.team, services: a.services?.map(withServiceDefaults), region: a.region, quota_gb: a.quota_gb }))),
     def("env_push", "Make a snapshot of an environment in its history." + ASYNC, { env: ENV, message: S }, ["env"], async (a) => api("POST", `/v1/environments/${seg(a.env)}/push`, { message: a.message })),
@@ -280,7 +280,7 @@ function basePlatformTools(kind: "main" | "workspace" | "all", wsId?: string): T
     ...["service_add", "service_update", "service_remove"].map(of),
     ...["space_env_current", "space_env_switch", "space_env_clear"].map(of),
     def("volume_list", "List the volumes. You can filter by kind (`workspace` or `environment`) and by owner.", { kind: S, owner: S }, [], async (a) => api("GET", `/v1/volumes${qs({ kind: a.kind, owner: a.owner })}`)),
-    def("volume_history", "List the snapshots of a volume. These ids are for env_restore and env_clone.", { volume: S }, ["volume"], async (a) => api("GET", `/v1/volumes/${seg(a.volume)}/history`)),
+    def("volume_history", "List the snapshots of a volume. These ids are for env_restore, env_clone and env_create.", { volume: S }, ["volume"], async (a) => api("GET", `/v1/volumes/${seg(a.volume)}/history`)),
     def("volume_refs", "Read the branch tips of a volume.", { volume: S }, ["volume"], async (a) => api("GET", `/v1/volumes/${seg(a.volume)}/refs`)),
     def("volume_delete", "Delete a detached volume permanently.", { volume: S }, ["volume"], async (a) => api("DELETE", `/v1/volumes/${seg(a.volume)}`)),
     def("snapshot_delete", "Delete one snapshot of a volume.", { volume: S, snapshot: S }, ["volume", "snapshot"], async (a) => api("DELETE", `/v1/volumes/${seg(a.volume)}/snapshots/${seg(a.snapshot)}`)),

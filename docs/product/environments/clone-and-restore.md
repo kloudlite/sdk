@@ -31,7 +31,7 @@ curl -sS -X POST https://dev.kloudlite.io/v1/environments/$ENV/clone \
 | `region` | the source's |
 | `quota_gb` | the snapshot's |
 
-Only `name` is allowed without `snapshot_id`. The snapshot must belong to this environment. A deleted environment cannot be cloned.
+Only `name` is allowed without `snapshot_id`. The snapshot must belong to this environment. To grow a new environment from a snapshot of a deleted environment, call `env_create` (`POST /v1/environments`) with `snapshot_id`.
 
 ## Restore
 
