@@ -40,6 +40,7 @@ pub(crate) fn followed(
     now: SystemTime,
     idle_secs: u64,
 ) -> Followed {
+    // ponytail: a future-dated held-at counts as followed until its time passes plus idle_secs; clamp to now if a skewed laptop clock ever bites.
     // A hold needs no cache, so it answers before the unknown check: a laptop keeps its
     // environment up through a relist.
     let held = e.metadata.annotations.as_ref().and_then(|a| a.get(HELD_AT)).and_then(|s| ts(s));
@@ -70,7 +71,9 @@ pub(crate) fn step(prev: Option<&str>, f: Followed, now: SystemTime, idle_secs: 
         Followed::Yes => (None, false),
         Followed::Unknown => (prev.map(str::to_string), false),
         Followed::No => {
+            // An unparsable stamp would never idle and never be repaired, so it restarts the clock.
             let since = prev
+                .filter(|p| ts(p).is_some())
                 .map(str::to_string)
                 .unwrap_or_else(|| k8s_openapi::jiff::Timestamp::try_from(now).map(|t| t.to_string()).unwrap_or_default());
             let idle = ts(&since).is_some_and(|s| now.duration_since(s).is_ok_and(|d| d.as_secs() > idle_secs));
@@ -166,6 +169,20 @@ mod tests {
         assert_eq!(step(Some(&since), Followed::No, now(), S), (Some(since.clone()), true));
         assert_eq!(step(Some(&since), Followed::Yes, now(), S), (None, false), "a follower clears it");
         assert_eq!(step(Some(&since), Followed::Unknown, now(), S), (Some(since.clone()), false), "unknown keeps the clock, never idles");
+    }
+    #[test]
+    fn idle_stop_clears_the_clock_so_a_woken_env_is_not_re_idled() {
+        let old = k8s_openapi::jiff::Timestamp::try_from(now() - Duration::from_secs(S + 1)).unwrap().to_string();
+        // The verdict pass: idle, and mod.rs writes `unfollowed_since = None` with the stop.
+        assert!(step(Some(&old), Followed::No, now(), S).1);
+        // First Running pass after the wake starts a fresh window instead of idling at once.
+        let (u, idle) = step(None, Followed::No, now(), S);
+        assert!(u.is_some() && !idle);
+    }
+    #[test]
+    fn unparsable_clock_is_restamped() {
+        let (u, idle) = step(Some("garbage"), Followed::No, now(), S);
+        assert!(!idle && u.as_deref().is_some_and(|s| ts(s).is_some()));
     }
     #[test]
     fn system_env_is_not_eligible() {
