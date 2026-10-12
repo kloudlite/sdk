@@ -35,6 +35,37 @@ pub(crate) fn pod_list(pods: &[(&str, &str)]) -> serde_json::Value {
     })
 }
 
+/// A restore rewrites `spec.services` to the snapshot's list in the same patch as the wish, so a
+/// service the snapshot predates (`redis`) is gone from the spec while its pod still holds the old
+/// disk open. The drain walks what is RUNNING, or the pod is never scaled down and the gate waits
+/// on it forever.
+#[tokio::test]
+async fn a_service_the_restore_removed_from_the_spec_is_still_scaled_to_zero() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (e, vol) = restoring_env(None);
+    let redis = "/apis/apps/v1/namespaces/env-1/statefulsets/redis";
+    let both = sts_list(["db", "redis"].map(|n| serde_json::json!({
+        "apiVersion": "apps/v1", "kind": "StatefulSet",
+        "metadata": {"name": n, "namespace": "env-1", "labels": {"kloudlite.io/kind": "environment"}},
+    })).to_vec());
+    let (ctx, rec) = ctx(
+        tmp.path(),
+        vec![
+            Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
+            kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", vol.clone()),
+            kloudlite_workspaces::kube_test::get("/apis/apps/v1/namespaces/env-1/statefulsets", both),
+            Route { method: "PATCH", path: DEP_PATCH.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
+            Route { method: "PATCH", path: redis.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
+            kloudlite_workspaces::kube_test::get(POD_LIST, pod_list(&[])),
+            Route { method: "PATCH", path: VOL_PATCH.into(), status: 200, body: vol },
+            Route { method: "PATCH", path: ENV_STATUS_PATH.into(), status: 200, body: env_json(serde_json::json!({})) },
+        ],
+    );
+    kloudlite_agent::controller::apply_environment(&e, &ctx).await.unwrap();
+    assert_eq!(rec.sent("PATCH", redis)[0]["spec"]["replicas"], 0, "{:?}", rec.calls());
+    assert_eq!(rec.sent("PATCH", DEP_PATCH)[0]["spec"]["replicas"], 0);
+}
+
 /// Never restore under a running service: the Deployments go to zero replicas and their pods have
 /// to be GONE before the wish reaches the Volume. A subvolume swapped under an open database is
 /// corruption nobody can attribute afterwards.
@@ -47,6 +78,7 @@ async fn a_restore_wish_scales_the_services_to_zero_before_it_reaches_the_volume
         vec![
             Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
             kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", vol.clone()),
+            db_sts_list(),
             Route { method: "PATCH", path: DEP_PATCH.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
             kloudlite_workspaces::kube_test::get(POD_LIST, pod_list(&[])),
             Route { method: "PATCH", path: VOL_PATCH.into(), status: 200, body: vol },
@@ -77,6 +109,7 @@ async fn a_restore_waits_for_the_pods_to_actually_be_gone() {
         vec![
             Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
             kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", vol),
+            db_sts_list(),
             Route { method: "PATCH", path: DEP_PATCH.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
             kloudlite_workspaces::kube_test::get(POD_LIST, pod_list(&[("db-0", "Running")])),
             Route { method: "PATCH", path: ENV_STATUS_PATH.into(), status: 200, body: env_json(serde_json::json!({})) },
@@ -183,6 +216,7 @@ async fn a_finished_pod_does_not_block_the_drain() {
         vec![
             Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
             kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", vol.clone()),
+            db_sts_list(),
             Route { method: "PATCH", path: DEP_PATCH.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
             kloudlite_workspaces::kube_test::get(POD_LIST, pod_list(&[("seed-1", "Succeeded"), ("old-1", "Failed")])),
             Route { method: "PATCH", path: VOL_PATCH.into(), status: 200, body: vol },
@@ -209,6 +243,7 @@ async fn a_second_wish_for_the_same_snapshot_restores_again() {
         vec![
             Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
             kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", vol.clone()),
+            db_sts_list(),
             Route { method: "PATCH", path: DEP_PATCH.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
             kloudlite_workspaces::kube_test::get(POD_LIST, pod_list(&[])),
             Route { method: "PATCH", path: VOL_PATCH.into(), status: 200, body: vol },

@@ -44,7 +44,7 @@ import type { Backend, BenchEvent, CatalogModel, Decision, PermMode, PermissionR
  * runs unasked: sessions work inside a sandboxed workspace, and a stop snapshots, a build or push
  * can be redone. A destructive command inside exec or bash (rm -rf, git reset --hard) is not seen. */
 export const DESTRUCTIVE = new Set([
-  "workspace_delete", "worktree_drop", "env_delete", "env_restore_in_place",
+  "workspace_delete", "worktree_drop", "env_delete", "env_restore",
   "service_remove", "volume_delete", "snapshot_delete",
   "repo_delete", "branch_delete", "image_tag_delete", "image_delete",
 ]);

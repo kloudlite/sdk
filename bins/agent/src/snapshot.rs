@@ -341,7 +341,7 @@ pub(crate) async fn seeded_from_cuts(ctx: &Arc<Ctx>, volume: &str) -> Result<std
             }
         }
     }
-    // The environment twin of the loop above: `POST /v1/environments/restore` writes the very same
+    // The environment twin of the loop above: `POST /v1/environments/{id}/clone` with `snapshot_id` writes the very same
     // `CloneOf { commit }` (api/environments.rs), so an unmaterialised environment restore holds its
     // graft cut exactly as an unmaterialised workspace clone does. Only workspaces were listed here,
     // which left the environment half of the 2026-09-08 case unprotected.
@@ -532,7 +532,7 @@ mod snapshot_tests {
         assert!(rec.calls().iter().any(|c| c == "DELETE /apis/kloudlite.io/v1alpha1/snapshots/clone-ws-1-cafe"), "unreferenced, it is pruned: {:?}", rec.calls());
     }
 
-    /// The environment twin: `POST /v1/environments/restore` writes the same `CloneOf { commit }`,
+    /// The environment twin: `POST /v1/environments/{id}/clone` with `snapshot_id` writes the same `CloneOf { commit }`,
     /// so an unmaterialised restored ENVIRONMENT holds its graft cut too. Only workspaces were
     /// listed, so this half of the 2026-09-08 case was still prunable — and a pruned graft cut is
     /// a permanent `NoSuchSnapshot`.

@@ -165,7 +165,7 @@ async fn a_restored_environment_waits_while_its_snapshot_is_still_working() {
     assert!(last["status"]["head"].is_null(), "no head recorded while the snapshot is uncut: {last}");
 }
 
-/// An environment whose `cloneOf` carries a graft snapshot — what `POST /v1/environments/restore`
+/// An environment whose `cloneOf` carries a graft snapshot — what `POST /v1/environments/{id}/clone` with `snapshot_id`
 /// writes — claimed on this node, with no head of its own yet.
 pub(crate) fn restored_env() -> crd::Environment {
     let mut e = environment(serde_json::json!({"phase": "creating", "nodeName": "node-a"}));

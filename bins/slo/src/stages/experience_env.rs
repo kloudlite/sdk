@@ -270,7 +270,7 @@ async fn restore_in_place(c: &mut Ctx, env: &str) -> bool {
         let jwt = c.probe_jwt.clone();
         let start = api(c, &format!("/v1/environments/{env}/start"));
         let push = api(c, &format!("/v1/environments/{env}/push"));
-        let restore = api(c, &format!("/v1/environments/{env}/restore-in-place"));
+        let restore = api(c, &format!("/v1/environments/{env}/restore"));
         let history = api(c, &format!("/v1/volumes/{env}/history"));
         async move {
             post(c, &start, &jwt, Value::Null).await.context("could not start the environment")?;
