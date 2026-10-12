@@ -23,23 +23,55 @@ pub enum Ingest {
     Existed,
 }
 
+/// A xorb that carries its own info footer (what `SerializedXorbObject::from_xorb(.., true, ..)`
+/// writes). `None` on any doubt: the caller then tries the shape hf_xet really sends.
+fn footered_idx(body: &[u8], hash: &MerkleHash) -> Option<XorbIdx> {
+    let mut cur = std::io::Cursor::new(body);
+    let x = XorbObject::validate_xorb_object(&mut cur, hash).ok().flatten()?;
+    if x.info.num_chunks > crate::MAX_XORB_CHUNKS {
+        return None;
+    }
+    Some(XorbIdx {
+        chunk_hashes: x.info.chunk_hashes.iter().map(|h| h.hex()).collect(),
+        boundaries: x.info.chunk_boundary_offsets.clone(),
+        unpacked: x.info.unpacked_chunk_offsets.clone(),
+    })
+}
+
+/// What hf_xet 1.x actually uploads (observed in `tests/hub_e2e.sh`): the bare concatenation of
+/// serialized chunks, no info footer, the xorb hash only in the URL. We hash every chunk, recompute
+/// the xorb hash and build the index ourselves, so the key still names its content.
+fn footerless_idx(body: &[u8], hash: &MerkleHash) -> Result<XorbIdx, String> {
+    use xet_core_structures::merklehash::{compute_data_hash, xorb_hash};
+    use xet_core_structures::xorb_object::deserialize_chunk;
+    let mut cur = std::io::Cursor::new(body);
+    let (mut hl, mut idx) = (Vec::new(), XorbIdx { chunk_hashes: vec![], boundaries: vec![], unpacked: vec![] });
+    let (mut packed, mut unpacked) = (0u64, 0u64);
+    while (cur.position() as usize) < body.len() {
+        let (data, clen, ulen) = deserialize_chunk(&mut cur).map_err(|e| format!("xorb unreadable: {e}"))?;
+        if hl.len() >= crate::MAX_XORB_CHUNKS as usize {
+            return Err("xorb has more than 8192 chunks".into());
+        }
+        let h = compute_data_hash(&data);
+        (packed, unpacked) = (packed + clen as u64, unpacked + u64::from(ulen));
+        hl.push((h, u64::from(ulen)));
+        idx.chunk_hashes.push(h.hex());
+        idx.boundaries.push(packed as u32);
+        idx.unpacked.push(unpacked as u32);
+    }
+    if hl.is_empty() || xorb_hash(&hl) != *hash {
+        return Err("xorb does not validate against its hash".into());
+    }
+    Ok(idx)
+}
+
 pub async fn put_xorb(os: &dyn ObjectStore, owner: &str, hash: &MerkleHash, body: Bytes) -> Result<Ingest, String> {
     if body.len() > crate::MAX_XET_OBJECT {
         return Err("xorb larger than 64 MiB".into());
     }
-    let mut cur = std::io::Cursor::new(&body[..]);
-    let x = match XorbObject::validate_xorb_object(&mut cur, hash) {
-        Ok(Some(x)) => x,
-        Ok(None) => return Err("xorb does not validate against its hash".into()),
-        Err(e) => return Err(format!("xorb unreadable: {e}")),
-    };
-    if x.info.num_chunks > crate::MAX_XORB_CHUNKS {
-        return Err("xorb has more than 8192 chunks".into());
-    }
-    let idx = XorbIdx {
-        chunk_hashes: x.info.chunk_hashes.iter().map(|h| h.hex()).collect(),
-        boundaries: x.info.chunk_boundary_offsets.clone(),
-        unpacked: x.info.unpacked_chunk_offsets.clone(),
+    let idx = match footered_idx(&body, hash) {
+        Some(i) => i,
+        None => footerless_idx(&body, hash)?,
     };
     let idx_bytes = serde_json::to_vec(&idx).map_err(|e| e.to_string())?;
     // Index first: a xorb without its index is invisible to shard ingest, so a crash between the
@@ -108,6 +140,27 @@ mod tests {
         assert!(put_xorb(&os, "alice", &other, Bytes::from(b.xorb.clone())).await.is_err());
         let big = Bytes::from(vec![0u8; crate::MAX_XET_OBJECT + 1]);
         assert!(put_xorb(&os, "alice", &b.xorb_hash, big).await.is_err());
+    }
+
+    /// hf_xet sends bare serialized chunks with no info footer (seen by `tests/hub_e2e.sh`).
+    #[tokio::test]
+    async fn footerless_xorb_as_hf_xet_sends_it_is_accepted_and_indexed() {
+        let os = InMemory::new();
+        let b = build(&[b"hello ", b"world"]);
+        put_xorb(&os, "alice", &b.xorb_hash, Bytes::from(b.xorb.clone())).await.unwrap();
+        let with_footer = read_idx(&os, "alice", &b.xorb_hash).await.unwrap().unwrap();
+        let bare = b.xorb[..*with_footer.boundaries.last().unwrap() as usize].to_vec();
+        let r = put_xorb(&os, "bob", &b.xorb_hash, Bytes::from(bare.clone())).await.unwrap();
+        assert!(matches!(r, Ingest::Inserted));
+        let idx = read_idx(&os, "bob", &b.xorb_hash).await.unwrap().unwrap();
+        assert_eq!(idx.chunk_hashes, with_footer.chunk_hashes);
+        assert_eq!(idx.boundaries, with_footer.boundaries);
+        assert_eq!(idx.unpacked, with_footer.unpacked);
+        let other = build(&[b"xyz"]).xorb_hash;
+        assert!(put_xorb(&os, "carol", &other, Bytes::from(bare.clone())).await.is_err(), "wrong hash");
+        let mut bad = bare;
+        bad.truncate(bad.len() - 1);
+        assert!(put_xorb(&os, "carol", &b.xorb_hash, Bytes::from(bad)).await.is_err(), "truncated");
     }
 
     #[test]

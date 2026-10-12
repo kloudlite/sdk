@@ -31,8 +31,10 @@ pub mod testkit;
 pub use routes::{router, CasState};
 pub(crate) use kloudlite_core::{err, Result};
 
-pub const MAX_XET_OBJECT: usize = 64 * 1024 * 1024;
 pub const MAX_XORB_CHUNKS: u32 = 8192;
+/// 64 MiB of chunk data plus the 8-byte header each serialized chunk carries: hf_xet fills a
+/// xorb to 64 MiB of payload, so the wire body of incompressible data is a little over 64 MiB.
+pub const MAX_XET_OBJECT: usize = 64 * 1024 * 1024 + 8 * MAX_XORB_CHUNKS as usize;
 pub const MAX_LFS_OBJECT: u64 = 5 * 1024 * 1024 * 1024;
 
 /// The CAS base URL clients are told to use. Configuration, not derived from the request: the

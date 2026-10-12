@@ -49,8 +49,11 @@ pub fn file_bytes(
             let body = os.get(&keys::xorb(&owner, &hash)).await.map_err(io::Error::other)?.bytes().await.map_err(io::Error::other)?;
             let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, io::Error> {
                 let mut r = io::Cursor::new(&body[..]);
-                let x = XorbObject::deserialize(&mut r).map_err(|e| io::Error::other(e.to_string()))?;
-                x.get_bytes_by_chunk_range(&mut r, t.start, t.end).map_err(|e| io::Error::other(e.to_string()))
+                match XorbObject::deserialize(&mut r) {
+                    Ok(x) => x.get_bytes_by_chunk_range(&mut r, t.start, t.end).map_err(|e| io::Error::other(e.to_string())),
+                    // hf_xet uploads bare chunks with no footer (see `xorbs::footerless_idx`).
+                    Err(_) => footerless_range(&body, t.start, t.end),
+                }
             })
             .await
             .map_err(io::Error::other)??;
@@ -62,6 +65,22 @@ pub fn file_bytes(
     })
 }
 
+fn footerless_range(body: &[u8], start: u32, end: u32) -> Result<Vec<u8>, io::Error> {
+    let mut cur = io::Cursor::new(body);
+    let (mut out, mut i) = (Vec::new(), 0u32);
+    while i < end && (cur.position() as usize) < body.len() {
+        let (data, _, _) = xet_core_structures::xorb_object::deserialize_chunk(&mut cur).map_err(|e| io::Error::other(e.to_string()))?;
+        if i >= start {
+            out.extend_from_slice(&data);
+        }
+        i += 1;
+    }
+    if i < end {
+        return Err(io::Error::other("xorb has fewer chunks than its record"));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::file_bytes;
@@ -71,7 +90,7 @@ mod tests {
     use bytes::Bytes;
     use futures::TryStreamExt;
     use slatedb::object_store::memory::InMemory;
-    use slatedb::object_store::ObjectStore;
+    use slatedb::object_store::{ObjectStore, ObjectStoreExt};
     use std::sync::Arc;
 
     async fn collect(os: &Arc<dyn ObjectStore>, rec: &crate::shards::FileRecord, s: u64, e: u64) -> Vec<u8> {
@@ -92,5 +111,20 @@ mod tests {
         let n = b.bytes.len() as u64;
         assert_eq!(collect(&os, &rec, n - 1, n + 50).await, b.bytes[b.bytes.len() - 1..]);
         assert!(collect(&os, &rec, n, n + 1).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn streams_a_footerless_xorb_as_hf_xet_uploads_it() {
+        let os: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let b = build(&[b"hello ".as_slice(), b"xet ".as_slice(), b"world".as_slice()]);
+        put_xorb(&*os, "alice", &b.xorb_hash, Bytes::from(b.xorb.clone())).await.unwrap();
+        let idx = crate::xorbs::read_idx(&*os, "alice", &b.xorb_hash).await.unwrap().unwrap();
+        let bare = b.xorb[..*idx.boundaries.last().unwrap() as usize].to_vec();
+        os.delete(&crate::keys::xorb("alice", &b.xorb_hash)).await.unwrap();
+        os.put(&crate::keys::xorb("alice", &b.xorb_hash), bare.into()).await.unwrap();
+        put_shard(&*os, "alice", &b.shard).await.unwrap();
+        let rec = read_file(&*os, "alice", &b.file_hash).await.unwrap().unwrap();
+        assert_eq!(collect(&os, &rec, 0, rec.size).await, b.bytes);
+        assert_eq!(collect(&os, &rec, 3, 9).await, b.bytes[3..9]);
     }
 }

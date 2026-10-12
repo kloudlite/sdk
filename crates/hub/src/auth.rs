@@ -65,7 +65,12 @@ pub struct Access {
 
 fn not_found(caller: &Option<String>) -> Response {
     match caller {
-        None => hub_err(StatusCode::UNAUTHORIZED, Some("RepoNotFound"), "Repository not found"),
+        // git only retries with the URL's credentials when the 401 offers Basic.
+        None => {
+            let mut r = hub_err(StatusCode::UNAUTHORIZED, Some("RepoNotFound"), "Repository not found");
+            r.headers_mut().insert(WWW_AUTHENTICATE, HeaderValue::from_static("Basic realm=\"kloudlite\""));
+            r
+        }
         Some(_) => hub_err(StatusCode::NOT_FOUND, Some("RepoNotFound"), "Repository not found"),
     }
 }
@@ -103,4 +108,17 @@ pub async fn open(
         }
     }
     Ok(Access { kind, owner: owner.to_string(), name: name.to_string(), repo, caller })
+}
+
+#[cfg(test)]
+mod challenge_tests {
+    use super::*;
+
+    #[test]
+    fn anonymous_not_found_challenges_for_basic() {
+        let r = not_found(&None);
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(r.headers()[WWW_AUTHENTICATE], "Basic realm=\"kloudlite\"");
+        assert!(not_found(&Some("a".into())).headers().get(WWW_AUTHENTICATE).is_none());
+    }
 }
