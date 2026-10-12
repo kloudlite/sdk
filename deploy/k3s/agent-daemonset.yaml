@@ -174,6 +174,10 @@ spec:
             # `KL_REGISTRY_HOST`, the docker credential helper's `credHelpers` key.
             - name: WS_REGISTRY_HOST
               value: cr.khost.dev
+            # The kloudlite hub, surfaced in workspaces as KL_HUB_URL for `kl hf --provider kloudlite`
+            # and `kloudlite.hub`. Never HF_ENDPOINT: Hugging Face stays the default provider.
+            - name: WS_HUB_URL
+              value: https://hub.khost.dev
             # The public api base, fed into every bench pod as `KL_API_URL` for its tools (the
             # same host `builder-gate.yaml`'s `KLOUDLITE_API_URL` names). Unset = tools fail closed.
             - name: WS_API_URL

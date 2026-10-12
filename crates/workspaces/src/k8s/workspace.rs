@@ -23,6 +23,7 @@ pub(super) fn login_env(
     api_url: &str,
     git_ssh_host: &str,
     git_ssh_port: &str,
+    hub_url: &str,
 ) -> Vec<EnvVar> {
     let var = |n: &str, v: String| EnvVar { name: n.into(), value: Some(v), ..Default::default() };
     let mut env = vec![
@@ -82,6 +83,12 @@ pub(super) fn login_env(
     // `kl` then fails closed with "not in a workspace" instead of dialling an empty host.
     if !api_url.is_empty() {
         env.push(var("KL_API_URL", api_url.to_string()));
+    }
+    // The kloudlite hub, reached only when a caller names `provider="kloudlite"` (`kl hf`,
+    // `kloudlite.hub`). Never `HF_ENDPOINT`: Hugging Face stays the default, exactly as on a
+    // laptop. Unset without `WS_HUB_URL`, so the wrapper says the address is missing.
+    if !hub_url.is_empty() {
+        env.push(var("KL_HUB_URL", hub_url.to_string()));
     }
     // Where this platform's git lives — the SAME host the seed init container clones from, so a
     // `git clone` a person or a session runs inside the pod cannot disagree with the one the
@@ -642,6 +649,7 @@ pub fn workspace_pod(
                 ctx.api_url,
                 ctx.git_ssh_host,
                 ctx.git_ssh_port,
+                ctx.hub_url,
             )),
             resources: Some(quantities(&spec.resources)),
             security_context: Some(hardened()),

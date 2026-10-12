@@ -237,6 +237,8 @@ pub struct Ctx {
     /// are gone: the clone happens inside the pod, over SSH, as the owner.
     pub git_ssh_host: String,
     pub git_ssh_port: String,
+    /// `WS_HUB_URL`: the kloudlite hub, surfaced in workspaces as `KL_HUB_URL`; empty = no hub here.
+    pub hub_url: String,
     pub git_init_image: String,
     /// This node's region, from `WS_REGION` — the other half of an `OwnerBinding`'s identity.
     pub region: String,
@@ -376,6 +378,7 @@ impl Ctx {
             pool,
             git_ssh_host: std::env::var("WS_GIT_SSH_HOST").unwrap_or_else(|_| "git.khost.dev".into()),
             git_ssh_port: std::env::var("WS_GIT_SSH_PORT").unwrap_or_else(|_| "22".into()),
+            hub_url: std::env::var("WS_HUB_URL").unwrap_or_default(),
             git_init_image,
             runtime_class,
             default_image,

@@ -149,6 +149,8 @@ pub struct PodContext<'a> {
     /// each being configured with a second copy of it.
     pub git_ssh_host: &'a str,
     pub git_ssh_port: &'a str,
+    /// The kloudlite hub base URL (`WS_HUB_URL`), surfaced as `KL_HUB_URL`; empty leaves it unset.
+    pub hub_url: &'a str,
 }
 
 
