@@ -95,6 +95,7 @@ export function roleCard(key: string): string {
   return [
     `[role: workspace session for ${k.ws}]`,
     "You work only in this workspace. Work comes from the person or as `[from main session] ...` messages.",
+    "Your code lives directly in ~/workspace, which is the repo root: git init there, or clone into it with `git clone <url> .`. Never create a project or repo folder inside it.",
     "Break the work into your own tasks with task_add and keep them updated with task_update. When work crosses components, write the contract first and start every component at the same time; depends_on is only for a real order, such as the integration task.",
     "You never create, clone, restore or delete workspaces. Report to main with main_tell: done, blocked, or need (for a fact or action from another workspace). Write the report as short markdown: one line saying the result, then bullets; never one run-on paragraph.",
     "Stop this workspace with workspace_stop only after you finished and main or the person said to stop.",
@@ -267,10 +268,21 @@ export function shareable(base: SessionHandle, onZero: () => void): { view: () =
  * every subscriber (`session_closed`): a dispose drops the agent's listeners and no `agent_end`
  * follows, which left workspace_ask waiting forever on a turn that was gone.
  */
+/** What a view shows: the model's context plus every message a compaction summarised away, which
+ * stays in the session file. A /compact keeps recent messages in both, so those appear once. */
+export function seen(agent: any): any[] {
+  const path: any[] = agent.sessionManager?.getBranch?.() ?? [];
+  const cut = path.findLastIndex((e) => e.type === "compaction");
+  if (cut < 0) return agent.messages;
+  const live = new Set(agent.messages.map((m: any) => `${m.role}${m.timestamp}`));
+  const old = path.slice(0, cut).filter((e) => e.type === "message" && !live.has(`${e.message.role}${e.message.timestamp}`));
+  return [...old.map((e) => e.message), ...agent.messages];
+}
+
 export function baseHandle(
   agent: any,
   key: string,
-  hooks: { busy: Set<string>; onEnd(): void; onDispose(): void; onChange?(): void; state: SessionState; rebuild?(): Promise<void>; seed?(): string | undefined },
+  hooks: { busy: Set<string>; onEnd(): void; onDispose(): void; onChange?(): void; state: SessionState; rebuild?(): Promise<void> },
 ): SessionHandle & { close(reopen: boolean): Promise<void>; notice(text: string): void } {
   const subs = new Set<(e: SessionEvent) => void>();
   let closed = false;
@@ -317,13 +329,11 @@ export function baseHandle(
     }
     if (event.type === "agent_end") hooks.onEnd();
   });
-  const prompt: SessionHandle["prompt"] = async (text, o) => {
-    const body = hooks.seed?.() ?? "";
-    return agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${body}${text}` : `${body}${text}`, o);
-  };
+  const prompt: SessionHandle["prompt"] = async (text, o) =>
+    agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${text}` : text, o);
   return {
     get messages() {
-      return agent.messages.map((m: any) => {
+      return seen(agent).map((m: any) => {
         if (m.role !== "user" || !Array.isArray(m.content)) return m;
         const i = m.content.findIndex((b: any) => b.type === "text");
         if (i < 0) return m;
@@ -338,7 +348,6 @@ export function baseHandle(
     get state() {
       return state;
     },
-    // the seed of a fresh restart rides on the first prompt only (hooks.seed hands it out once)
     prompt,
     notice: (text) => emit({ type: "session_notice", text }),
     steer: async (text, images) => agent.steer(text, images),
@@ -431,8 +440,6 @@ export class LocalBackend implements Backend {
     this.#archive = o.archive ?? clearSessionHistory;
     this.#tasks = o.tasks;
   }
-  /** Per key: the text a fresh restart puts before the next prompt, handed out once. */
-  #seeds = new Map<string, string>();
   /** Per key: the notice line for the view that reopens after a fresh restart. */
   #notices = new Map<string, string>();
   /** Keys to rebuild at their next `agent_end` (an opener needed a different build mid-turn). */
@@ -467,8 +474,10 @@ export class LocalBackend implements Backend {
     });
   }
 
-  /** A task went to done in the turn that just ended and nothing else runs: archive the session and
-   * start a new one, seeded with the board and the done summaries. Subagents end with their task. */
+  /** A task went to done in the turn that just ended and nothing else runs: shrink the model's context
+   * to the board and the done summaries. A compaction entry, not an archive: the session file keeps
+   * every message, so the transcript stays visible and only what the model is sent starts over.
+   * Subagents end with their task. */
   async #restartFresh(key: string, before: Set<string>) {
     if (sessionKind(key).kind === "subagent" || this.#busy.has(key)) return;
     const ts = readTasks(tasksFile(key, this.#tasks));
@@ -478,13 +487,14 @@ export class LocalBackend implements Backend {
     if (!done || ts.some((t) => t.state === "running")) return;
     const recent = ts.filter((t) => t.state === "done" && t.summary).slice(-10)
       .map((t) => `${t.id} ${t.title}: ${t.summary}${t.verified ? ` (verified: ${t.verified})` : ""}`);
-    // ponytail: only the board and done summaries carry over; queued/blocked talk is dropped; seed lives in memory, lost on a daemon restart
-    const seed = `[fresh session after task ${done.id}]\n${[boardText(ts), ...recent].join("\n")}`.slice(0, 8000);
-    this.#seeds.set(key, `${seed}\n\n`);
-    this.#notices.set(key, `fresh session after task ${done.id}: ${done.title}`);
+    // ponytail: only the board and done summaries carry over; queued/blocked talk is dropped
+    const seed = `[fresh context after task ${done.id}]\n${[boardText(ts), ...recent].join("\n")}`.slice(0, 8000);
     const st = this.#state.get(key);
+    // the role card rode on the first prompt, which the compaction drops: the summary carries it
+    this.#built.get(key)?.agent.sessionManager?.appendCompaction(`${roleCard(key)}\n\n${seed}`, null, st?.context?.tokens ?? 0);
+    this.#notices.set(key, `fresh context after task ${done.id}: ${done.title}`);
     if (st) st.queued = { steering: [], followUp: [] };
-    await this.#rebuild(key, true, true).catch(() => {});
+    await this.#rebuild(key, true).catch(() => {});
     this.#changed();
   }
   /** Permission mode for every TUI; per daemon process, so a restart resets it. */
@@ -693,11 +703,6 @@ export class LocalBackend implements Backend {
     const handle: ReturnType<typeof baseHandle> = baseHandle(agent, key, {
       busy: this.#busy,
       state,
-      seed: () => {
-        const s = this.#seeds.get(key);
-        this.#seeds.delete(key);
-        return s;
-      },
       onEnd: () => void setTimeout(() => this.#settle(key), 0),
       onChange: () => this.#changed(),
       rebuild: () => this.#rebuild(key),
