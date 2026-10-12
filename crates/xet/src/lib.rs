@@ -17,6 +17,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod keys;
+pub mod shards;
 pub mod sign;
 pub mod xorbs;
 #[cfg(any(test, feature = "testkit"))]
