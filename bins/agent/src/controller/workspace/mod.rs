@@ -14,7 +14,7 @@
 use super::stop::{replicated_condition, running_condition, stop_name, stop_push, StopPush};
 use super::{my_node, conditions_eq, create_if_absent, delete_ignoring_404, heal_labels, owner_ref_of_kind, resolve_volume, settle, stopped_condition, wake_on_finish, write_status, Ctx, Done, Outcome, ReconcileErr, Resolved, RETRY, TICK};
 use crate::binding;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, OwnerReference};
 use kube::api::{Patch, PatchParams, PostParams};
@@ -40,6 +40,7 @@ mod replicas;
 
 mod seed;
 mod bench;
+mod idle;
 mod trees;
 pub use trees::{tree_actions, TreeAction};
 use bench::{bench_verdict_action, park_bench};
@@ -147,7 +148,7 @@ pub async fn apply_workspace(w: &crd::Workspace, ctx: &Arc<Ctx>) -> Result<Actio
     // it BEFORE those gates: a workspace whose Volume failed permanently would otherwise be
     // unstoppable, stuck reporting `creating` with a pod still running on a broken subvolume.
     if w.spec.desired_state == DesiredState::Stopped {
-        return stop_workspace(w, prev, gen, ctx).await;
+        return stop_workspace(w, prev, gen, ctx, stopped_condition(gen)).await;
     }
     // A bench that is asleep or paused: the pod goes, nothing else does. Deliberately NOT
     // `stop_workspace` — an idle bench wakes on the next connection, and cutting a stop snapshot
@@ -155,7 +156,10 @@ pub async fn apply_workspace(w: &crd::Workspace, ctx: &Arc<Ctx>) -> Result<Actio
     // sync beat already keeps a recent cut for the replicas. Above the volume and namespace gates
     // for the same reason a stop is: removing a pod must not depend on either being healthy.
     if !crd::wants_pod(w) {
-        return park_bench(w, prev, gen, ctx).await;
+        if crd::is_bench(w) {
+            return park_bench(w, prev, gen, ctx).await;
+        }
+        return stop_workspace(w, prev, gen, ctx, idle::idle_condition(gen)).await;
     }
     let vol = match super::timed(
         "resolve_volume",
@@ -504,6 +508,20 @@ pub async fn apply_workspace(w: &crd::Workspace, ctx: &Arc<Ctx>) -> Result<Actio
             if let (true, Some(p)) = (crd::is_bench(w), observed.as_ref()) {
                 if let Some(action) = bench_verdict_action(w, p, &pods, &pod_name, &ns, gen, &prev, ctx).await? {
                     return Ok(action);
+                }
+            }
+            let idle_secs = ctx.settings.load().ws_idle_secs;
+            if let (true, Some(p)) = (idle::eligible(w, idle_secs), observed.as_ref()) {
+                if p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running") {
+                    let started = p.status.as_ref().and_then(|s| s.start_time.as_ref()).map(|t| SystemTime::from(t.0));
+                    let wake = w.spec.wake_at.as_deref().and_then(|s| s.parse::<k8s_openapi::jiff::Timestamp>().ok()).map(SystemTime::from);
+                    let act = idle::activity_mtime(&ctx.pool, &id, &w.name_any());
+                    if idle::idle_verdict(idle_secs, act, started, wake, SystemTime::now()) == idle::Verdict::Idle {
+                        tracing::info!(kind = "workspace", id = %w.name_any(), idle_secs, last_activity = ?act, "idle.verdict");
+                        let mut prev = prev;
+                        prev.idle_since = Some(k8s_openapi::jiff::Timestamp::now().to_string());
+                        return stop_workspace(w, prev, gen, ctx, idle::idle_condition(gen)).await;
+                    }
                 }
             }
             if !observed.as_ref().is_some_and(|p| own_ready_pod(p, &ctx.node)) {

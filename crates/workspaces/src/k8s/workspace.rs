@@ -371,7 +371,7 @@ pub(super) fn hardened() -> SecurityContext {
 /// `{pool}/vol/{volume}/live/{ws}` — the per-worktree layout (mirrors
 /// `engine::pool::Pool::worktree`, which this crate cannot depend on directly: `engine` is
 /// gated behind btrfs tooling this crate's tests don't need).
-pub(super) fn worktree_path(pool: &str, volume: &str, ws: &str) -> String {
+pub fn worktree_path(pool: &str, volume: &str, ws: &str) -> String {
     format!("{pool}/vol/{volume}/live/{ws}")
 }
 
