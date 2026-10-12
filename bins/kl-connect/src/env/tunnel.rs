@@ -28,15 +28,22 @@ pub struct Up {
     hold: tokio::task::JoinHandle<()>,
 }
 
+/// A tunnel dropped without `down` (daemon replaced it) must not leave its hold beat running.
+impl Drop for Up {
+    fn drop(&mut self) {
+        self.hold.abort();
+    }
+}
+
 impl Up {
     pub fn is_finished(&self) -> bool {
         self.task.is_finished()
     }
 
-    pub async fn down(self) {
+    pub async fn down(mut self) {
         self.hold.abort();
         self.task.abort();
-        let _ = self.task.await; // the device is dropped with the task
+        let _ = (&mut self.task).await; // the device is dropped with the task
         delete_route();
     }
 }
@@ -89,7 +96,9 @@ pub async fn bring_up(cfg: &Config, team: &str, env: &str, secret: &StaticSecret
             loop {
                 beat.tick().await;
                 // best effort: the next beat retries, and the idle window is far longer than one miss
-                let _ = crate::api::hold_env(&cfg, &env).await;
+                if let Err(e) = crate::api::hold_env(&cfg, &env).await {
+                    eprintln!("kl-connect env: hold {env} failed (debug): {e}");
+                }
             }
         })
     };

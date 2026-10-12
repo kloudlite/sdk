@@ -22,6 +22,9 @@ pub async fn proxy(id: &str) -> Result<(), String> {
         Some(s) => s,
         None => {
             let cfg = crate::config::load()?;
+            // ssh-config blocks run this with no `kl-connect ws ssh` parent, so wake here, before
+            // the mint (the api refuses to mint for a stopped workspace).
+            let id = &crate::api::wake_workspace(&cfg, id).await.map_err(|e| e.to_string())?;
             let s = match crate::api::ssh_session(&cfg, id).await {
                 Ok(s) => s,
                 // No retry: the second attempt would send the same stored token, so a 401 is a
@@ -32,9 +35,6 @@ pub async fn proxy(id: &str) -> Result<(), String> {
                 Err(e) => return Err(e.to_string()),
             };
             crate::config::pin_host_key(id, &s.host_key)?;
-            // ssh-config blocks run this with no `kl-connect ws ssh` parent, so wake here too
-            // (the parent path already did).
-            crate::api::ensure_running(&cfg, crate::api::Kind::Workspace, &s.id).await.map_err(|e| e.to_string())?;
             s
         }
     };

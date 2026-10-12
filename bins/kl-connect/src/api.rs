@@ -471,6 +471,22 @@ pub async fn ensure_running(cfg: &crate::config::Config, kind: Kind, id: &str) -
     }
 }
 
+/// Resolves a typed id or name, wakes the workspace, and returns its id. This runs BEFORE the ssh
+/// mint: the api refuses to mint for a stopped workspace (409), and the session token lives 60 s,
+/// so it must not be minted ahead of a wake that can take 180 s. `GET /v1/workspaces/{id}` takes
+/// ids only, hence the list.
+pub async fn wake_workspace(cfg: &crate::config::Config, target: &str) -> Result<String, Error> {
+    let all = list(cfg, None).await?;
+    let id = all
+        .iter()
+        .find(|w| w.id == target)
+        .or_else(|| all.iter().find(|w| w.name == target))
+        .map(|w| w.id.clone())
+        .ok_or_else(|| Error::Gone(404, format!("no workspace {target}")))?;
+    ensure_running(cfg, Kind::Workspace, &id).await?;
+    Ok(id)
+}
+
 /// Keeps a connected environment from idling out (204).
 pub async fn hold_env(cfg: &crate::config::Config, id: &str) -> Result<(), Error> {
     let r = client()
