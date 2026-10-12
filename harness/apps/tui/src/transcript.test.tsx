@@ -53,12 +53,21 @@ test("a long block collapses to its head and a click toggles it both ways", asyn
   expect(first).toContain("to expand");
 
   // click only — opencode has no expand key, so neither do we
-  await t.mockMouse.click(10, 3);
+  const moreRow = async (text: string) =>
+    (await frame()).split("\n").findIndex((l) => l.includes(text));
+  await t.mockMouse.click(10, await moreRow("Click to expand"));
   const open = await frame();
   expect(open).toContain("line 25");
   expect(open).toContain("Click to collapse"); // the row stays, offering the way back
 
-  await t.mockMouse.click(10, 3); // and it really collapses again
+  // a click on the body is not a toggle, open or closed
+  await t.mockMouse.click(10, (await frame()).split("\n").findIndex((l) => l.includes("line 2")));
+  expect(await frame()).toContain("line 25");
+
+  await t.mockMouse.click(10, await moreRow("Click to collapse")); // and it really collapses again
+  const shut = await frame();
+  expect(shut).not.toContain("line 25");
+  await t.mockMouse.click(10, (await frame()).split("\n").findIndex((l) => l.includes("line 2")));
   expect(await frame()).not.toContain("line 25");
   t.renderer.destroy();
 });
@@ -123,9 +132,8 @@ test("a streaming thinking line wider than the screen stays one clean row", asyn
   t.renderer.destroy();
 });
 
-// Reaching the "… +N lines" row meant scrolling past the whole block first,
-// so the block itself is the toggle — but a drag over it still selects text.
-test("clicking a long block toggles it, dragging over it does not", async () => {
+// Only the "… +N lines" row toggles; a drag over the body still selects text.
+test("clicking the expand row toggles a long block, dragging over it does not", async () => {
   const para =
     "Long unbroken reasoning paragraph that the terminal soft wraps across many visual rows and therefore collapses to a ten row head. ";
   const t = await testRender(
@@ -140,7 +148,8 @@ test("clicking a long block toggles it, dragging over it does not", async () => 
   expect(t.captureCharFrame()).toContain("Click to expand");
 
 
-  await t.mockMouse.click(10, 5);
+  const row = t.captureCharFrame().split("\n").findIndex((l) => l.includes("Click to expand"));
+  await t.mockMouse.click(10, row);
   await new Promise((r) => setTimeout(r, 80));
   await t.renderOnce();
   expect(t.captureCharFrame()).toContain("Click to collapse");
