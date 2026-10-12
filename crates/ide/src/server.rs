@@ -118,6 +118,9 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     let app = Arc::new(App::new(cfg));
     app.graft().start();
     app.activity.touch_now();
+    // Before binding: a process that was running at the last stop is back before the first request.
+    let _ = app.procs.file.set(app.cfg.home.join(".kl/procs.json"));
+    crate::procfile::relaunch(&app);
     tokio::spawn(app.activity.clone().beat(bind.port()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "ide.listening");
@@ -159,6 +162,52 @@ mod tests {
 
     fn authed(b: axum::http::request::Builder) -> axum::http::request::Builder {
         b.header("authorization", format!("Bearer {TOKEN}"))
+    }
+
+    async fn spawn_detached(app: &Arc<App>, cmd: &str) -> String {
+        let v = app.registry.call("exec", serde_json::json!({ "cmd": cmd, "detach": true })).await.unwrap();
+        v["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn detached_spawn_exit_and_kill_rewrite_procs_json() {
+        let (_d, app) = traced_app();
+        let f = app.cfg.home.join(".kl/procs.json");
+        app.procs.file.set(f.clone()).unwrap();
+        let id = spawn_detached(&app, "sleep 600").await;
+        assert!(crate::procfile::load(&f).iter().any(|e| e.id == id), "listed on spawn");
+        app.procs.kill("main", &id, "TERM").await.unwrap();
+        assert!(!crate::procfile::load(&f).iter().any(|e| e.id == id), "gone on kill");
+        let id2 = spawn_detached(&app, "true").await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(!crate::procfile::load(&f).iter().any(|e| e.id == id2), "gone on exit");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relaunch_keeps_id_and_marks_ring() {
+        let (_d, app) = traced_app();
+        let f = app.cfg.home.join(".kl/procs.json");
+        app.procs.file.set(f.clone()).unwrap();
+        crate::procfile::save(&f, &[crate::procfile::Entry { id: "p-abc".into(), tree: "main".into(), args: serde_json::json!({"cmd": "sleep 600"}), started_at: "1".into(), attempts: 0 }]).unwrap();
+        assert_eq!(crate::procfile::relaunch(&app), 1);
+        let p = app.procs.get("p-abc").expect("same id");
+        let g = p.lock().unwrap();
+        let (bytes, _, _) = g.out.read_since(0);
+        assert!(String::from_utf8_lossy(&bytes).starts_with("[restarted "), "marker first");
+        assert_eq!(crate::procfile::load(&f)[0].attempts, 1, "attempt counted before spawn");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relaunch_skips_after_three_attempts() {
+        let (_d, app) = traced_app();
+        let f = app.cfg.home.join(".kl/procs.json");
+        app.procs.file.set(f.clone()).unwrap();
+        crate::procfile::save(&f, &[crate::procfile::Entry { id: "p-bad".into(), tree: "main".into(), args: serde_json::json!({"cmd": "false"}), started_at: "1".into(), attempts: 3 }]).unwrap();
+        assert_eq!(crate::procfile::relaunch(&app), 0);
+        let p = app.procs.get("p-bad").expect("still listed");
+        let g = p.lock().unwrap();
+        assert_eq!(g.state, crate::procs::State::Exited);
+        assert_eq!(g.failed.as_deref(), Some("not restarted: failed 3 restarts"));
     }
 
     #[tokio::test]
