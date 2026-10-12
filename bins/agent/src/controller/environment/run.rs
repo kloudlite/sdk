@@ -699,14 +699,28 @@ pub(crate) async fn drain_services(
     deployments: &Api<StatefulSet>,
     ctx: &Arc<Ctx>,
 ) -> Result<usize, ReconcileErr> {
-    for svc in &e.spec.services {
+    // What is RUNNING, not what the spec says: a restore rewrites `spec.services` to the
+    // snapshot's list in the same patch that writes the wish, so a service the snapshot predates
+    // is already gone from the spec while its pod still holds the old disk open. Walking the spec
+    // never scaled it down, and `writing_pods` (every pod in the namespace) then waited on it
+    // forever. Spec names are kept too, so a set the list has not caught up with is still scaled.
+    let mut names: Vec<String> = e.spec.services.iter().map(|s| s.name.clone()).collect();
+    for sts in deployments.list(&kube::api::ListParams::default()).await?.items {
+        let n = sts.name_any();
+        // Only the sets this controller renders for a service, as `prune_services` does: the
+        // intercept proxy's mounts nothing and is not counted by `writing_pods` either.
+        if sts.labels().get(k8s::KIND_LABEL).map(String::as_str) == Some("environment") && !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    for name in &names {
         // A merge patch on `replicas` alone: scaling is not a claim on the rest of a StatefulSet
         // spec the reconcile re-applies a few lines later.
         let patch = serde_json::json!({"spec": {"replicas": 0}});
         // The scale happens behind `ensure`'s back, so its memory of this set is wrong from here:
         // without this the re-apply that brings the replicas back is skipped as "unchanged".
-        forget_applied(ctx, "StatefulSet", ns, &svc.name);
-        match deployments.patch(&svc.name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        forget_applied(ctx, "StatefulSet", ns, name);
+        match deployments.patch(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
             Ok(_) => {}
             // Nothing to scale down is the desired state already reached.
             Err(kube::Error::Api(s)) if s.code == 404 => {}

@@ -56,10 +56,12 @@ pub(crate) fn env_flush_routes(stop: serde_json::Value, replicas: serde_json::Va
     vec![
         Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
         kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", env_vol()),
+        db_sts_list(),
         Route { method: "PATCH", path: DEP_PATCH.into(), status: 200, body: serde_json::json!({"kind": "StatefulSet"}) },
         kloudlite_workspaces::kube_test::get(POD_LIST, pod_list(&[])),
         kloudlite_workspaces::kube_test::get(STOP_REQ, stop),
         kloudlite_workspaces::kube_test::get(REPLICAS, replicas),
+        db_sts_list(),
         Route { method: "DELETE", path: DEP_DEL.into(), status: 200, body: serde_json::json!({"kind": "Status"}) },
         Route { method: "PATCH", path: ENV_STATUS_PATH.into(), status: 200, body: env_json(serde_json::json!({})) },
         // The children `run_environment` applies before it makes the mount folders. Named for the
@@ -600,6 +602,7 @@ async fn an_environment_whose_only_delta_is_its_volume_ref_still_writes_status()
             Route { method: "PATCH", path: ENV_PATCH.into(), status: 200, body: env_json(serde_json::json!({})) },
             kloudlite_workspaces::kube_test::get("/apis/kloudlite.io/v1alpha1/volumes/env-1", env_vol()),
             kloudlite_workspaces::kube_test::get(STOP_REQ, stop_snapshot(serde_json::json!({"phase": "done"}))),
+            db_sts_list(),
             Route { method: "DELETE", path: DEP_DEL.into(), status: 200, body: serde_json::json!({"kind": "Status"}) },
             Route { method: "DELETE", path: STOP_REQ.into(), status: 200, body: stop_snapshot(serde_json::json!({"phase": "done"})) },
             Route { method: "PATCH", path: ENV_STATUS_PATH.into(), status: 200, body: env_json(serde_json::json!({})) },
