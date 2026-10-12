@@ -1206,11 +1206,25 @@ done
 [ "$(echo "$ENV_ROW" | field snapshots)" -ge 1 ] || fail "detached volume $ENV_VOLUME lists no snapshots: $ENV_ROW"
 [ "$(echo "$ENV_ROW" | field kind)" = "environment" ] || fail "the detached row is not an environment: $ENV_ROW"
 
-# A deleted environment cannot be cloned or restored: both routes name a live environment
-# (`POST /v1/environments/{id}/clone` with `snapshot_id`, `.../{id}/restore`). Its snapshots stay
-# listed above and are deleted below.
-log "durable snapshots (environment): the detached volume keeps its snapshots until they are deleted"
-kubectl get volume "$ENV_VOLUME" >/dev/null 2>&1 || fail "the Volume CR $ENV_VOLUME went with its environment; its snapshots should have kept it"
+# No `services` in the body: an environment grown from a snapshot runs what the snapshot froze.
+# Create takes `snapshot_id` so the snapshots of a DELETED environment are still a way in.
+log "durable snapshots (environment): creating from the snapshot runs the snapshot's own services"
+ENV_RESTORE_JSON=$(curl -fsS -X POST "$BASE/v1/environments" -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"e2e-env-restore","snapshot_id":"'"$ENV_SNAP"'"}')
+ENV_ID=$(echo "$ENV_RESTORE_JSON" | field id)
+[ -n "$ENV_ID" ] || fail "no id in environment create response: $ENV_RESTORE_JSON"
+wait_env_ready "$ENV_ID"
+[ "$(kubectl get environment "$ENV_ID" -o jsonpath='{.spec.services[0].image}')" = "$ENV_FROZEN_IMAGE" ] \
+  || fail "the restored environment's services did not come from the snapshot"
+[ "$(kubectl get environment "$ENV_ID" -o jsonpath='{.status.volumeRef}')" = "$ENV_VOLUME" ] \
+  || fail "the restored environment is not a worktree of the snapshot's volume $ENV_VOLUME"
+[ -f "$(worktree_dir "$ENV_ID")/volumes/data/marker.txt" ] || fail "the restored environment is missing the pushed marker"
+
+log "durable snapshots (environment): deleting the restored environment and its snapshots collects the volume"
+curl -fsS -X DELETE "$BASE/v1/environments/$ENV_ID" -H "Authorization: Bearer $USER_TOKEN" >/dev/null
+kubectl wait --for=delete "environment/$ENV_ID" --timeout=300s || fail "restored environment $ENV_ID still present after delete"
+ENV_ID=""
+kubectl get volume "$ENV_VOLUME" >/dev/null 2>&1 || fail "the Volume CR $ENV_VOLUME went with its second working copy; its snapshots should have kept it"
 for sn in $(kubectl get snapshots -l "kloudlite.io/volume=$ENV_VOLUME" \
   -o jsonpath='{range .items[?(@.spec.transient==false)]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
   api_delete "$BASE/v1/volumes/$ENV_VOLUME/snapshots/$sn"
