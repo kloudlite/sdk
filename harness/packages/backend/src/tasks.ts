@@ -138,7 +138,7 @@ export function taskTools(file: string): ToolDef[] {
   };
   const update: ToolDef = {
     name: "task_update",
-    description: "Change a task. You can change the title, the priority, `depends_on`, the state, the note, the summary or the verified check. To set the state to done, give `summary` (what changed and where, at most 2000 characters) and `verified` (the check that passed, with its result). The tool refuses a done task without both. The tool refuses a dependency loop or an unknown id. Then the board does not change. Returns the task line.",
+    description: "Change a task. Set a task running before you start it and done as soon as its check passes, not all at the end: the board is how the person follows your work. You can change the title, the priority, `depends_on`, the state, the note, the summary or the verified check. To set the state to done, give `summary` (what changed and where, at most 2000 characters) and `verified` (the check that passed, with its result). The tool refuses a done task without both. The tool refuses a dependency loop or an unknown id. Then the board does not change. Returns the task line.",
     inputSchema: { type: "object", properties: { id: STR, title: STR, priority: { type: "number" }, depends_on: DEPS, state: { type: "string", enum: STATES }, note: STR, summary: STR, verified: STR }, required: ["id"] },
     async run(i: { id: string; title?: string; priority?: number; depends_on?: string[]; state?: TaskState; note?: string; summary?: string; verified?: string }) {
       const { id, depends_on, ...rest } = i;
