@@ -103,15 +103,28 @@ pub async fn track(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let watcher = req.uri().path() == "/healthz" || req.headers().get("x-kl-watch").is_some_and(|v| v == "1");
+    let watcher = req.uri().path() == "/healthz" || is_watcher(req.headers());
     if watcher {
         return next.run(req).await;
     }
     a.in_flight.fetch_add(1, Ordering::Relaxed);
-    let res = next.run(req).await;
-    a.in_flight.fetch_sub(1, Ordering::Relaxed);
-    a.touch();
-    res
+    // RAII: hyper drops this future when a client disconnects, and a decrement after the await
+    // would never run, leaving `busy()` true and the workspace never idle.
+    let _g = InFlight(a);
+    next.run(req).await
+}
+
+struct InFlight(Arc<Activity>);
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.0.touch();
+    }
+}
+
+/// A sidebar/explorer poll, which is not a session.
+pub(crate) fn is_watcher(h: &axum::http::HeaderMap) -> bool {
+    h.get("x-kl-watch").is_some_and(|v| v == "1")
 }
 
 #[cfg(test)]
@@ -141,6 +154,34 @@ mod tests {
         // Local port 0xD431 is an ephemeral port, not a listening one: a process dialing out.
         let t = format!("{TCP}   3: 0A2A0005:D431 0A2A0009:01BB 01 00000000:00000000 00:00000000 00000000  1000        0 4 1 0000000000000000 20 4 30 10 -1\n");
         assert!(!inbound(&t, 7788));
+    }
+
+    #[test]
+    fn inbound_reads_tcp6_rows() {
+        let t = "  sl  local_address rem_address st\n   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A x\n   1: 00000000000000000000000001000000:1F90 00000000000000000000000001000000:9C40 01 x\n";
+        assert!(inbound(t, 7788));
+        assert!(!inbound(t, 0x1F90));
+    }
+
+    #[test]
+    fn inbound_survives_garbage() {
+        assert!(!inbound("", 7788));
+        assert!(!inbound("header\nnot a row\n 0: zz\n 1: ZZZZ:ZZ ZZ:ZZ 01\n", 7788));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_request_future_releases_busy() {
+        use axum::{routing::get, Router};
+        use tower::ServiceExt;
+        let d = tempfile::tempdir().unwrap();
+        let a = Arc::new(Activity::new(d.path().join("a")));
+        let app = Router::new()
+            .route("/slow", get(std::future::pending::<()>))
+            .layer(axum::middleware::from_fn_with_state(a.clone(), track));
+        let req = axum::http::Request::get("/slow").body(axum::body::Body::empty()).unwrap();
+        let r = tokio::time::timeout(Duration::from_millis(100), app.oneshot(req)).await;
+        assert!(r.is_err(), "the handler never completes");
+        assert!(!a.busy(), "the cancelled request must not stay in flight");
     }
 
     #[test]
