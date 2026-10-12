@@ -297,6 +297,22 @@ old `attach-{id}` pair alone — that legacy pair stays agent-written for one re
 once the agent DaemonSet has fully rolled a template marked `kloudlite.io/space-env`. The agent's
 janitor sweeps orphaned `{pool}/attach/{id}` directories left behind by a pod that is simply gone.
 
+**Idle stop** (spec 2026-10-12): the tool server keeps the mtime of `~/.kl/activity` fresh while a
+request is in flight or just ended, a non-watcher stream is open, `POST /hold` arrived, or an inbound
+ESTABLISHED connection exists on a listening port other than 7788. `/healthz` and `X-KL-Watch: 1`
+(sidebar, explorer) never count; neither does a detached process. The owning agent reads the mtime
+from the volume (missing = Keep) and after `ws_idle_secs` writes `status.idleSince` and stops through
+`stop_workspace` with `Ready=False/Idle`. An environment stops `env_idle_secs` after its last
+follower (running not-idle workspace in its space or intercepting it, or `kloudlite.io/held-at`, set
+by `POST /v1/environments/{id}/hold`, 204); unknown cache = Keep; system envs excluded. Holders: the
+harness daemon `holdBeat` (every 60 s: in-flight and busy-turn workspaces via pod `/hold`, every env
+from `GET /v1/me/environments`) and kl-connect `env/tunnel.rs` (every 60 s while a tunnel is up). Wake
+is `POST start` writing `spec.wakeAt = max(now, idleSince + 1 s)`; `wants_pod`/`wants_running` =
+desired Running and not idle since the last wake. Entry points call `ensureRunning` (harness
+`ensure.ts`, kl-connect `api::ensure_running`; kl-connect wakes before minting an ssh session), which
+wakes only idle-stopped resources: an explicit stop stays stopped. Detached processes are listed in
+`~/.kl/procs.json` and relaunched at boot with the same id (3 attempts).
+
 The other direction is an **intercept**: a workspace whose space uses the environment takes over one of its
 services, so everything the environment sends to `api:8080` is delivered to that workspace instead.
 The wish is `Environment.spec.intercepts` (`{service, workspace, ports}`, written only by `/v1`);
@@ -337,8 +353,9 @@ downtime and no flag: the legacy slice `{service}-intercept` is deleted by name 
 ready, and `drop_abandoned_endpoints`, `k8s::intercept_slice` and the `endpoints` RBAC row are gone,
 `endpointslices` narrowed to `delete` for the one release that migration needs. One workspace per
 service; a second is refused naming the holder. A
-stopped, deleted or unreachable workspace RELEASES the intercept on its own (after
-`INTERCEPT_GRACE_SECS`, so an ordinary pod restart does not bounce the StatefulSet; the grace is
+stopped or deleted workspace RELEASES the intercept at once (`Off("WorkspaceStopped")`); an
+unreachable or NotReady one releases on its own after
+`INTERCEPT_GRACE_SECS` (so an ordinary pod restart does not bounce the StatefulSet; the grace is
 measured from the pod's own `Ready=False`, else the workspace's, else `status.services[].unreachableSince`,
 which the environment's controller stamps itself on the pass that first finds no clock at all — a
 workspace whose node died leaves no pod object and no controller to date the outage) and the real

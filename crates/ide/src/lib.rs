@@ -10,6 +10,14 @@
 //! is no second credential and no auth code here. MCP is deliberately NOT spoken here: the
 //! session layer above speaks it once for every workspace a person holds and forwards to this API.
 //!
+//! Idle stop (spec 2026-10-12): `activity` keeps the mtime of `~/.kl/activity` fresh (throttled to
+//! one touch per 30 s) while a request is in flight or just ended, a non-watcher stream is open,
+//! `POST /hold` arrived (204; the harness and kl-connect beat it), or an ESTABLISHED inbound
+//! connection exists on a listening port other than ours. `/healthz`, `X-KL-Watch: 1` requests and
+//! detached processes never count. `procfile` records running detached processes in
+//! `~/.kl/procs.json`; boot relaunches them under the same id, at most 3 attempts, so an idle stop
+//! does not lose them and a crash loop cannot hold the workspace awake.
+//!
 //! Design: `docs/superpowers/specs/2026-09-11-kl-ide-serve-design.md`. Module map: `guard`
 //! (the preconditions the server refuses to start without), `server` (axum routes), `api`
 //! (the tool routes), `trees` (the tree a call acts on and the map of them), `sandbox` (the
