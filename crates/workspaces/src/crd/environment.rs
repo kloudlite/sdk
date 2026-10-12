@@ -208,6 +208,10 @@ pub struct EnvironmentStatus {
     pub unfollowed_since: Option<String>,
 }
 
+/// Annotation `kl-connect env` stamps every 60 s while a laptop uses the environment; the agent
+/// counts a fresh one as a follower, `POST /v1/environments/{id}/hold` writes it.
+pub const HELD_AT: &str = "kloudlite.io/held-at";
+
 /// Same rule as `wants_pod`: asked to run and not idle-stopped since the last wake.
 pub fn wants_running(e: &Environment) -> bool {
     e.spec.desired_state == DesiredState::Running

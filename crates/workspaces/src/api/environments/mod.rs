@@ -54,6 +54,7 @@ pub(super) fn env_doc(e: &crd::Environment, pushed: &HashSet<String>) -> Environ
         replicated: st.and_then(|s| s.conditions.iter().find(|c| c.type_ == "Replicated").map(ConditionDoc::from)),
         degraded: st.and_then(|s| s.conditions.iter().find(|c| c.type_ == "Degraded").map(ConditionDoc::from)),
         decommissioning: st.and_then(|s| s.conditions.iter().find(|c| c.type_ == "Decommissioning").map(ConditionDoc::from)),
+        idle_since: (e.spec.desired_state == DesiredState::Running && !crd::wants_running(e)).then(|| st.and_then(|s| s.idle_since.clone())).flatten(),
         placed: st
             .and_then(|s| s.conditions.iter().find(|c| c.type_ == "Placed"))
             .filter(|c| c.status != "True" && c.reason == "NoCapacity")
@@ -399,9 +400,38 @@ pub(crate) async fn start_env(
     }
     // Same as `start_ws`: a start resumes filling and is checked; a stop never is.
     guard_fill(&s, &e.spec.owner, e.spec.owner != caller_id.name).await?;
-    set_desired::<crd::Environment>(kube(&s)?, &id, DesiredState::Running).await?;
+    let idle = e.status.as_ref().and_then(|st| st.idle_since.as_deref());
+    let patch = super::workspaces::wake_patch(&super::workspaces::wake_at(k8s_openapi::jiff::Timestamp::now(), idle));
+    Api::<crd::Environment>::all(kube(&s)?.clone()).patch(&id, &PatchParams::default(), &Patch::Merge(&patch)).await.map_err(kube_err)?;
+    if idle.is_some() && !crd::wants_running(&e) {
+        tracing::info!(kind = "environment", id, by = "start", "idle.wake");
+    }
     let pushed = pushed_volumes(&s, kube(&s)?, &e.spec.owner).await?;
     Ok((StatusCode::ACCEPTED, Json(env_doc(&e, &pushed))).into_response())
+}
+
+/// The one body `hold_env` sends: the annotation alone, so a hold never touches spec.
+pub(crate) fn hold_patch(at: &str) -> serde_json::Value {
+    serde_json::json!({ "metadata": { "annotations": { crd::HELD_AT: at } } })
+}
+
+/// `kl-connect env` calls this every 60 s while a laptop uses the environment; the agent counts a
+/// fresh `held-at` as a follower. Same access as `get_env` (`find_env`).
+pub(crate) async fn hold_env(
+    State(s): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    method: axum::http::Method,
+    uri: axum::extract::OriginalUri,
+    Named(id): Named,
+) -> Result<Response, Response> {
+    let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
+    let e = find_env(&s, &caller_id, &id).await?;
+    let now = crd::whole_second(k8s_openapi::jiff::Timestamp::now()).to_string();
+    Api::<crd::Environment>::all(kube(&s)?.clone())
+        .patch(&e.name_any(), &PatchParams::default(), &Patch::Merge(&hold_patch(&now)))
+        .await
+        .map_err(kube_err)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 pub(crate) async fn stop_env(
@@ -1049,5 +1079,39 @@ mod tests {
         }
         assert!(check_services(&[svc("data", "/data:/etc")]).is_err(), "a ':' in path splices a mapping");
         assert!(check_services(&[svc("data", "relative")]).is_err());
+    }
+
+    #[test]
+    fn env_doc_shows_idle_since_only_when_idle_stopped() {
+        let mut e = crd::Environment::new(
+            "env-1",
+            crd::EnvironmentSpec {
+                owner: "karthik".into(),
+                name: "app".into(),
+                region: "centralindia".into(),
+                services: vec![],
+                storage: None,
+                desired_state: crd::DesiredState::Running,
+                wake_at: None,
+                restore: None,
+                intercepts: Vec::new(),
+                system: None,
+            },
+        );
+        e.status = Some(crd::EnvironmentStatus { idle_since: Some("2026-10-12T10:00:00Z".into()), ..Default::default() });
+        assert_eq!(super::env_doc(&e, &Default::default()).idle_since.as_deref(), Some("2026-10-12T10:00:00Z"));
+        e.spec.desired_state = crd::DesiredState::Stopped;
+        assert_eq!(super::env_doc(&e, &Default::default()).idle_since, None);
+        e.spec.desired_state = crd::DesiredState::Running;
+        e.spec.wake_at = Some("2026-10-12T10:00:01Z".into());
+        assert_eq!(super::env_doc(&e, &Default::default()).idle_since, None);
+    }
+
+    #[test]
+    fn hold_patch_is_the_annotation_alone() {
+        assert_eq!(
+            super::hold_patch("2026-10-12T10:00:00Z"),
+            serde_json::json!({"metadata":{"annotations":{"kloudlite.io/held-at":"2026-10-12T10:00:00Z"}}})
+        );
     }
 }

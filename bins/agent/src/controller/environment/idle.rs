@@ -9,7 +9,7 @@ use kloudlite_workspaces::crd;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-pub(crate) const HELD_AT: &str = "kloudlite.io/held-at";
+pub(crate) use crd::HELD_AT;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Followed {

@@ -140,6 +140,10 @@ pub struct Workspace {
     /// now costs nothing and the next start lands elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decommissioning: Option<ConditionDoc>,
+    /// RFC 3339, set only while the agent has idle-stopped this and nobody has woken it since; a
+    /// start (or an intercept's follower wake) clears it by moving `wakeAt` past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_since: Option<String>,
     /// The `Placed` condition, and ONLY `Placed=False/NoCapacity` — the one a person has to act
     /// on: no node in the region has room for what this asks for, so it stays in `Creating` until
     /// something frees up or the fleet grows. `Placed=True` says nothing `placement` does not
@@ -441,6 +445,10 @@ pub struct Environment {
     /// now costs nothing and the next start lands elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decommissioning: Option<ConditionDoc>,
+    /// RFC 3339, set only while the agent has idle-stopped this and nobody has woken it since; a
+    /// start (or an intercept's follower wake) clears it by moving `wakeAt` past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_since: Option<String>,
     /// The `Placed` condition, and ONLY `Placed=False/NoCapacity` — the one a person has to act
     /// on: no node in the region has room for what this asks for, so it stays in `Creating` until
     /// something frees up or the fleet grows. `Placed=True` says nothing `placement` does not
