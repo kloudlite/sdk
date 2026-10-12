@@ -301,6 +301,18 @@ pub(crate) fn validate_cluster_patch(patch: &crd::ClusterSettingsSpec) -> Result
             }
         };
     }
+    // 0 switches the idle stop off; anything else must be a window worth acting on.
+    macro_rules! off_or_range {
+        ($f:ident, $lo:expr, $hi:expr) => {
+            if let Some(v) = patch.$f {
+                if v != 0 && !($lo..=$hi).contains(&v) {
+                    return Err(format!("{} must be 0 (off) or {}..={}, got {}", stringify!($f), $lo, $hi, v));
+                }
+            }
+        };
+    }
+    off_or_range!(ws_idle_secs, 300u64, 86_400u64);
+    off_or_range!(env_idle_secs, 60u64, 86_400u64);
     range!(sync_secs, 10u64, 3600u64);
     range!(replica_secs, 30u64, 3600u64);
     range!(decommission_secs, 5u64, 600u64);
@@ -342,6 +354,8 @@ fn merge_cluster_spec(mut current: crd::ClusterSettingsSpec, patch: &crd::Cluste
     }
     over!(sync_secs);
     over!(bench_idle_secs);
+    over!(ws_idle_secs);
+    over!(env_idle_secs);
     over!(trace_sample_ratio);
     over!(trace_probe_rate);
     over!(trace_probe_burst);
@@ -689,6 +703,24 @@ mod cluster_tests {
         let boot: Vec<_> = changed_cluster_boot_fields(&cur, &old, true).into_iter().map(|(f, _)| f).collect();
         assert_eq!(boot, vec!["defaultImage"]);
         assert!(changed_cluster_boot_fields(&cur, &old, false).is_empty(), "a PUT leaves an unset field alone");
+    }
+
+    #[test]
+    fn idle_knobs_take_zero_or_range() {
+        type Set = fn(u64) -> crd::ClusterSettingsSpec;
+        let cases: [(Set, [u64; 3], [u64; 3]); 2] = [
+            (|v| crd::ClusterSettingsSpec { ws_idle_secs: Some(v), ..Default::default() }, [0, 300, 86_400], [1, 299, 86_401]),
+            (|v| crd::ClusterSettingsSpec { env_idle_secs: Some(v), ..Default::default() }, [0, 60, 86_400], [1, 59, 86_401]),
+        ];
+        for (mk, ok, bad) in cases {
+            for v in ok {
+                assert!(validate_cluster_patch(&mk(v)).is_ok(), "{v}");
+            }
+            for v in bad {
+                let e = validate_cluster_patch(&mk(v)).unwrap_err();
+                assert!(e.contains("must be 0 (off) or"), "{v}: {e}");
+            }
+        }
     }
 
     #[test]
