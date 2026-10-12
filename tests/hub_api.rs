@@ -294,3 +294,147 @@ async fn tree_root_next_link_has_no_trailing_slash() {
     let next = r.headers()["link"].to_str().unwrap().to_string();
     assert!(next.contains("/tree/main?recursive=false&cursor=f0999>"), "{next}");
 }
+
+use slatedb::object_store::ObjectStoreExt;
+
+/// A request line sent byte for byte: reqwest normalises `..` out of a URL before it leaves.
+async fn raw_get(base: &str, path: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(base.trim_start_matches("http://")).await.unwrap();
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).await.unwrap();
+    out.to_ascii_lowercase()
+}
+
+fn header<'a>(r: &'a reqwest::Response, k: &str) -> &'a str {
+    r.headers().get(k).map(|v| v.to_str().unwrap()).unwrap_or("")
+}
+
+#[tokio::test]
+async fn resolve_git_blob_whole_ranged_and_head() {
+    let h = hub().await;
+    let sha = seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("config.json", b"{\"a\":1}")]).await;
+    let url = format!("{}/alice/bert/resolve/main/config.json", h.base);
+    let r = client().get(&url).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(header(&r, "x-repo-commit"), sha);
+    assert_eq!(header(&r, "accept-ranges"), "bytes");
+    assert!(header(&r, "etag").starts_with('"'));
+    assert_eq!(header(&r, "x-linked-etag"), header(&r, "etag"));
+    assert_eq!(header(&r, "x-linked-size"), "7");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"{\"a\":1}");
+
+    let r = client().get(&url).header("range", "bytes=1-2").send().await.unwrap();
+    assert_eq!(r.status(), 206);
+    assert_eq!(header(&r, "content-range"), "bytes 1-2/7");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"\"a");
+
+    let r = client().head(&url).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(header(&r, "content-length"), "7");
+    assert_eq!(header(&r, "x-repo-commit"), sha);
+
+    let r = client().get(format!("{}/alice/bert/resolve/{sha}/config.json", h.base)).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn resolve_range_past_end_is_416() {
+    let h = hub().await;
+    seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("config.json", b"{\"a\":1}")]).await;
+    let url = format!("{}/alice/bert/resolve/main/config.json", h.base);
+    let get = |range: &'static str| client().get(&url).header("range", range).send();
+    let r = get("bytes=0-0").await.unwrap();
+    assert_eq!(r.status(), 206);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"{");
+    let r = get("bytes=6-6").await.unwrap();
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"}");
+    let r = get("bytes=5-99").await.unwrap();
+    assert_eq!(header(&r, "content-range"), "bytes 5-6/7");
+    let r = get("bytes=7-").await.unwrap();
+    assert_eq!(r.status(), 416);
+    assert_eq!(header(&r, "content-range"), "bytes */7");
+    assert_eq!(get("bytes=a-b").await.unwrap().status(), 416);
+}
+
+#[tokio::test]
+async fn resolve_dotdot_is_entry_not_found() {
+    let h = hub().await;
+    let sha = seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("config.json", b"{}"), ("a/x", b"x")]).await;
+    for p in ["a/../config.json", "a/%2e%2e/config.json", ".git/config", "a//x"] {
+        let out = raw_get(&h.base, &format!("/alice/bert/resolve/main/{p}")).await;
+        assert!(out.starts_with("http/1.1 404"), "{p}: {out}");
+        assert!(out.contains("x-error-code: entrynotfound"), "{p}");
+        assert!(out.contains(&format!("x-repo-commit: {sha}")), "{p}");
+    }
+}
+
+#[tokio::test]
+async fn resolve_missing_file_and_rev() {
+    let h = hub().await;
+    let sha = seed_hub(&h, HubKind::Model, "alice", "bert", true, &[("config.json", b"{}")]).await;
+    let r = client().get(format!("{}/alice/bert/resolve/main/nope.txt", h.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    assert_eq!(header(&r, "x-error-code"), "EntryNotFound");
+    assert_eq!(header(&r, "x-repo-commit"), sha);
+    let r = client().get(format!("{}/alice/bert/resolve/nope/config.json", h.base)).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    assert_eq!(header(&r, "x-error-code"), "RevisionNotFound");
+}
+
+#[tokio::test]
+async fn resolve_lfs_file_from_lfs_store() {
+    let h = hub().await;
+    let ptr = format!("version https://git-lfs.github.com/spec/v1\noid sha256:{SHA_A}\nsize 5\n");
+    seed_hub(&h, HubKind::Dataset, "alice", "squad", true, &[("data.bin", ptr.as_bytes())]).await;
+    let url = format!("{}/datasets/alice/squad/resolve/main/data.bin", h.base);
+    let r = client().get(&url).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+    assert_eq!(header(&r, "x-error-code"), "EntryNotFound");
+
+    h.e.store.os.put(&kloudlite_xet::keys::lfs("alice", SHA_A), b"hello".to_vec().into()).await.unwrap();
+    let r = client().get(&url).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(header(&r, "x-linked-etag").trim_matches('"'), SHA_A);
+    assert_eq!(header(&r, "x-linked-size"), "5");
+    assert_eq!(header(&r, "etag").trim_matches('"'), SHA_A);
+    assert_eq!(header(&r, "x-xet-hash"), "");
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"hello");
+    let r = client().get(&url).header("range", "bytes=1-3").send().await.unwrap();
+    assert_eq!(r.status(), 206);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), b"ell");
+}
+
+#[tokio::test]
+async fn resolve_xet_file_streams_from_xorbs() {
+    let h = hub().await;
+    let b = kloudlite_xet::testkit::build(&[b"hello ".as_slice(), b"xet ".as_slice(), b"world".as_slice()]);
+    let os = &*h.e.store.os;
+    kloudlite_xet::xorbs::put_xorb(os, "alice", &b.xorb_hash, b.xorb.clone().into()).await.unwrap();
+    kloudlite_xet::shards::put_shard(os, "alice", &b.shard).await.unwrap();
+    let sha = hex::encode(b.sha256);
+    let ptr = format!("version https://git-lfs.github.com/spec/v1\noid sha256:{sha}\nsize {}\n", b.bytes.len());
+    let commit = seed_hub(&h, HubKind::Model, "alice", "bert", false, &[("model.safetensors", ptr.as_bytes())]).await;
+    let url = format!("{}/alice/bert/resolve/main/model.safetensors", h.base);
+
+    let r = client().get(&url).send().await.unwrap();
+    assert_eq!(r.status(), 401, "private repo, anonymous");
+
+    let r = client().get(&url).bearer_auth(&h.alice).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(header(&r, "x-xet-hash"), b.file_hash.hex());
+    assert_eq!(
+        header(&r, "link"),
+        format!("<{}/api/models/alice/bert/xet-read-token/{commit}>; rel=\"xet-auth\"", h.base)
+    );
+    assert_eq!(header(&r, "x-linked-size"), b.bytes.len().to_string());
+    assert_eq!(r.bytes().await.unwrap().as_ref(), &b.bytes[..]);
+
+    let r = client().get(&url).bearer_auth(&h.alice).header("range", "bytes=3-8").send().await.unwrap();
+    assert_eq!(r.status(), 206);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), &b.bytes[3..9]);
+
+    let r = client().head(&url).bearer_auth(&h.alice).send().await.unwrap();
+    assert_eq!(header(&r, "content-length"), b.bytes.len().to_string());
+}

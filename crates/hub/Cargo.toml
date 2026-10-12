@@ -17,3 +17,4 @@ tracing = { workspace = true }
 kloudlite-vcs = { path = "../git" }
 gix-hash = { workspace = true }
 object_store = { workspace = true }
+futures = { workspace = true }

@@ -4662,6 +4662,7 @@ name = "kloudlite-hub"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures",
  "gix-hash",
  "kloudlite-app",
  "kloudlite-core",
@@ -4863,6 +4864,7 @@ dependencies = [
  "gix-object",
  "gix-odb",
  "gix-traverse",
+ "hex",
  "kloudlite-api",
  "kloudlite-app",
  "kloudlite-core",

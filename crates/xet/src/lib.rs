@@ -22,6 +22,7 @@ pub mod recon;
 pub mod routes;
 pub mod shards;
 pub mod sign;
+pub mod stream;
 pub mod xorbs;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;

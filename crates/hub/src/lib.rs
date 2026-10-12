@@ -22,6 +22,7 @@ pub mod auth;
 pub mod pointer;
 pub mod read;
 pub mod repos;
+pub mod resolve;
 pub mod rev;
 
 use axum::http::{HeaderValue, StatusCode};
@@ -89,7 +90,7 @@ pub fn router(st: HubState) -> Router {
 /// kind reaches handlers as an `Extension`, set by this router's own layer.
 fn per_kind(kind: HubKind) -> Router<HubState> {
     let api = format!("/api/{}/{{owner}}/{{name}}", kind.api_plural());
-    let _repo = format!("/{}{{owner}}/{{name}}", kind.url_prefix());
+    let repo = format!("/{}{{owner}}/{{name}}", kind.url_prefix());
     Router::new()
         .route(&api, get(read::info))
         .route(&format!("{api}/revision/{{rev}}"), get(read::info_rev))
@@ -97,5 +98,6 @@ fn per_kind(kind: HubKind) -> Router<HubState> {
         .route(&format!("{api}/tree/{{rev}}/{{*path}}"), get(read::tree_path))
         .route(&format!("{api}/paths-info/{{rev}}"), post(read::paths_info))
         .route(&format!("{api}/refs"), get(read::refs))
+        .route(&format!("{repo}/resolve/{{rev}}/{{*path}}"), get(resolve::resolve))
         .layer(axum::Extension(kind))
 }
