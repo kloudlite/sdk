@@ -9,7 +9,8 @@
 //! Messages carry only words: a task id never travels in the text and never reaches another
 //! session's board. The CALLER's own board is the platform's: `workspace_ask` with `for` moves that
 //! task to running; without `for` it adds a running row (`note: ask:<ws>`) that replaces that
-//! workspace's open row, and that workspace's `main_tell` done|blocked moves it to done|blocked. The
+//! workspace's open row, and that workspace's `main_tell` done|blocked moves it to done|blocked; an
+//! answer delivered without a tell moves it to done, a failed or lost ask to failed. The
 //! same tell closes the sender's own board: done finishes every open step, blocked its running ones. The
 //! message log (messages.ts) is the one place that links a message to the sender's task (`for`) or to
 //! the ask it answers (`reply`).
@@ -295,6 +296,7 @@ export async function dispatchAsk(deps: DelegateDeps, a: PendingAsk): Promise<vo
   if (a.msg) deps.lastAsk?.set(a.key, a.msg);
   let h: SessionHandle | undefined;
   let reply: string;
+  let ok = true;
   try {
     h = await deps.open(a.key, askOpts(deps, a.callerKey, a, a.key));
     const s = h;
@@ -303,17 +305,27 @@ export async function dispatchAsk(deps: DelegateDeps, a: PendingAsk): Promise<vo
     reply = `[from ${a.key}] ${await answer(s, a.text, () => (deps.busy.has(a.key) ? s.route(a.text).then(() => {}) : s.prompt(a.text)))}`;
   } catch (err) {
     reply = `[from ${a.key}] failed: ${err instanceof Error ? err.message : String(err)}`;
+    ok = false;
   }
   // the workspace already told main done/blocked during this ask: that tell is the report, so the
   // final answer would be a second copy of it
   const told = deps.reported?.delete(a.key) ?? false;
   dropAsk(dir, a.id);
   if (!told) {
+    // no tell closed the caller's row, so the delivered answer does: a session that answers in plain
+    // text and never calls main_tell would otherwise leave it running forever
+    closeAsk(deps, a, ok ? "done" : "failed");
     recordMessage(deps.messages ?? messagesFile(), { from: base(a.key), to: base(a.callerKey), text: reply, reply: a.msg });
     await deliver(deps, a.callerKey, a, reply, a.key);
   }
   // our own view goes only after its answer was delivered
   if (h) await h.dispose().catch(() => {});
+}
+
+/** The caller's open row for this ask (`ask:<key>`) moves to `state`. */
+function closeAsk(deps: DelegateDeps, a: PendingAsk, state: "done" | "failed"): void {
+  const board = tasksFile(a.callerKey, deps.tasks ?? tasksDir());
+  for (const t of readTasks(board)) if (t.note === `ask:${a.key}` && t.state !== "done") updateTask(board, t.id, { state });
 }
 
 /** Boot: resend what a restart interrupted. `tries` counts resends; the third restart reports the
@@ -323,6 +335,7 @@ export function resumeAsks(deps: DelegateDeps): Promise<void>[] {
   return listAsks(dir).map(async (a) => {
     if (a.tries >= 2) {
       dropAsk(dir, a.id);
+      closeAsk(deps, a, "failed");
       return deliver(deps, a.callerKey, a, `[from ${a.key}] failed: lost in ${a.tries + 1} bench restarts; ask again if it still matters`, a.key);
     }
     const text = a.text.startsWith("[resent after restart] ") ? a.text : `[resent after restart] ${a.text}`;
