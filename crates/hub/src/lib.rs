@@ -20,6 +20,7 @@
 
 pub mod auth;
 pub mod commit;
+pub mod lfs;
 pub mod live;
 pub mod pointer;
 pub mod read;
@@ -112,5 +113,8 @@ fn per_kind(kind: HubKind) -> Router<HubState> {
         .route(&format!("{api}/tag/{{rev}}"), post(refs::tag_create).delete(refs::tag_delete))
         .route(&format!("{api}/xet-read-token/{{rev}}"), get(xet::read_token))
         .route(&format!("{api}/xet-write-token/{{rev}}"), get(xet::write_token))
+        .route(&format!("{repo}/info/lfs/objects/batch"), post(lfs::batch))
+        .route(&format!("{repo}/info/lfs/locks"), get(lfs::locks).post(lfs::locks))
+        .route(&format!("{repo}/info/lfs/locks/{{*rest}}"), get(lfs::locks).post(lfs::locks))
         .layer(axum::Extension(kind))
 }
