@@ -18,3 +18,7 @@ kloudlite-vcs = { path = "../git" }
 gix-hash = { workspace = true }
 object_store = { workspace = true }
 futures = { workspace = true }
+kloudlite-gitbase = { path = "../gitbase" }
+gix-object = { workspace = true }
+gix-odb = { workspace = true }
+base64 = { workspace = true }

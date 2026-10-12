@@ -19,6 +19,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod auth;
+pub mod commit;
 pub mod pointer;
 pub mod read;
 pub mod repos;
@@ -99,5 +100,10 @@ fn per_kind(kind: HubKind) -> Router<HubState> {
         .route(&format!("{api}/paths-info/{{rev}}"), post(read::paths_info))
         .route(&format!("{api}/refs"), get(read::refs))
         .route(&format!("{repo}/resolve/{{rev}}/{{*path}}"), get(resolve::resolve))
+        .route(&format!("{api}/preupload/{{rev}}"), post(commit::preupload))
+        .route(
+            &format!("{api}/commit/{{rev}}"),
+            post(commit::commit).layer(axum::extract::DefaultBodyLimit::max(commit::COMMIT_MAX)),
+        )
         .layer(axum::Extension(kind))
 }
