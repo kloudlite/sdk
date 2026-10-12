@@ -151,6 +151,14 @@ pub(crate) fn conditions_eq(a: &[Condition], b: &[Condition]) -> bool {
         })
 }
 
+/// An `Idle` Ready left by an idle stop is replaced by the Ready of a person's stop; any other
+/// Ready is left alone.
+pub(crate) fn supersede_idle(conditions: &mut [Condition], ready: &Condition) {
+    if let Some(c) = conditions.iter_mut().find(|c| c.type_ == ready.type_ && c.reason == crd::IDLE && ready.reason != crd::IDLE) {
+        *c = ready.clone();
+    }
+}
+
 /// `conditions_eq`, for a status that is only a `serde_json::Value` — which is what `settle`'s
 /// per-kind builders hand back. Compares `phase` and the conditions, ignoring `lastTransitionTime`;
 /// every other field a builder writes is copied from the object's own previous status.
@@ -359,5 +367,25 @@ where
         Ok(_) => Ok(()),
         Err(kube::Error::Api(s)) if s.code == 404 => Ok(()),
         Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod supersede_tests {
+    use super::*;
+
+    #[test]
+    fn an_explicit_stop_replaces_an_idle_ready_only() {
+        let idle = crd::condition("Ready", false, crd::IDLE, "idle", 1);
+        let stopped = crd::condition("Ready", false, "Stopped", "stopped", 2);
+        let mut cs = vec![idle.clone()];
+        supersede_idle(&mut cs, &stopped);
+        assert_eq!(cs[0].reason, "Stopped");
+        let mut cs = vec![idle.clone()];
+        supersede_idle(&mut cs, &idle);
+        assert_eq!(cs[0].reason, crd::IDLE, "an idle stop keeps its own");
+        let mut cs = vec![crd::condition("Ready", false, "Failed", "x", 1)];
+        supersede_idle(&mut cs, &stopped);
+        assert_eq!(cs[0].reason, "Failed");
     }
 }

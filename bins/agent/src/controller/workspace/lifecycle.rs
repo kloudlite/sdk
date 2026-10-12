@@ -23,7 +23,10 @@ pub(crate) async fn stop_workspace(
     // changed, so a converged workspace is idle.
     if prev.phase == crd::Phase::Stopped {
         let replicated = replicated_condition(ctx, &id, &w.name_any(), replicas_of(ctx, &id), &prev.conditions, gen).await?;
-        let conditions = replaced(&cleared_node_dead(&prev.conditions), replicated);
+        let mut conditions = replaced(&cleared_node_dead(&prev.conditions), replicated);
+        // An idle stop that became a person's stop changes only the reason; without this the old
+        // `Idle` Ready stays on a workspace the person stopped.
+        crate::controller::status::supersede_idle(&mut conditions, &ready);
         if prev.observed_generation != Some(gen) || !conditions_eq(&prev.conditions, &conditions) {
             let st = crd::WorkspaceStatus { observed_generation: Some(gen), conditions, ..prev };
             write_ws_status(w, st, ctx).await?;
