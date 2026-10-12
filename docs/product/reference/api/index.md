@@ -32,9 +32,8 @@ Base URL `https://dev.kloudlite.io/v1`. Every request carries `Authorization: Be
 |---|---|
 | `POST` | `/environments` |
 | `GET` | `/environments` |
-| `POST` | `/environments/restore` |
 | `GET` `DELETE` | `/environments/{id}` |
-| `POST` | `/environments/{id}/clone` · `/push` · `/start` · `/stop` · `/restore-in-place` |
+| `POST` | `/environments/{id}/clone` · `/push` · `/start` · `/stop` · `/restore` |
 | `POST` | `/environments/{id}/intercepts` |
 | `DELETE` | `/environments/{id}/intercepts/{service}` |
 
