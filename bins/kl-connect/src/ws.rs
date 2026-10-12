@@ -38,11 +38,11 @@ async fn ssh_with(target: &str, args: &[String], banner: Option<String>) -> Resu
     // mints rides to the ProxyCommand child in ssh's environment rather than being minted again.
     // The host key is pinned here because ssh reads known_hosts in the parent process, before the
     // proxy has run even once; a change from what's stored is refused, not adopted.
-    let s = api::ssh_session(&cfg, target)
+    let woken = api::wake_workspace(&cfg, target).await.map_err(|e| e.to_string())?;
+    let s = api::ssh_session(&cfg, &woken)
         .await
         .map_err(|e| e.to_string())?;
     let id = &s.id;
-    api::ensure_running(&cfg, api::Kind::Workspace, id).await.map_err(|e| e.to_string())?;
     // The id lands in ssh's argv and in a /bin/sh-parsed ProxyCommand; the api is trusted for
     // its content but not for its shape.
     if !crate::sshconfig::safe_name(id) {

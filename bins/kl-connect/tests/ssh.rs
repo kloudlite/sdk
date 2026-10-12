@@ -65,3 +65,61 @@ fn ssh_makes_one_api_call_and_hands_the_session_to_the_proxy_by_env() {
     let known = std::fs::read_to_string(cfg.path().join("known_hosts")).unwrap_or_default();
     assert!(known.contains("ws-1"), "{known}");
 }
+
+#[cfg(unix)]
+#[test]
+fn ssh_wakes_an_idle_workspace_before_the_mint() {
+    use std::os::unix::fs::PermissionsExt;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _g = rt.enter();
+    let s = stub::Stub { idle: true, ..Default::default() };
+    let api = rt.block_on(stub::spawn(s.clone()));
+    let cfg = tempfile::tempdir().unwrap();
+    stub::write_config(cfg.path(), &api);
+
+    let bin = tempfile::tempdir().unwrap();
+    let fake = bin.path().join("ssh");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\necho \"ARGS $*\"\necho \"SESSION ${KL_SSH_SESSION:-none}\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_kl-connect"))
+        .args(["ws", "ssh", "gh", "--", "-A"])
+        .env("KL_CONFIG_DIR", cfg.path())
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        s.api_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "{stdout}"
+    );
+    assert_eq!(s.starts.load(std::sync::atomic::Ordering::SeqCst), 1, "one /start: {stdout}");
+    assert!(
+        stdout.contains("kl@ws-1 -A"),
+        "the name resolved to the id: {stdout}"
+    );
+    assert!(stdout.contains("HostKeyAlias=ws-1"), "{stdout}");
+    let session = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("SESSION "))
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(session).unwrap();
+    assert_eq!(v["id"], "ws-1");
+    assert_eq!(v["token"], "sst_test");
+    // And the host key was pinned by the parent, where ssh reads it.
+}

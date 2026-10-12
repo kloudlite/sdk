@@ -13,6 +13,10 @@ use std::sync::Arc;
 pub struct Stub {
     /// Every `/v1` request served — what `kl-connect ws ssh` must keep to one.
     pub api_calls: Arc<AtomicUsize>,
+    /// Models an idle-stopped workspace: the mint answers 409 and the doc reads stopped until
+    /// `POST .../start` lands. Off by default.
+    pub idle: bool,
+    pub starts: Arc<AtomicUsize>,
 }
 
 /// Serves the api and the tunnel on one port; returns `http://127.0.0.1:port`.
@@ -20,8 +24,8 @@ pub async fn spawn(s: Stub) -> String {
     let app = Router::new()
         .route(
             "/v1/workspaces",
-            get(|State(s): State<Stub>| async move {
-                s.api_calls.fetch_add(1, Ordering::SeqCst);
+            // Not counted: `api_calls` pins the session mint to one, not the resolve/readiness reads.
+            get(|| async move {
                 Json(serde_json::json!([
                     {"id": "ws-1", "name": "gh", "state": "ready", "packages": ["git", "go"]},
                     {"id": "ws-2", "name": "api", "state": "stopped", "packages": []},
@@ -30,12 +34,34 @@ pub async fn spawn(s: Stub) -> String {
         )
         // The wake check (`api::ensure_running`) reads the doc first; it is not counted, because
         // `api_calls` pins the session mint to one, not the readiness probe.
-        .route("/v1/workspaces/{id}", get(|| async { Json(serde_json::json!({"state": "running", "ready": true})) }))
+        .route(
+            "/v1/workspaces/{id}",
+            get(|State(s): State<Stub>| async move {
+                if s.idle && s.starts.load(Ordering::SeqCst) == 0 {
+                    Json(serde_json::json!({"state": "stopped", "idle_since": "2026-10-12T10:00:00Z"}))
+                } else {
+                    Json(serde_json::json!({"state": "running", "ready": true}))
+                }
+            }),
+        )
+        .route(
+            "/v1/workspaces/{id}/start",
+            post(|State(s): State<Stub>| async move {
+                s.starts.fetch_add(1, Ordering::SeqCst);
+                axum::http::StatusCode::NO_CONTENT
+            }),
+        )
         .route(
             "/v1/workspaces/{id}/ssh-session",
             post(
                 |State(s): State<Stub>, Path(target): Path<String>| async move {
                     s.api_calls.fetch_add(1, Ordering::SeqCst);
+                    if s.idle && s.starts.load(Ordering::SeqCst) == 0 {
+                        return (
+                            axum::http::StatusCode::CONFLICT,
+                            Json(serde_json::json!({"error": "workspace is stopped"})),
+                        );
+                    }
                     // The real api resolves a name to an id; `gh` is ws-1's name above.
                     let id = if target == "gh" {
                         "ws-1".to_string()
