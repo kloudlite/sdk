@@ -274,9 +274,17 @@ Only the sweep deletes hub bytes.
   - `git push` with git-xet installed, then download through the HF client;
   - `AutoConfig.from_pretrained` via `HF_ENDPOINT`.
 
-  This script settles the open protocol questions: batch reconstruction GET or POST, the
-  `lfs.oid` or `lfs.sha256` key in tree entries, and the `transfers` list git-xet sends. The
-  answers go back into this spec.
+  `tests/hub_e2e.sh` settled the open protocol questions:
+  - Batch reconstruction: hf_xet 1.x downloading a three-file folder issued only
+    `GET /v1/reconstructions/{hash}`, one per file, and never touched the batch route. The
+    batch GET stays served but is unexercised by this client.
+  - Tree entries: `huggingface_hub` reads `lfs["oid"]` from `/tree` entries
+    (`BlobLfsInfo(sha256=lfs["oid"])`) and `lfs["sha256"]` from `siblings` in model info. The
+    hub emits exactly that split (`read.rs`), so neither key is wrong.
+  - `transfers` git-xet sends: not observed: git-xet not installed in the test run.
+  - Also seen: hf_xet uploads xorbs as bare serialized chunks with no info footer, and
+    its shard sha256 is a `DataHash` read with `from_be_bytes`; xorb ingest, `sha_hex` and the
+    resolve stream were fixed to match, with tests.
 
 ### Rollout
 

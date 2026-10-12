@@ -37,7 +37,7 @@ pub fn build(pieces: &[&[u8]]) -> Built {
         metadata: FileDataSequenceHeader::new(fh, 1u32, true, true),
         segments: vec![FileDataSequenceEntry::new(xorb_hash, total, 0u32, n)],
         verification: vec![FileVerificationEntry::new(ranged)],
-        metadata_ext: Some(FileMetadataExt::new(DataHash::from(sha256))),
+        metadata_ext: Some(FileMetadataExt::new(DataHash::from_be_bytes(sha256))),
     };
     let mut shard = MDBInMemoryShard::default();
     shard.add_xorb_block(xorb_info).unwrap();

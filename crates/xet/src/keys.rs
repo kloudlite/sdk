@@ -10,9 +10,12 @@ pub fn parse_hash(s: &str) -> Option<MerkleHash> {
     MerkleHash::from_hex(s).ok()
 }
 
-/// The ordinary sha256 hex of a digest stored raw in a `DataHash` (its `hex()` reverses bytes).
+/// The ordinary sha256 hex of the digest in a shard's `FileMetadataExt`. hf_xet builds it with
+/// `DataHash::from_be_bytes`, so the sha256 bytes sit word-reversed inside the `DataHash` and
+/// `hex()` (which prints each u64 big-endian) is what turns them back into the canonical digest
+/// (observed in `tests/hub_e2e.sh`: `as_bytes()` gave the wrong key and the commit saw no sha).
 pub fn sha_hex(h: &DataHash) -> String {
-    hex::encode(h.as_bytes())
+    h.hex()
 }
 
 pub fn is_sha_hex(s: &str) -> bool {

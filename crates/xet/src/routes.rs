@@ -67,6 +67,7 @@ fn refused(msg: String) -> Response {
         tracing::error!(error = %msg, "cas.write.failed");
         return status(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
     }
+    tracing::warn!(error = %msg, "cas.refused");
     status(StatusCode::BAD_REQUEST, &msg)
 }
 
