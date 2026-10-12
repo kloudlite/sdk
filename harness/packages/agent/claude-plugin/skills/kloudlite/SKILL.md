@@ -153,6 +153,18 @@ Every role has the repo, pull request and image tools. Each tool needs `owner`. 
 
 The tools `repo_delete`, `branch_delete`, `image_tag_delete` and `image_delete` delete data that cannot be recovered. Each of these calls shows a card to the person. The card is the confirmation. Fill in `because`. Name exactly what the call deletes.
 
+## Models and datasets
+
+There are two model hubs: Hugging Face and the Kloudlite hub. Hugging Face is the default.
+
+1. A model or dataset name alone (for example `gpt2` or `meta-llama/Llama-3.1-8B`) means Hugging Face. Use the usual tools without a provider.
+2. Use the Kloudlite hub only when the person says "our hub", "Kloudlite hub" or "our model", or names a repo that the person or the team uploaded here.
+3. Do not set `HF_ENDPOINT`. In a shell, use `kl hf --provider kloudlite <hf arguments>`. In Python, use `from kloudlite import hub` and `hub.download(<repo>, provider="kloudlite")`.
+4. To load a model from the Kloudlite hub, download it first. Then give the local path to `from_pretrained` or `load_dataset`. A repo name in `from_pretrained` always goes to Hugging Face.
+5. Upload trained models to the Kloudlite hub, under the name of the person or the team. Use `hub.api("kloudlite").upload_folder(...)` or `kl hf --provider kloudlite upload ...`. Do not upload to Hugging Face unless the person tells you to.
+6. Do not put a Hugging Face token in a file, a commit or a message. The Kloudlite hub needs no token in a workspace.
+7. If `hf` is not found, add it with `kl pkg add python3Packages.huggingface-hub`. If `kloudlite` is not installed in Python, install it with `pip install "kloudlite @ git+https://github.com/kloudlite/rustic-git#subdirectory=sdk/python"`.
+
 ## Team rules
 
 These are the rules of the team. Obey them.
