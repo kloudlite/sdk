@@ -55,7 +55,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: kloudlite
-          image: ghcr.io/kloudlite/kloudlite:3088625594709a54d516acc48430d0c390bfcca1@sha256:6471371f70d646b87e8a2a3a34a8cba9ac4ee5f97d72983b787a6acb1070af68
+          image: ghcr.io/kloudlite/kloudlite:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:436a757ce282ed81bf27bbc065ab3fe500a983684946469ba4f2fb32cb27480c
           args: ["serve"]
           env:
             # JSON events, so the collector gets level/module/fields as columns (crates/core/src/log.rs).
@@ -459,7 +459,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: api
-          image: ghcr.io/kloudlite/kloudlite:3088625594709a54d516acc48430d0c390bfcca1@sha256:6471371f70d646b87e8a2a3a34a8cba9ac4ee5f97d72983b787a6acb1070af68
+          image: ghcr.io/kloudlite/kloudlite:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:436a757ce282ed81bf27bbc065ab3fe500a983684946469ba4f2fb32cb27480c
           # Its own binary, not a subcommand: this process cannot open a repository
           # for writing, because none of that code is linked into it.
           command: ["kloudlite-api"]
@@ -689,7 +689,7 @@ spec:
         fsGroup: 1001
       containers:
         - name: worker
-          image: ghcr.io/kloudlite/kloudlite:3088625594709a54d516acc48430d0c390bfcca1@sha256:6471371f70d646b87e8a2a3a34a8cba9ac4ee5f97d72983b787a6acb1070af68
+          image: ghcr.io/kloudlite/kloudlite:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:436a757ce282ed81bf27bbc065ab3fe500a983684946469ba4f2fb32cb27480c
           command: ["kloudlite-worker"]
           env:
             # JSON events, so the collector gets level/module/fields as columns (crates/core/src/log.rs).
@@ -921,7 +921,7 @@ spec:
         fsGroup: 1001
       containers:
         - name: admin
-          image: ghcr.io/kloudlite/kloudlite:3088625594709a54d516acc48430d0c390bfcca1@sha256:6471371f70d646b87e8a2a3a34a8cba9ac4ee5f97d72983b787a6acb1070af68
+          image: ghcr.io/kloudlite/kloudlite:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:436a757ce282ed81bf27bbc065ab3fe500a983684946469ba4f2fb32cb27480c
           command: ["kloudlite-api"]
           ports:
             - { name: http, containerPort: 8090 }
@@ -2084,7 +2084,7 @@ spec:
             fsGroup: 1001
           containers:
             - name: slo
-              image: ghcr.io/kloudlite/kloudlite-slo:3088625594709a54d516acc48430d0c390bfcca1@sha256:da8fc0d3ff5b4c6631f02e8fa309fd7709119fc4fa546b5edab0a98fdc6af0e9
+              image: ghcr.io/kloudlite/kloudlite-slo:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:5d3c536da70af5325347e6cafb311355b45d316fde4ac116edebdd3cb32e3a2d
               args: ["run", "--suite", "fast"]
               envFrom:
                 - configMapRef: { name: kloudlite-slo-env }
@@ -2241,7 +2241,7 @@ spec:
             fsGroup: 1001
           containers:
             - name: slo
-              image: ghcr.io/kloudlite/kloudlite-slo:3088625594709a54d516acc48430d0c390bfcca1@sha256:da8fc0d3ff5b4c6631f02e8fa309fd7709119fc4fa546b5edab0a98fdc6af0e9
+              image: ghcr.io/kloudlite/kloudlite-slo:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:5d3c536da70af5325347e6cafb311355b45d316fde4ac116edebdd3cb32e3a2d
               args: ["run", "--suite", "hourly"]
               envFrom:
                 - configMapRef: { name: kloudlite-slo-env }
@@ -2387,7 +2387,7 @@ spec:
             fsGroup: 1001
           containers:
             - name: slo
-              image: ghcr.io/kloudlite/kloudlite-slo:3088625594709a54d516acc48430d0c390bfcca1@sha256:da8fc0d3ff5b4c6631f02e8fa309fd7709119fc4fa546b5edab0a98fdc6af0e9
+              image: ghcr.io/kloudlite/kloudlite-slo:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:5d3c536da70af5325347e6cafb311355b45d316fde4ac116edebdd3cb32e3a2d
               args: ["run", "--suite", "weekly"]
               envFrom:
                 - configMapRef: { name: kloudlite-slo-env }
@@ -2512,7 +2512,7 @@ spec:
             fsGroup: 1001
           containers:
             - name: slo
-              image: ghcr.io/kloudlite/kloudlite-slo:3088625594709a54d516acc48430d0c390bfcca1@sha256:da8fc0d3ff5b4c6631f02e8fa309fd7709119fc4fa546b5edab0a98fdc6af0e9
+              image: ghcr.io/kloudlite/kloudlite-slo:b18bdcaca851aed442ed77c0dfa952d1f371f66f@sha256:5d3c536da70af5325347e6cafb311355b45d316fde4ac116edebdd3cb32e3a2d
               args: ["run", "--suite", "monthly"]
               envFrom:
                 - configMapRef: { name: kloudlite-slo-env }
