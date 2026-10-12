@@ -26,9 +26,12 @@ fn ts(s: &str) -> Option<SystemTime> {
     s.parse::<k8s_openapi::jiff::Timestamp>().ok().map(SystemTime::from)
 }
 
-/// A workspace that is up and not idle-stopped; one that is stopping or stopped follows nothing.
+/// A workspace that wants a pod follows, Running yet or not: one slow to start (node full, cold
+/// package copy, clone graft) must keep its environment up, or the env idles first and nothing
+/// wakes it when the workspace finally arrives. A stopped workspace follows nothing, and its own
+/// idle verdict turns `wants_pod` false.
 fn live(w: &crd::Workspace) -> bool {
-    crd::wants_pod(w) && w.status.as_ref().is_some_and(|s| s.phase == crd::Phase::Running)
+    crd::wants_pod(w)
 }
 
 /// `resolve` returns `None` when the space cache is unknown, `Some(None)` when the workspace has
@@ -150,6 +153,21 @@ mod tests {
         let mut w = (*running_ws("w1")).clone();
         w.status.get_or_insert_with(Default::default).idle_since = Some("2026-10-12T10:00:00Z".into());
         assert_eq!(followed(&e, Some(&[Arc::new(w)]), |_| Some(None), now(), S), Followed::No);
+    }
+    #[test]
+    fn a_workspace_still_starting_follows() {
+        let e = env_with_intercept("w1");
+        let mut w = (*running_ws("w1")).clone();
+        w.status = Some(crd::WorkspaceStatus { phase: crd::Phase::Starting, ..Default::default() });
+        assert_eq!(followed(&e, Some(&[Arc::new(w)]), |_| Some(None), now(), S), Followed::Yes);
+    }
+    #[test]
+    fn leftover_idle_since_with_a_later_wake_follows() {
+        let e = env_with_intercept("w1");
+        let mut w = (*running_ws("w1")).clone();
+        w.status.get_or_insert_with(Default::default).idle_since = Some("2026-10-12T10:00:00Z".into());
+        w.spec.wake_at = Some("2026-10-12T10:00:01Z".into());
+        assert_eq!(followed(&e, Some(&[Arc::new(w)]), |_| Some(None), now(), S), Followed::Yes);
     }
     #[test]
     fn follower_via_hold() {
