@@ -37,3 +37,6 @@ core.[0-9]*
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 bench/sessions/node_modules
+
+# pip install -e sdk/python (tests/hub_e2e.sh) writes this beside the package.
+sdk/python/*.egg-info/

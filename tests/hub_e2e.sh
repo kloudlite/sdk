@@ -25,10 +25,12 @@ python3 -m venv "$ROOT/venv" \
   && "$ROOT/venv/bin/pip" -q install 'huggingface_hub[hf_xet]' transformers >"$ROOT/pip.log" 2>&1 \
   || { echo "skip: python venv or pip install failed (offline?)"; exit 77; }
 PY="$ROOT/venv/bin/python"
+"$ROOT/venv/bin/pip" -q install -e sdk/python >>"$ROOT/pip.log" 2>&1 || { echo "skip: sdk/python install failed"; exit 77; }
 
 BIN=${CARGO_TARGET_DIR:-target}/debug/kloudlite
-cargo build -q --bin kloudlite
+cargo build -q --bin kloudlite --bin kl
 export BIN
+KL=${KL_BIN:-$(dirname "$BIN")/kl}
 
 HUB_PORT=18081 CAS_PORT=18082
 export KLOUDLITE_S3_URL="file://$ROOT/store"
@@ -110,6 +112,25 @@ assert filecmp.cmp(p, f"{sys.argv[1]}/clone/pushed.bin", shallow=False)
 PYEOF
 }
 
+sec_provider() {
+  [ -x "$KL" ] || return 77
+  command -v hf >/dev/null || "$ROOT/venv/bin/hf" --help >/dev/null 2>&1 || return 77
+  # As in a workspace: nothing presets HF_ENDPOINT, and the provider is named per call.
+  ( unset HF_ENDPOINT HF_TOKEN
+    export HOME="$ROOT/home" KL_HUB_URL="$KLOUDLITE_HUB_URL" KL_HUB_TOKEN="$TOKEN" PATH="$ROOT/venv/bin:$PATH"
+    mkdir -p "$HOME"
+    "$KL" hf --provider kloudlite download alice/m config.json >/dev/null
+    ls "$HOME/.cache/kloudlite/hub"/models--alice--m >/dev/null
+    [ ! -e "$HOME/.cache/huggingface/hub/models--alice--m" ]
+    "$PY" - <<'PYEOF'
+import os
+from kloudlite import hub
+p = hub.download_file("alice/m", "config.json", provider="kloudlite")
+assert p.startswith(os.path.expanduser("~/.cache/kloudlite/hub")), p
+PYEOF
+  )
+}
+
 failed=0 summary=""
 # Subshell with its own set -e, run outside any `if`/`||` so the -e actually applies.
 run() { # run <label> <fn> <client for the skip line>
@@ -127,6 +148,7 @@ run dedup sec_dedup huggingface_hub
 run git-lfs-clone sec_lfs_clone git-lfs
 run AutoConfig sec_transformers transformers
 run git-xet-push sec_xet_push git-xet
+run provider-wrapper sec_provider kl
 
 echo "---- summary"; printf '%s' "$summary"
 [ "$failed" = 0 ] && echo PASS
