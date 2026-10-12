@@ -11,6 +11,7 @@ use crate::procs::Frame;
 use crate::server::App;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use std::sync::Arc;
 
@@ -34,9 +35,17 @@ fn de_since<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
     }
 }
 
-pub async fn watch(State(app): State<Arc<App>>, Path(id): Path<String>, Query(q): Query<Since>, ws: WebSocketUpgrade) -> axum::response::Response {
+fn is_watcher(h: &HeaderMap) -> bool {
+    h.get("x-kl-watch").is_some_and(|v| v == "1")
+}
+
+pub async fn watch(State(app): State<Arc<App>>, Path(id): Path<String>, Query(q): Query<Since>, headers: HeaderMap, ws: WebSocketUpgrade) -> axum::response::Response {
     match app.watches.get(&id) {
-        Some(w) => ws.on_upgrade(move |sock| pump_watch(sock, w, q.since)).into_response(),
+        Some(w) => ws.on_upgrade(move |sock| async move {
+            // Held for the socket's life; a sidebar/explorer watcher (`X-KL-Watch: 1`) is not a session.
+            let _g = (!is_watcher(&headers)).then(|| app.activity.stream());
+            pump_watch(sock, w, q.since).await
+        }).into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, format!("no watch {id}")).into_response(),
     }
 }
@@ -80,9 +89,12 @@ async fn pump_watch(mut sock: WebSocket, w: Arc<std::sync::Mutex<crate::watches:
     }
 }
 
-pub async fn process(State(app): State<Arc<App>>, Path(id): Path<String>, Query(q): Query<Since>, ws: WebSocketUpgrade) -> axum::response::Response {
+pub async fn process(State(app): State<Arc<App>>, Path(id): Path<String>, Query(q): Query<Since>, headers: HeaderMap, ws: WebSocketUpgrade) -> axum::response::Response {
     match app.procs.get(&id) {
-        Some(p) => ws.on_upgrade(move |sock| pump(sock, p, q.since, q.since_err)).into_response(),
+        Some(p) => ws.on_upgrade(move |sock| async move {
+            let _g = (!is_watcher(&headers)).then(|| app.activity.stream());
+            pump(sock, p, q.since, q.since_err).await
+        }).into_response(),
         None => (axum::http::StatusCode::NOT_FOUND, format!("no process {id}")).into_response(),
     }
 }
