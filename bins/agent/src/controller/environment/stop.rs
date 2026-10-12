@@ -32,9 +32,7 @@ pub(crate) async fn stop_environment(
         let mut conditions = replaced(&cleared_node_dead(&prev.conditions), replicated);
         // A wake that is stopped again, or an idle stop that became a plain stop, changes only
         // the reason; without this the old `Idle` Ready stays on a stopped environment.
-        if let Some(c) = conditions.iter_mut().find(|c| c.type_ == ready.type_ && c.reason == crd::IDLE && ready.reason != crd::IDLE) {
-            *c = ready.clone();
-        }
+        crate::controller::status::supersede_idle(&mut conditions, &ready);
         if !conditions_eq(&prev.conditions, &conditions) {
             let st = crd::EnvironmentStatus { conditions, ..prev };
             write_env_status(e, st, ctx).await?;
@@ -126,7 +124,7 @@ pub(crate) async fn stop_environment(
                     observed_generation: None,
                     service_status: vec![],
                     conditions: vec![crd::condition("Progressing", true, "FlushBeforeStop", "waiting for the final sync point", gen)],
-                    ..e.status.clone().unwrap_or_default()
+                    ..prev
                 };
                 write_env_status(e, st, ctx).await?;
                 return Ok(Action::requeue(TICK));

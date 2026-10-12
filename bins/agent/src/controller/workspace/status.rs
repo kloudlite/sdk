@@ -197,7 +197,7 @@ pub fn ws_status_eq(a: &crd::WorkspaceStatus, b: &crd::WorkspaceStatus) -> bool 
         // deleted correctly on disk (R-D16, live run 8dca6d54, 2026-09-18). Any field a
         // reconcile can change ALONE has to be here.
         && a.trees == b.trees
-        // The idle stop sets it alongside the phase, but a wake that clears it must write too.
+        // The idle stop sets it alongside the phase; a wake does not clear it (`spec.wakeAt` outranks it), so it changes only on a new idle verdict.
         && a.idle_since == b.idle_since
         && conditions_eq(&a.conditions, &b.conditions)
 }
