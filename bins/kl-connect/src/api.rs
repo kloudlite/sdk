@@ -385,13 +385,13 @@ fn is_ready(d: &serde_json::Value) -> bool {
     d["ready"] == true || matches!(d["state"].as_str(), Some("ready" | "running"))
 }
 
-/// Why it is not ready: the first False condition's reason (the workspace doc names its
-/// conditions individually, `conditions` covers a list), else the state.
+/// Why it is not ready: the first `ConditionDoc { ready, reason, message }` under these keys that
+/// is not ready and names a reason, else the state.
 fn reason(d: &serde_json::Value) -> String {
-    let mut cs: Vec<&serde_json::Value> = d["conditions"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
-    cs.extend(["packages_status", "degraded", "placed"].iter().map(|k| &d[*k]));
-    cs.into_iter()
-        .find(|c| c["status"] == "False" && c["reason"].as_str().is_some_and(|r| !r.is_empty()))
+    ["packages_status", "degraded", "placed"]
+        .iter()
+        .map(|k| &d[*k])
+        .find(|c| c["ready"] == false && c["reason"].as_str().is_some_and(|r| !r.is_empty()))
         .and_then(|c| c["reason"].as_str())
         .or(d["state"].as_str())
         .unwrap_or("unknown")
@@ -517,7 +517,7 @@ mod wake_tests {
         assert_eq!(decide(&json!({"state": "stopped", "idle_since": "2026-10-12T10:00:00Z"})), Step::Wake);
         assert_eq!(decide(&json!({"state": "stopped"})), Step::Stopped);
         assert_eq!(
-            decide(&json!({"state": "starting", "conditions": [{"type": "Ready", "status": "False", "reason": "KeysNotReady"}]})),
+            decide(&json!({"state": "starting", "packages_status": {"ready": false, "reason": "KeysNotReady", "message": ""}})),
             Step::Wait("KeysNotReady".into())
         );
     }

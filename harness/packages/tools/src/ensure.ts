@@ -57,6 +57,6 @@ async function wake(
 
 // workspaces report `ready`, environments `running` (see workspace_get / env_get)
 const ready = (d: any) => d?.ready === true || d?.state === "ready" || d?.state === "running";
-// the workspace doc names its conditions (packages_status, degraded, placed); `conditions` covers a list shape
+// the doc names its conditions as ConditionDoc { ready, reason, message } under these keys
 const reason = (d: any) =>
-  [...(d?.conditions ?? []), d?.packages_status, d?.degraded, d?.placed].find((c: any) => c?.status === "False" && c.reason)?.reason ?? d?.state ?? "unknown";
+  [d?.packages_status, d?.degraded, d?.placed].find((c: any) => c?.ready === false && c.reason)?.reason ?? d?.state ?? "unknown";
