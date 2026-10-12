@@ -31,6 +31,25 @@ test("scrolling up offers a jump back to the bottom, end takes it", async () => 
   t.renderer.destroy();
 });
 
+test("a click in the transcript does not make up/down scroll it", async () => {
+  // an open ask owns up/down; a focused scrollbox scrolled underneath it
+  const t = await testRender(<Transcript entries={entries} />, { width: 80, height: 16, kittyKeyboard: true });
+  const frame = async () => {
+    await new Promise((r) => setTimeout(r, 30));
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("\x1b[5~"); // PageUp, so up/down would have room to move
+  const before = await frame();
+  await t.mockMouse.click(10, 5);
+  t.mockInput.pressArrow("down");
+  t.mockInput.pressArrow("down");
+  t.mockInput.pressArrow("up");
+  expect(await frame()).toBe(before);
+  t.renderer.destroy();
+});
+
 test("a long block collapses to its head and a click toggles it both ways", async () => {
   const long: Entry[] = [
     { id: "a", kind: "agent", text: Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join("\n") },
