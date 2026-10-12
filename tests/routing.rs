@@ -17,6 +17,7 @@ struct Node {
     app: Arc<App>,
     public: String,
     peer: String,
+    hub: String,
     _tmp: tempfile::TempDir,
 }
 
@@ -102,6 +103,11 @@ async fn node(
     let (peer_l, stream_l) = take_reserved(&my_addr);
     let a2 = app.clone();
     tokio::spawn(async move { axum::serve(pub_l, kloudlite_server::router::router(a2)).await.unwrap() });
+    // The hub listener, which a deployment opts into with KLOUDLITE_HUB_ADDR.
+    let hub_l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hub = hub_l.local_addr().unwrap().to_string();
+    let a6 = app.clone();
+    tokio::spawn(async move { axum::serve(hub_l, kloudlite_server::router::hub_router(a6)).await.unwrap() });
     let a4 = app.clone();
     tokio::spawn(async move {
         axum::serve(peer_l, kloudlite_server::router::peer_router(a4))
@@ -115,6 +121,7 @@ async fn node(
         app,
         public,
         peer: my_addr,
+        hub,
         _tmp: tmp,
     }
 }
@@ -2490,4 +2497,28 @@ async fn a_fenced_image_owned_by_a_peer_is_503_not_500() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["errors"][0]["code"], "BLOB_UPLOAD_UNKNOWN");
     assert_eq!(b.store.pool.warm_count(), 0, "b must not have reopened");
+}
+
+/// A hub repo is created on one node and read through another: the second node forwards to the
+/// owner's `/hub` mount on the peer listener, and only the owner opens the database.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hub_read_through_a_second_node_is_forwarded_to_the_owner() {
+    let e = common::env().await;
+    let token = e.store.create_token("alice").await.unwrap();
+    let f = fleet(2);
+    let a = node(e.store.os.clone(), LEADER, &f).await;
+    let b = node(e.store.os.clone(), "kloudlite-1", &f).await;
+    let c = client().await;
+    let made = c
+        .post(format!("http://{}/api/repos/create", b.hub))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"name": "bert"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(made.status(), 200);
+    assert_eq!(a.app.owner("mdl/alice/bert").await.unwrap().unwrap().node, "kloudlite-1");
+    let read = c.get(format!("http://{}/api/models/alice/bert", a.hub)).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(read.status(), 200, "{}", read.text().await.unwrap());
+    assert_eq!(a.store.pool.warm_count(), 0, "the non-owner opened nothing");
 }

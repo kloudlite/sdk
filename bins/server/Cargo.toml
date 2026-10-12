@@ -23,6 +23,8 @@ kloudlite-app = { path = "../../crates/app" }
 kloudlite-vcs = { path = "../../crates/git" }
 kloudlite-registry = { path = "../../crates/registry" }
 kloudlite-workspaces = { path = "../../crates/workspaces" }
+kloudlite-hub = { path = "../../crates/hub" }
+kloudlite-xet = { path = "../../crates/xet" }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }

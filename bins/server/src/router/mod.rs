@@ -5,7 +5,7 @@ pub mod route;
 
 pub(crate) use git::{git_routes, open};
 pub(crate) use limits::internal;
-use route::{own_claim, own_owner, own_release, own_renew, route_peer, route_public, trust_nobody, trust_peer};
+use route::{route_hub, own_claim, own_owner, own_release, own_renew, route_peer, route_public, trust_nobody, trust_peer};
 
 use crate::App;
 use axum::{routing::get, routing::post, Router};
@@ -22,6 +22,30 @@ pub fn router(app: Arc<App>) -> Router {
         .layer(axum::middleware::from_fn(trust_nobody))
         .layer(axum::middleware::from_fn_with_state("public", kloudlite_core::metrics::http_metrics))
         .with_state(app)
+}
+
+/// The hub API plus git for model and dataset repos, routed by `mdl/`/`ds/` key. Mounted twice: as
+/// the hub listener's whole app (`hub_router`) and under `/hub` on the peer listener, which is
+/// where a non-owning node forwards to (`route_hub`). Carries no admission layer of its own.
+fn hub_app(app: Arc<App>) -> Router {
+    let st = kloudlite_hub::HubState::new(app.clone(), kloudlite_hub::hub_url());
+    kloudlite_hub::router(st.clone())
+        .merge(git::hub_git(st))
+        .layer(axum::middleware::from_fn_with_state(app, route_hub))
+}
+
+/// Client-facing hub listener (`KLOUDLITE_HUB_ADDR`).
+pub fn hub_router(app: Arc<App>) -> Router {
+    hub_app(app)
+        .layer(axum::middleware::from_fn(trust_nobody))
+        .layer(axum::middleware::from_fn_with_state("hub", kloudlite_core::metrics::http_metrics))
+}
+
+/// CAS listener (`KLOUDLITE_CAS_ADDR`). Not routed: bytes live in the shared object store, so any
+/// node serves them.
+pub fn cas_router(app: Arc<App>) -> Router {
+    let st = kloudlite_hub::HubState::new(app, kloudlite_hub::hub_url());
+    kloudlite_xet::router(st.cas)
 }
 
 /// Peer-facing. `trust_peer` outermost (secret check first, on everything), then `route`, then
@@ -55,6 +79,7 @@ pub fn peer_router(app: Arc<App>) -> Router {
             get(admin_settings::get_settings).put(admin_settings::put_settings),
         )
         .route("/api/admin/settings/revert", post(admin_settings::revert_settings))
+        .nest_service("/hub", hub_app(app.clone()))
         .layer(axum::middleware::from_fn_with_state(app.clone(), route_peer))
         .layer(axum::middleware::from_fn_with_state(app.clone(), trust_peer))
         // The one listener whose callers' sampled flag is trusted, and only with the secret —
