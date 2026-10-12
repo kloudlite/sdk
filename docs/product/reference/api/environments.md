@@ -62,20 +62,21 @@ No body.
 
 ## `POST /environments/{id}/clone`
 
-`{"name": "…"}`. `409` when the source is interrupted.
-
-## `POST /environments/restore`
+Makes a NEW environment. `{"name": "…"}` copies the live disk; `409` when the source is interrupted. Add `snapshot_id` to copy one of this environment's snapshots:
 
 | Field | Required |
 |---|---|
-| `name`, `snapshot_id` | yes |
-| `owner` | no |
+| `name` | yes |
+| `snapshot_id` | no; without it, only `name` is allowed |
+| `owner`, `region` | no |
 | `services` | no; empty or absent means the snapshot's |
 | `quota_gb` | no |
 
-## `POST /environments/{id}/restore-in-place`
+## `POST /environments/{id}/restore`
 
-`{"snapshot_id": "…"}`.
+Puts THIS environment back to a snapshot: services and data. `{"snapshot_id": "…", "discard": ["…"]}`; `discard` is optional.
+
+`409` with `{"error", "lost": [{"service", "folders"}]}` when a persistent service would lose data the snapshot lacks; nothing is written. `422` when `discard` names a service that loses nothing, or when the snapshot froze no services. `202` with `snapshot_id`, `rolled_back`, `discarded`, `added` and `removed`.
 
 ## `POST /environments/{id}/push`
 

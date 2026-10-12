@@ -5,7 +5,7 @@ use common::token;
 
 use kloudlite_core::jwt::Jwt;
 use kloudlite_workspaces::api::{router, ApiState};
-use kloudlite_workspaces::kube_test::{get, mock_client, not_found, Recorder, Route};
+use kloudlite_workspaces::kube_test::{get, mock_client, not_found, post, Recorder, Route};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -134,7 +134,7 @@ async fn push_creates_a_working_snapshot_with_worktree_and_parent() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
 
     let req = s.rec.sent("POST", &format!("{API}/snapshots")).remove(0);
     assert_eq!(req["spec"]["volume"], "ws-0000000000000001");
@@ -333,10 +333,10 @@ async fn history_of_an_unknown_volume_is_not_found() {
     assert_eq!(resp.status(), 404);
 }
 
-/// Restore-in-place under the flag names a `Snapshot` CR of THIS environment's own volume — an
+/// Restore names a `Snapshot` CR of THIS environment's own volume — an
 /// unknown id is a 404, same as every other "no such snapshot" case.
 #[tokio::test]
-async fn restore_in_place_of_an_unknown_snapshot_is_not_found() {
+async fn restore_of_an_unknown_snapshot_is_not_found() {
     let env = placed_env("env-0000000000000001", "karthik");
     let routes = vec![
         get(format!("{API}/environments/env-0000000000000001"), env),
@@ -345,7 +345,7 @@ async fn restore_in_place_of_an_unknown_snapshot_is_not_found() {
     let s = server(routes).await;
     let tok = token(&s.jwt, "karthik");
     let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/env-0000000000000001/restore-in-place", s.base))
+        .post(format!("{}/v1/environments/env-0000000000000001/restore", s.base))
         .bearer_auth(&tok)
         .json(&json!({"snapshot_id": "no-such"}))
         .send()
@@ -358,14 +358,14 @@ async fn restore_in_place_of_an_unknown_snapshot_is_not_found() {
 /// A snapshot still `Working` (not yet `Ready`) cannot be restored onto — the swap would have
 /// nothing finished to check out.
 #[tokio::test]
-async fn restore_in_place_of_a_not_ready_snapshot_is_not_found() {
+async fn restore_of_a_not_ready_snapshot_is_not_found() {
     let env = placed_env("env-0000000000000001", "karthik");
     let snap = snapshot("env-0000000000000001-aaaaaaaa", "env-0000000000000001", "karthik", "env-0000000000000001", "", "working");
     let routes = vec![get(format!("{API}/environments/env-0000000000000001"), env), get(format!("{API}/snapshots/env-0000000000000001-aaaaaaaa"), snap)];
     let s = server(routes).await;
     let tok = token(&s.jwt, "karthik");
     let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/env-0000000000000001/restore-in-place", s.base))
+        .post(format!("{}/v1/environments/env-0000000000000001/restore", s.base))
         .bearer_auth(&tok)
         .json(&json!({"snapshot_id": "env-0000000000000001-aaaaaaaa"}))
         .send()
@@ -378,14 +378,14 @@ async fn restore_in_place_of_a_not_ready_snapshot_is_not_found() {
 /// another environment's bytes under these services, which is what `clone`/`restore`-into-a-new-
 /// object are for, not an in-place restore.
 #[tokio::test]
-async fn restore_in_place_of_a_foreign_snapshot_is_not_found() {
+async fn restore_of_a_foreign_snapshot_is_not_found() {
     let env = placed_env("env-0000000000000001", "karthik");
     let snap = snapshot("env-0000000000000002-aaaaaaaa", "env-0000000000000002", "karthik", "env-0000000000000002", "", "ready");
     let routes = vec![get(format!("{API}/environments/env-0000000000000001"), env), get(format!("{API}/snapshots/env-0000000000000002-aaaaaaaa"), snap)];
     let s = server(routes).await;
     let tok = token(&s.jwt, "karthik");
     let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/env-0000000000000001/restore-in-place", s.base))
+        .post(format!("{}/v1/environments/env-0000000000000001/restore", s.base))
         .bearer_auth(&tok)
         .json(&json!({"snapshot_id": "env-0000000000000002-aaaaaaaa"}))
         .send()
@@ -394,13 +394,22 @@ async fn restore_in_place_of_a_foreign_snapshot_is_not_found() {
     assert_eq!(resp.status(), 404);
 }
 
-/// A `Ready` snapshot of the environment's own volume writes the wish exactly as the old path did —
-/// the controllers do the checkout-swap, not this handler.
-#[tokio::test]
-async fn restore_in_place_of_a_valid_snapshot_writes_the_wish() {
-    let env = placed_env("env-0000000000000001", "karthik");
-    let snap = snapshot("env-0000000000000001-aaaaaaaa", "env-0000000000000001", "karthik", "env-0000000000000001", "", "ready");
-    let routes = vec![
+fn env_state(services: Value, quota_gb: u64) -> Value {
+    json!({"kind": "environment", "services": services, "quotaGb": quota_gb})
+}
+
+fn svc(name: &str, folders: &[&str]) -> Value {
+    let mounts: Vec<Value> = folders.iter().map(|f| json!({"folder": f, "path": format!("/{f}")})).collect();
+    json!({"name": name, "image": "alpine", "command": [], "env": {}, "mounts": mounts, "ports": []})
+}
+
+/// `placed_env` running `services` now, with its own snapshot `env-0000000000000001-aaaaaaaa`
+/// carrying `state`, and the route a restore patches.
+async fn restore_server(live: Value, state: Option<Value>) -> Server {
+    let mut env = placed_env("env-0000000000000001", "karthik");
+    env["spec"]["services"] = live;
+    let snap = snapshot_with_state("env-0000000000000001-aaaaaaaa", "env-0000000000000001", "karthik", "env-0000000000000001", "", "ready", state);
+    server(vec![
         get(format!("{API}/environments/env-0000000000000001"), env),
         get(format!("{API}/snapshots/env-0000000000000001-aaaaaaaa"), snap),
         Route {
@@ -409,20 +418,72 @@ async fn restore_in_place_of_a_valid_snapshot_writes_the_wish() {
             status: 200,
             body: placed_env("env-0000000000000001", "karthik"),
         },
-    ];
-    let s = server(routes).await;
-    let tok = token(&s.jwt, "karthik");
-    let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/env-0000000000000001/restore-in-place", s.base))
-        .bearer_auth(&tok)
-        .json(&json!({"snapshot_id": "env-0000000000000001-aaaaaaaa"}))
+    ])
+    .await
+}
+
+async fn restore_call(s: &Server, body: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/environments/env-0000000000000001/restore", s.base))
+        .bearer_auth(token(&s.jwt, "karthik"))
+        .json(&body)
         .send()
         .await
-        .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
-    let patch = &s.rec.sent("PATCH", &format!("{API}/environments/env-0000000000000001"))[0];
-    assert_eq!(patch["spec"]["restore"]["snapshotId"], "env-0000000000000001-aaaaaaaa");
-    assert_eq!(patch["spec"]["restore"]["volume"], "env-0000000000000001");
+        .unwrap()
+}
+
+/// A `Ready` snapshot of the environment's own volume writes the wish AND the snapshot's services in
+/// one patch — the controllers do the checkout-swap, not this handler. Restore means this
+/// environment goes back in time, services and data (2026-10-12).
+#[tokio::test]
+async fn restore_of_a_valid_snapshot_writes_the_wish_and_the_snapshots_services() {
+    let s = restore_server(json!([svc("db", &["data"]), svc("web", &[])]), Some(env_state(json!([svc("db", &["data"])]), 30))).await;
+    let resp = restore_call(&s, json!({"snapshot_id": "env-0000000000000001-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["snapshot_id"], "env-0000000000000001-aaaaaaaa");
+    assert_eq!((&body["rolled_back"], &body["removed"], &body["added"], &body["discarded"]), (&json!(["db"]), &json!(["web"]), &json!([]), &json!([])));
+    let patches = s.rec.sent("PATCH", &format!("{API}/environments/env-0000000000000001"));
+    assert_eq!(patches.len(), 1, "one patch, so no pass sees the wish without the services");
+    let spec = &patches[0]["spec"];
+    assert_eq!(spec["restore"]["snapshotId"], "env-0000000000000001-aaaaaaaa");
+    assert_eq!(spec["restore"]["volume"], "env-0000000000000001");
+    assert_eq!(spec["services"], json!([svc("db", &["data"])]));
+    assert_eq!(spec["storage"]["quotaGb"], 30);
+}
+
+/// A snapshot with no saved services, or a workspace's state, cannot put services back.
+#[tokio::test]
+async fn restore_of_a_snapshot_without_saved_services_is_422() {
+    for state in [None, Some(workspace_state("img", &[], 20))] {
+        let s = restore_server(json!([svc("db", &["data"])]), state).await;
+        let resp = restore_call(&s, json!({"snapshot_id": "env-0000000000000001-aaaaaaaa"})).await;
+        assert_eq!(resp.status(), 422);
+        assert!(resp.text().await.unwrap().contains("clone it into a new environment"));
+        assert!(s.rec.sent("PATCH", &format!("{API}/environments/env-0000000000000001")).is_empty());
+    }
+}
+
+/// redis keeps data the snapshot does not have: 409 naming it, nothing written; then `discard`
+/// lets it through, and a name that loses nothing is a 422.
+#[tokio::test]
+async fn restore_that_would_lose_a_persistent_service_needs_discard() {
+    let live = json!([svc("db", &["data"]), svc("redis", &["rd"])]);
+    let state = Some(env_state(json!([svc("db", &["data"])]), 20));
+    let s = restore_server(live.clone(), state.clone()).await;
+    let resp = restore_call(&s, json!({"snapshot_id": "env-0000000000000001-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["lost"], json!([{"service": "redis", "folders": ["rd"]}]));
+    assert!(s.rec.sent("PATCH", &format!("{API}/environments/env-0000000000000001")).is_empty());
+
+    let resp = restore_call(&s, json!({"snapshot_id": "env-0000000000000001-aaaaaaaa", "discard": ["redis", "db"]})).await;
+    assert_eq!(resp.status(), 422);
+
+    let resp = restore_call(&s, json!({"snapshot_id": "env-0000000000000001-aaaaaaaa", "discard": ["redis"]})).await;
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!((&body["discarded"], &body["removed"]), (&json!(["redis"]), &json!(["redis"])));
 }
 
 /// F1: a second push while the first is still `Working` is refused before it can create a second
@@ -980,7 +1041,7 @@ async fn a_push_records_the_workspace_definition_on_the_snapshot() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
 
     let req = s.rec.sent("POST", &format!("{API}/snapshots")).remove(0);
     assert_eq!(req["spec"]["state"]["kind"], "workspace");
@@ -1011,7 +1072,7 @@ async fn a_push_records_the_environment_services_on_the_snapshot() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 202, "{}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
 
     let req = s.rec.sent("POST", &format!("{API}/snapshots")).remove(0);
     assert_eq!(req["spec"]["state"]["kind"], "environment");
@@ -1054,4 +1115,70 @@ async fn a_clone_cut_records_the_source_definition() {
     let cut = s.rec.sent("POST", &format!("{API}/snapshots")).into_iter().find(|b| b["metadata"]["name"].as_str().unwrap().starts_with("clone-")).unwrap();
     assert_eq!(cut["spec"]["state"]["kind"], "workspace");
     assert_eq!(cut["spec"]["state"]["image"], "alpine:3.20");
+}
+
+// Environment CREATE with `snapshot_id`: the way in for the snapshots of a DELETED environment —
+// `/clone` needs a live source, create does not.
+
+async fn create_from(s: &Server, body: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/environments", s.base))
+        .bearer_auth(token(&s.jwt, "karthik"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_from_a_snapshot_of_a_deleted_environment_writes_a_clone_of_it() {
+    // No `Environment` route for env-...0009: it is gone. Only its snapshot and volume remain.
+    let snap = snapshot_with_state(
+        "env-0000000000000009-aaaaaaaa",
+        "env-0000000000000009",
+        "karthik",
+        "env-0000000000000009",
+        "",
+        "ready",
+        Some(env_state(json!([svc("db", &["data"])]), 30)),
+    );
+    let s = server(vec![
+        get(format!("{API}/snapshots/env-0000000000000009-aaaaaaaa"), snap),
+        get(format!("{API}/snapshots"), json!({"apiVersion": "kloudlite.io/v1alpha1", "kind": "SnapshotList", "metadata": {}, "items": []})),
+        post(format!("{API}/environments"), placed_env("env-new", "karthik")),
+    ])
+    .await;
+    let resp = create_from(&s, json!({"name": "back", "snapshot_id": "env-0000000000000009-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 202, "{:?}", s.rec.calls());
+    let e = s.rec.sent("POST", &format!("{API}/environments")).remove(0);
+    assert_eq!(e["spec"]["storage"]["source"]["cloneOf"]["volume"], "env-0000000000000009");
+    assert_eq!(e["spec"]["storage"]["source"]["cloneOf"]["commit"], "env-0000000000000009-aaaaaaaa");
+    assert_eq!(e["spec"]["services"][0]["name"], "db");
+    assert_eq!(e["spec"]["storage"]["quotaGb"], 30, "the frozen quota wins over the default");
+}
+
+#[tokio::test]
+async fn create_from_a_foreign_snapshot_is_not_found() {
+    let snap = snapshot("env-0000000000000009-aaaaaaaa", "env-0000000000000009", "bob", "env-0000000000000009", "", "ready");
+    let s = server(vec![get(format!("{API}/snapshots/env-0000000000000009-aaaaaaaa"), snap)]).await;
+    let resp = create_from(&s, json!({"name": "back", "snapshot_id": "env-0000000000000009-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 404);
+    assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty(), "nothing written");
+}
+
+#[tokio::test]
+async fn create_from_a_workspace_snapshot_is_400() {
+    let snap = snapshot_with_state("ws-0000000000000001-aaaaaaaa", "ws-0000000000000001", "karthik", "ws-0000000000000001", "", "ready", Some(workspace_state("nginx", &[], 20)));
+    let s = server(vec![get(format!("{API}/snapshots/ws-0000000000000001-aaaaaaaa"), snap)]).await;
+    let resp = create_from(&s, json!({"name": "back", "snapshot_id": "ws-0000000000000001-aaaaaaaa"})).await;
+    assert_eq!(resp.status(), 400);
+    assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty(), "nothing written");
+}
+
+#[tokio::test]
+async fn create_without_snapshot_or_region_is_400() {
+    let s = server(vec![]).await;
+    let resp = create_from(&s, json!({"name": "plain"})).await;
+    assert_eq!(resp.status(), 400);
+    assert!(resp.text().await.unwrap().contains("region is required"));
 }

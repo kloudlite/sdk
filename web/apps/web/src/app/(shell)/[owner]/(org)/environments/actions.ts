@@ -68,6 +68,15 @@ export async function pushEnvironment(_prev: EnvActionState, formData: FormData)
   return { ok: true, requestId: r.value.id };
 }
 
+function lostServices(body: string): string[] | null {
+  try {
+    const lost = (JSON.parse(body) as { lost?: { service: string }[] }).lost;
+    return Array.isArray(lost) && lost.length ? lost.map((l) => l.service) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The Restore dialog's one action, for both shapes it takes.
  *
  *  `mode` says which: `inplace` puts the snapshot back into THIS environment's own volume (202
@@ -117,9 +126,14 @@ export async function restoreEnvironmentFrom(_prev: EnvActionState, formData: Fo
 
   const r =
     mode === "inplace"
-      ? await api.restoreEnvironmentInPlace(token, id, snapshotId)
-      : await api.restoreEnvironment(token, name, snapshotId);
+      ? await api.restoreEnvironment(token, id, snapshotId)
+      : await api.cloneEnvironmentFromSnapshot(token, name, snapshotId);
   if (!r.ok) {
+    if (mode === "inplace" && r.kind === "conflict") {
+      // The 409 body names services that keep data the snapshot does not have. Nothing was written.
+      const lost = lostServices(r.message);
+      if (lost) return { error: `Restoring would delete the data of ${lost.join(", ")}. Nothing was restored. Clone the snapshot into a new environment to keep it.` };
+    }
     // `new` is the only path here that allocates a new environment, so it is the only branch a
     // quota 409 can come from — restoring in place reuses the volume that already exists.
     const dim = mode === "new" && r.kind === "conflict" ? dimFromRefusal(r.message) : null;

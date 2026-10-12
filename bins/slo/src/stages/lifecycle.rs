@@ -279,7 +279,7 @@ async fn environment_half(c: &mut Ctx) {
     env_replicated(c, &env).await;
     env_start(c, &env).await;
     match c.state.env_snapshot.clone() {
-        Some(snap) => env_restore(c, &snap).await,
+        Some(snap) => env_restore(c, &env, &snap).await,
         None => c.skip("env.restore", "the environment was never pushed"),
     }
 }
@@ -344,7 +344,9 @@ async fn env_start(c: &mut Ctx, env: &str) {
     .await;
 }
 
-/// `env.restore`: a NEW environment grafted onto stage 6's push — `ws.restore`'s twin.
+/// `env.restore`: a NEW environment grafted onto stage 6's push — `ws.restore`'s twin. The id keeps
+/// its name (the catalogue and deploy/slo.md hold it); the call is `clone` with `snapshot_id`, since
+/// a restore now puts back the SAME environment (`env.restore.inplace`).
 ///
 /// The services are left out of the body deliberately: absent means "the ones the snapshot froze",
 /// which is what a person restoring gets.
@@ -354,12 +356,13 @@ async fn env_start(c: &mut Ctx, env: &str) {
 /// environment succeeds" is, to the person who asked for it, the services coming back. A restore
 /// that is taken and then never converges is exactly the failure this id is named for, and ending
 /// at the 202 would have reported it green.
-async fn env_restore(c: &mut Ctx, snapshot: &str) {
+async fn env_restore(c: &mut Ctx, env: &str, snapshot: &str) {
+    let env = env.to_string();
     let name = format!("{}-envrestore", c.prefix());
     let snapshot = snapshot.to_string();
     c.step("env.restore", ENV_RESTORE_CEILING, move |c| {
         let jwt = c.probe_jwt.clone();
-        let url = api(c, "/v1/environments/restore");
+        let url = api(c, &format!("/v1/environments/{env}/clone"));
         let body = serde_json::json!({ "name": name, "snapshot_id": snapshot });
         async move {
             let doc = post(c, &url, &jwt, body).await.context("could not restore the environment")?;

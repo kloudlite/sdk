@@ -1,15 +1,17 @@
-//! `/v1/environments` — create, list, read, delete, start/stop, clone, restore-to-new and
-//! restore-in-place.
+//! `/v1/environments` — create, list, read, delete, start/stop and intercepts. Restore (this
+//! environment, back in time) and clone (a new environment) live in `restore.rs`.
+
+mod restore;
+pub(crate) use restore::{clone_env, restore_env};
 
 use super::scope::{Named, NamedPair};
-use super::scope::{caller_owners, denial, find_env, in_scope, may_act_on, may_allocate_for, mine, my_ws, owned_by, resolve_new_owner, scope_refusal};
-use super::volumes::{find_snapshot, volume_region};
+use super::scope::{caller_owners, denial, find_env, in_scope, may_act_on, mine, my_ws, owned_by, resolve_new_owner, scope_refusal};
 use super::workspaces::{
     check_name, clamp_quota, interrupted, interrupted_409, node_dead_warning, pushed_volumes,
-    set_desired, storage_quota, CloneBody,
+    set_desired,
 };
-use super::{caller_for, check_region, environment_cost, guard_alloc, guard_fill, kube, kube_err, not_found, not_ready, phase, rid, ApiState, Caller};
-use crate::crd::{self, DesiredState, VolumeSource};
+use super::{caller_for, check_region, environment_cost, guard_alloc, guard_fill, kube, kube_err, not_found, phase, rid, ApiState, Caller};
+use crate::crd::{self, DesiredState};
 use crate::k8s::labels;
 use crate::model::*;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -27,7 +29,7 @@ pub(crate) fn env_volume(e: &crd::Environment) -> Option<&str> {
     e.status.as_ref().and_then(|st| st.volume_ref.as_deref()).filter(|v| !v.is_empty())
 }
 
-fn env_doc(e: &crd::Environment, pushed: &HashSet<String>) -> Environment {
+pub(super) fn env_doc(e: &crd::Environment, pushed: &HashSet<String>) -> Environment {
     let id = e.name_any();
     let st = e.status.as_ref();
     Environment {
@@ -77,20 +79,26 @@ fn env_doc(e: &crd::Environment, pushed: &HashSet<String>) -> Environment {
 #[derive(serde::Deserialize)]
 pub(crate) struct NewEnvironment {
     name: String,
-    region: String,
+    /// Required unless `snapshot_id` is set (then the snapshot's volume names it).
+    #[serde(default)]
+    region: Option<String>,
+    /// Grow the environment from this snapshot of the caller's, also one of a deleted
+    /// environment. `services` then default to the ones the snapshot froze.
+    #[serde(default)]
+    snapshot_id: Option<String>,
     #[serde(default)]
     services: Vec<Service>,
     /// A team slug — makes this a team-owned environment, run on the team's bound node.
     /// `None`/equal to the caller means an ordinary personal environment.
     #[serde(default)]
     owner: Option<String>,
-    /// An environment's subvolume holds every service's data. Defaults to the same 20 GB the web
-    /// app sends for a workspace.
-    #[serde(default = "default_env_quota")]
-    quota_gb: u64,
+    /// An environment's subvolume holds every service's data. Absent: the 20 GB default, or with
+    /// `snapshot_id` the snapshot's frozen quota first.
+    #[serde(default)]
+    quota_gb: Option<u64>,
 }
 
-fn default_env_quota() -> u64 {
+pub(super) fn default_env_quota() -> u64 {
     crd::DEFAULT_ENV_QUOTA_GB
 }
 
@@ -98,7 +106,7 @@ fn default_env_quota() -> u64 {
 /// accept caller-authored ones (`clone_env` copies an already-validated doc), so a mount that gets
 /// past here is treated as trusted by a root agent from then on — and a name that gets past here
 /// is what the controller applies, every requeue, forever.
-fn check_services(services: &[Service]) -> Result<(), Response> {
+pub(super) fn check_services(services: &[Service]) -> Result<(), Response> {
     if let Some(s) = services.iter().find(|s| !crate::model::name_shape(&s.name)) {
         return Err((StatusCode::BAD_REQUEST, format!("service name {:?} {}", s.name, crate::model::SERVICE_NAME_RULE)).into_response());
     }
@@ -162,7 +170,7 @@ pub(crate) async fn patch_env_services(
 }
 
 /// The one place an `Environment` is written; `create_workspace`'s twin.
-async fn create_environment(
+pub(super) async fn create_environment(
     s: &Arc<ApiState>,
     c: &kube::Client,
     id: &str,
@@ -190,15 +198,29 @@ pub(crate) async fn create_env(
     Json(mut body): Json<NewEnvironment>,
 ) -> Result<Response, Response> {
     let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
+    if let Some(snapshot_id) = body.snapshot_id {
+        let from = restore::FromSnapshot {
+            name: body.name,
+            snapshot_id,
+            owner: body.owner,
+            services: Some(body.services),
+            region: body.region,
+            quota_gb: body.quota_gb,
+        };
+        return restore::clone_from_snapshot(&s, &caller_id, None, from).await;
+    }
+    let Some(region) = body.region else {
+        return Err((StatusCode::BAD_REQUEST, "region is required").into_response());
+    };
     // Mounts name volumes (folders inside the env's own subvolume), not workspaces. The name is
     // joined onto the env's subvolume by a root agent, so it is a security boundary, not a
     // formality — see `validate_mount`. Checked before anything is written, deliberately.
     check_services(&body.services)?;
     check_name(&body.name)?;
-    check_region(&s, &body.region).await?;
+    check_region(&s, &region).await?;
     let owner = resolve_new_owner(&s, &caller_id, body.owner).await?;
     let c = kube(&s)?;
-    let quota_gb = clamp_quota(&s, body.quota_gb);
+    let quota_gb = clamp_quota(&s, body.quota_gb.unwrap_or_else(default_env_quota));
     guard_alloc(&s, &owner, owner != caller_id.name, &environment_cost(body.services.len())).await?;
     super::image_pin::pin_images(&s, &owner, &mut body.services).await;
     let id = rid("env");
@@ -209,145 +231,9 @@ pub(crate) async fn create_env(
         crd::EnvironmentSpec {
             owner,
             name: body.name,
-            region: body.region,
+            region,
             services: body.services,
             storage: Some(crd::WorkspaceStorage { quota_gb, source: None }),
-            desired_state: DesiredState::Running,
-            restore: None,
-            intercepts: Vec::new(),
-            system: None,
-        },
-    )
-    .await?;
-    Ok((StatusCode::ACCEPTED, Json(env_doc(&e, &HashSet::new()))).into_response())
-}
-
-#[derive(serde::Deserialize)]
-pub(crate) struct RestoreEnvBody {
-    name: String,
-    snapshot_id: String,
-    /// A team slug, resolved exactly as `NewEnvironment.owner` is — restoring a team's snapshot
-    /// must produce a TEAM environment, or the restored copy is invisible to everyone but the
-    /// person who clicked.
-    #[serde(default)]
-    owner: Option<String>,
-    /// Validated exactly as `create_env`'s are — `check_services` is the trust boundary for mounts
-    /// and a restore is just as much a caller-authored service list as a create is. Absent means
-    /// "the services the snapshot froze", and so does an explicit `[]`: an environment always has
-    /// services, so an empty list is not a way to ask for the data with nothing running (a
-    /// snapshot that froze none is a 400).
-    #[serde(default)]
-    services: Option<Vec<Service>>,
-    /// The region to RUN in. Where the snapshot's bytes live is the record's business, not this
-    /// field's — that goes on the volume source.
-    #[serde(default)]
-    region: Option<String>,
-    /// Absent means the snapshot's frozen quota, then the standard default.
-    #[serde(default)]
-    quota_gb: Option<u64>,
-}
-
-/// New environment grafted onto an explicit past snapshot — `restore_ws`'s twin, resolving the
-/// snapshot the same way (server-tier history, caller/team scoping) and differing only in which
-/// kind of object it writes. The agent needs no new path: `resolve_volume` already materializes a
-/// `cloneOf { commit }` source for an Environment.
-///
-/// The services default to what the snapshot froze beside the bytes (`SnapshotState`), because an
-/// environment's data without its services is not the environment. A non-empty body list overrides
-/// it; an empty one means the same as none. An environment always has services.
-pub(crate) async fn restore_env(
-    State(s): State<Arc<ApiState>>,
-    headers: axum::http::HeaderMap,
-    method: axum::http::Method,
-    uri: axum::extract::OriginalUri,
-    Json(body): Json<RestoreEnvBody>,
-) -> Result<Response, Response> {
-    let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
-    // A caller-authored list is refused before anything is read or written, as it always was; the
-    // resolved list is checked again below, because it may instead come from the snapshot.
-    if let Some(svcs) = &body.services {
-        check_services(svcs)?;
-    }
-    // Named before anything is written, like `create_env`'s: an environment with no name is a row
-    // nobody can tell apart from another.
-    check_name(&body.name)?;
-    // The record's own region needs no check — it was checked when the environment was created,
-    // and it is the one region guaranteed to hold these bytes. A caller's choice is checked like
-    // a create's.
-    if let Some(r) = &body.region {
-        check_region(&s, r).await?;
-    }
-    // Restore-to-new is a clone at a named snapshot under the snapshot model — see
-    // `restore_ws`'s matching comment. `find_snapshot` is the ownership
-    // check: CR exists, Ready, and the caller may read `spec.owner`.
-    let snap = find_snapshot(&s, &caller_id, None, &body.snapshot_id).await?;
-    let (volume, src_owner) = (snap.spec.volume.clone(), snap.spec.owner.clone());
-    // Twin of restore_ws's guard: a workspace's frozen state under an environment restore would
-    // mount nothing and silently ignore the image/packages it froze. `None` stays "absent means
-    // old". Checked before any other lookup, right after the fetch, same reasoning as restore_ws.
-    let frozen = match &snap.spec.state {
-        Some(crd::SnapshotState::Environment { services, quota_gb }) => Some((services.clone(), *quota_gb)),
-        Some(crd::SnapshotState::Workspace { .. }) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "this snapshot was cut from a workspace; use POST /v1/workspaces/restore",
-            )
-                .into_response())
-        }
-        None => None,
-    };
-    // Defaults to the label the snapshot was FOUND under, not the caller: restoring a team's
-    // environment produces a team environment without the client having to say so. Any OTHER
-    // owner is refused even when the caller is a member of it: a snapshot found under team A is
-    // A's data, and a restore into team B would carry it past A's membership boundary to everyone
-    // in B. The caller's own account is the one legitimate elsewhere — their own copy.
-    if body.owner.as_deref().is_some_and(|o| o != src_owner && o != caller_id.name) {
-        return Err((StatusCode::FORBIDDEN, "a snapshot restores under its own owner, or under you").into_response());
-    }
-    let owner = resolve_new_owner(&s, &caller_id, body.owner.or(Some(src_owner.clone()))).await?;
-    // The request, then what the snapshot froze, then nothing. A frozen list is DATA like any
-    // other — `check_services` runs on whichever source won, because it is the trust boundary for
-    // mounts and a hand-edited `state` is no more trusted than a request body.
-    // An environment always has services: an empty body list is "use the snapshot's", never
-    // "restore the data with nothing running" — the owner ruled the latter out on 2026-09-03.
-    let mut services = body
-        .services
-        .clone()
-        .filter(|l| !l.is_empty())
-        .or_else(|| frozen.as_ref().map(|f| f.0.clone()))
-        .unwrap_or_default();
-    if services.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "an environment needs at least one service; this snapshot froze none, so pass `services`").into_response());
-    }
-    check_services(&services)?;
-    let quota = match (body.quota_gb, &frozen) {
-        (Some(q), _) => clamp_quota(&s, q),
-        (None, Some(f)) => clamp_quota(&s, f.1),
-        (None, None) => default_env_quota(),
-    };
-    let c = kube(&s)?;
-    guard_alloc(&s, &owner, owner != caller_id.name, &environment_cost(services.len())).await?;
-    super::image_pin::pin_images(&s, &owner, &mut services).await;
-    // The source environment may be long gone; the Volume holding the bytes still names its region.
-    let region = match body.region {
-        Some(r) => r,
-        None => volume_region(c, &volume).await.unwrap_or_else(|| "default".to_string()),
-    };
-    let id = rid("env");
-    let e = create_environment(
-        &s,
-        c,
-        &id,
-        crd::EnvironmentSpec {
-            owner,
-            name: body.name,
-            // No per-snapshot region under the snapshot model (see `restore_ws`'s matching comment).
-            region,
-            services,
-            storage: Some(crd::WorkspaceStorage {
-                quota_gb: quota,
-                source: Some(VolumeSource::CloneOf { volume, commit: Some(body.snapshot_id) }),
-            }),
             desired_state: DesiredState::Running,
             restore: None,
             intercepts: Vec::new(),
@@ -591,128 +477,6 @@ pub(crate) async fn delete_env(
     Ok((StatusCode::ACCEPTED, Json(body)).into_response())
 }
 
-/// Env's local-copy route. Names no node, for the same reason `clone_ws` does not, and the
-/// source's already-validated services carry over untouched.
-pub(crate) async fn clone_env(
-    State(s): State<Arc<ApiState>>,
-    headers: axum::http::HeaderMap,
-    method: axum::http::Method,
-    uri: axum::extract::OriginalUri,
-    Named(id): Named,
-    Json(body): Json<CloneBody>,
-) -> Result<Response, Response> {
-    let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
-    let src = find_env(&s, &caller_id, &id).await?;
-    let c = kube(&s)?;
-    let new_id = rid("env");
-    let volume = env_volume(&src).ok_or_else(not_ready)?.to_string();
-    let quota = storage_quota(c, &src.spec.storage, &volume).await;
-    // An environment clone COPIES bytes from the source's own live subvolume on the node that
-    // holds it (`clone_local_ids`). An interrupted source's node is down, so there is nothing to
-    // copy from and the clone would sit `Creating` forever — refused here, before anything is
-    // created, rather than left as a workspace-shaped promise this path cannot keep. A workspace
-    // clone of an interrupted source IS allowed: it grafts onto a replicated sync point instead.
-    if src.status.as_ref().is_some_and(|st| interrupted(&st.conditions)) {
-        return Err((
-            StatusCode::CONFLICT,
-            "the source environment is interrupted: its node is down, and an environment is copied from that node; cloning it waits for the node to return",
-        )
-            .into_response());
-    }
-    // No cut here, unlike `clone_ws`: the copy is taken from the live subvolume, so a snapshot
-    // would be a CR nothing reads that retention sweeps a minute later. That is also why the
-    // response carries no `based_on` — there is no cut this clone is based ON.
-    //
-    // ponytail: the ceiling is that an environment clone is LOCAL-ONLY. The upgrade is the
-    // workspace's shared-worktree path (a `clone-{env}-{hex}` cut, `commit: Some(_)`, and the
-    // `SnapshotPending` guard in this controller that `resolve_volume` would then need).
-    //
-    // `find_env` above admits a superadmin claim to reach any owner's environment (get, allowed);
-    // the clone is the allocation, and that claim must not spend a team's quota it is not a
-    // member of.
-    if !may_allocate_for(&s, &caller_id, &src.spec.owner).await {
-        return Err(denial(&s, &caller_id, &src.spec.owner, not_found()).await);
-    }
-    guard_alloc(&s, &src.spec.owner, src.spec.owner != caller_id.name, &environment_cost(src.spec.services.len())).await?;
-    let e = create_environment(
-        &s,
-        c,
-        &new_id,
-        crd::EnvironmentSpec {
-            owner: src.spec.owner.clone(),
-            name: body.name,
-            region: src.spec.region.clone(),
-            services: src.spec.services.clone(),
-            storage: Some(crd::WorkspaceStorage {
-                quota_gb: quota,
-                // `None`: a fresh child Volume filled by a local copy, never a second worktree of
-                // the source's volume. See the comment above `create_environment`.
-                source: Some(VolumeSource::CloneOf { volume, commit: None }),
-            }),
-            desired_state: DesiredState::Running,
-            restore: None,
-            intercepts: Vec::new(),
-            system: None,
-        },
-    )
-    .await?;
-    Ok((StatusCode::ACCEPTED, Json(env_doc(&e, &HashSet::new()))).into_response())
-}
-
-// ── push ─────────────────────────────────────────────────────────────────
-
-#[derive(serde::Deserialize)]
-pub(crate) struct RestoreInPlaceBody {
-    snapshot_id: String,
-}
-
-/// Put a past snapshot back into THIS environment's own disk, rather than into a new one.
-///
-/// The API writes a wish and answers; the controllers do the work (scale the services down, swap
-/// the subvolume, scale back up), which is why this is a 202 with no result to read. Everything
-/// that could go wrong lives in the Environment's `Restoring` condition and the Volume's `Ready`.
-///
-/// The snapshot is resolved exactly as `restore_env`'s is — same `find_snapshot`, same caller/team
-/// scoping — so "restore in place" can reach precisely the snapshots "restore into a new
-/// environment" can, and a 404 still means "no such snapshot" and "not yours" alike.
-pub(crate) async fn restore_env_in_place(
-    State(s): State<Arc<ApiState>>,
-    headers: axum::http::HeaderMap,
-    method: axum::http::Method,
-    uri: axum::extract::OriginalUri,
-    Named(id): Named,
-    Json(body): Json<RestoreInPlaceBody>,
-) -> Result<Response, Response> {
-    let caller_id = caller_for(&s, &headers, &method, uri.path()).await?;
-    let e = find_env(&s, &caller_id, &id).await?;
-    let id = kube::ResourceExt::name_any(&e);
-    let volume = env_volume(&e).ok_or_else(not_ready)?.to_string();
-    // The wish names a `Snapshot` CR of this environment's OWN volume — validated Ready and
-    // same-volume BEFORE the wish is written, so a bad id is a fast 4xx here rather than a silent
-    // hang in `restore_gate` (which reads the wish uncritically, per its own doc comment).
-    let snap = find_snapshot(&s, &caller_id, Some(&volume), &body.snapshot_id).await?;
-    let (src_owner, volume) = (snap.spec.owner, snap.spec.volume);
-    let wish = crd::RestoreWish {
-        snapshot_id: body.snapshot_id,
-        volume,
-        owner: Some(src_owner),
-        region: None,
-        // What makes a repeat of the SAME snapshot a new wish: the controllers compare the id
-        // against what is already live, so without this a second attempt after a failure would
-        // look like a restore that had already happened.
-        requested_at: chrono::Utc::now().to_rfc3339(),
-    };
-    // A merge patch: this touches one field of a spec the caller never sent the rest of.
-    let api: Api<crd::Environment> = Api::all(kube(&s)?.clone());
-    api.patch(&id, &PatchParams::default(), &Patch::Merge(&serde_json::json!({"spec": {"restore": wish}})))
-        .await
-        .map_err(kube_err)?;
-    let mut doc = env_doc(&e, &HashSet::new());
-    // The wish is written, so the answer says so: the reconciler's own condition takes a moment to
-    // appear, and a body that still reads "running" makes the click look like it did nothing.
-    doc.restoring = Some("Requested".into());
-    Ok((StatusCode::ACCEPTED, Json(doc)).into_response())
-}
 
 // ── intercepts ────────────────────────────────────────────────────────────────
 

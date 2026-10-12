@@ -150,6 +150,18 @@ pub(crate) fn sts_list(items: Vec<serde_json::Value>) -> serde_json::Value {
 }
 
 
+/// The listing a drain reads to find what is RUNNING (`drain_services`): one environment service
+/// set, `db`, as the controller renders it.
+pub(crate) fn db_sts_list() -> Route {
+    kloudlite_workspaces::kube_test::get(
+        "/apis/apps/v1/namespaces/env-1/statefulsets",
+        sts_list(vec![serde_json::json!({
+            "apiVersion": "apps/v1", "kind": "StatefulSet",
+            "metadata": {"name": "db", "namespace": "env-1", "labels": {"kloudlite.io/kind": "environment"}},
+        })]),
+    )
+}
+
 pub(crate) fn secs_ago(n: i64) -> String {
     k8s_openapi::jiff::Timestamp::from_second(k8s_openapi::jiff::Timestamp::now().as_second() - n)
         .unwrap()

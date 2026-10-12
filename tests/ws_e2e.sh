@@ -1206,12 +1206,13 @@ done
 [ "$(echo "$ENV_ROW" | field snapshots)" -ge 1 ] || fail "detached volume $ENV_VOLUME lists no snapshots: $ENV_ROW"
 [ "$(echo "$ENV_ROW" | field kind)" = "environment" ] || fail "the detached row is not an environment: $ENV_ROW"
 
-# No `services` in the body: an environment restored from a snapshot runs what the snapshot froze.
-log "durable snapshots (environment): restoring runs the snapshot's own services"
-ENV_RESTORE_JSON=$(curl -fsS -X POST "$BASE/v1/environments/restore" -H "Authorization: Bearer $USER_TOKEN" \
+# No `services` in the body: an environment grown from a snapshot runs what the snapshot froze.
+# Create takes `snapshot_id` so the snapshots of a DELETED environment are still a way in.
+log "durable snapshots (environment): creating from the snapshot runs the snapshot's own services"
+ENV_RESTORE_JSON=$(curl -fsS -X POST "$BASE/v1/environments" -H "Authorization: Bearer $USER_TOKEN" \
   -H 'Content-Type: application/json' -d '{"name":"e2e-env-restore","snapshot_id":"'"$ENV_SNAP"'"}')
 ENV_ID=$(echo "$ENV_RESTORE_JSON" | field id)
-[ -n "$ENV_ID" ] || fail "no id in environment restore response: $ENV_RESTORE_JSON"
+[ -n "$ENV_ID" ] || fail "no id in environment create response: $ENV_RESTORE_JSON"
 wait_env_ready "$ENV_ID"
 [ "$(kubectl get environment "$ENV_ID" -o jsonpath='{.spec.services[0].image}')" = "$ENV_FROZEN_IMAGE" ] \
   || fail "the restored environment's services did not come from the snapshot"

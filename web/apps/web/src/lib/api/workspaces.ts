@@ -223,14 +223,15 @@ export function pushEnvironment(token: string, id: string, message?: string) {
   });
 }
 
-/** Put a past snapshot back into THIS environment's own volume, rather than into a new one.
- *  202 with nothing to read: the controllers scale the services down, swap the subvolume and
- *  bring them back, and the environment's own state is where that progress shows. */
-export function restoreEnvironmentInPlace(token: string, id: string, snapshotId: string) {
-  return call<ApiEnvironment>(`/v1/environments/${encodeURIComponent(id)}/restore-in-place`, {
+/** Put THIS environment back to one of its snapshots: its services and its data. 202 with the
+ *  plan (`rolled_back`, `discarded`, `added`, `removed`); the controllers scale the services down,
+ *  swap the subvolume and bring them back. A 409 body names the `lost` services whose data the
+ *  snapshot does not have; `discard` names the ones the person agreed to lose. */
+export function restoreEnvironment(token: string, id: string, snapshotId: string, discard?: string[]) {
+  return call<unknown>(`/v1/environments/${encodeURIComponent(id)}/restore`, {
     method: "POST",
     token,
-    body: JSON.stringify({ snapshot_id: snapshotId }),
+    body: JSON.stringify({ snapshot_id: snapshotId, ...(discard?.length ? { discard } : {}) }),
   });
 }
 
@@ -295,11 +296,12 @@ export function restoreWorkspace(
   });
 }
 
-/** New environment grafted onto a past snapshot — `restore_env`'s twin of `restoreWorkspace`.
- *  A snapshot freezes the service list beside the data, so omitting `services` restores what was
- *  pushed; an empty list means the same on the server. Only a non-empty list overrides. */
-export function restoreEnvironment(token: string, name: string, snapshotId: string, services?: ApiService[]) {
-  return call<ApiEnvironment>(`/v1/environments/restore`, {
+/** A NEW environment made from one of the caller's snapshots, also one of a deleted environment
+ *  (create with `snapshot_id`, no source environment needed). A snapshot freezes the service list
+ *  beside the data, so omitting `services` runs what was pushed; an empty list means the same on
+ *  the server. Only a non-empty list overrides. */
+export function cloneEnvironmentFromSnapshot(token: string, name: string, snapshotId: string, services?: ApiService[]) {
+  return call<ApiEnvironment>("/v1/environments", {
     method: "POST",
     token,
     body: JSON.stringify({ name, snapshot_id: snapshotId, ...(services ? { services } : {}) }),

@@ -566,8 +566,8 @@ async fn snapshots_on_volume(s: &ApiState, name: &str) -> Result<Vec<crd::Snapsh
 /// onto it, never which of those it was — "no such snapshot" and "not yours" collapse into one
 /// 404, same as everywhere else in this API.
 ///
-/// `Some(volume)` is restore-in-place, which already knows the volume and must stay on it;
-/// `None` is restore-to-new (`restore_ws`/`restore_env`), where the snapshot id is all the client
+/// `Some(volume)` is an environment restore or clone, which already knows the volume and must stay on it;
+/// `None` is a workspace restore (`restore_ws`), where the snapshot id is all the client
 /// has and `spec.volume` is exactly what this resolves.
 pub(crate) async fn find_snapshot(
     s: &ApiState,
