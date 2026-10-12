@@ -19,6 +19,7 @@ import {
   readSettings,
   offered,
   piBtw,
+  piRoute,
   resolveModel,
   writeSettings,
   type ModelRef,
@@ -225,6 +226,9 @@ function derive(src: SessionHandle, over: Partial<SessionHandle>): SessionHandle
 }
 
 /** Context now against the window pi compacts at; undefined when pi has no model/window. */
+/** A busy session's routing fork gets this long before the message is just queued. */
+export const ROUTE_TIMEOUT_MS = 20_000;
+
 const contextOf = (agent: any): SessionState["context"] => {
   const u = agent.getContextUsage?.();
   return u && { tokens: u.tokens, window: u.contextWindow };
@@ -313,6 +317,10 @@ export function baseHandle(
     }
     if (event.type === "agent_end") hooks.onEnd();
   });
+  const prompt: SessionHandle["prompt"] = async (text, o) => {
+    const body = hooks.seed?.() ?? "";
+    return agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${body}${text}` : `${body}${text}`, o);
+  };
   return {
     get messages() {
       return agent.messages.map((m: any) => {
@@ -331,13 +339,30 @@ export function baseHandle(
       return state;
     },
     // the seed of a fresh restart rides on the first prompt only (hooks.seed hands it out once)
-    prompt: async (text, o) => {
-      const body = hooks.seed?.() ?? "";
-      return agent.prompt(agent.messages.length === 0 ? `${roleCard(key)}\n\n${body}${text}` : `${body}${text}`, o);
-    },
+    prompt,
     notice: (text) => emit({ type: "session_notice", text }),
     steer: async (text, images) => agent.steer(text, images),
     followUp: async (text, images) => agent.followUp(text, images),
+    route: async (text, images) => {
+      const busy = () => hooks.busy.has(key);
+      const go = async (kind: "steer" | "followUp" | "prompt", reason: string) => {
+        await (kind === "prompt" ? prompt(text, { images }) : agent[kind](text, images));
+        return { kind, reason };
+      };
+      if (!busy()) return go("prompt", "");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const r = await Promise.race([
+          piRoute(agent, text),
+          new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error("route timed out")), ROUTE_TIMEOUT_MS))),
+        ]);
+        return go(busy() ? (r.steer ? "steer" : "followUp") : "prompt", r.reason);
+      } catch {
+        return go(busy() ? "followUp" : "prompt", "fork failed, queued");
+      } finally {
+        clearTimeout(timer);
+      }
+    },
     clearQueue: async () => void agent.clearQueue(),
     btw: (q) => piBtw(agent, q),
     // pi reports every compact() failure (too small, cancelled, model error) in compaction_end before it
@@ -598,6 +623,7 @@ export class LocalBackend implements Backend {
           },
           steer: (text: string, images?: Parameters<SessionHandle["steer"]>[1]) => (this.#words(key).add(text), v.steer(text, images)),
           followUp: (text: string, images?: Parameters<SessionHandle["followUp"]>[1]) => (this.#words(key).add(text), v.followUp(text, images)),
+          route: (text: string, images?: Parameters<SessionHandle["route"]>[1]) => (this.#words(key).add(text), v.route(text, images)),
         }
       : {};
     return derive(v, {

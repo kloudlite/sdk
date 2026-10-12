@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { btwPrompt, piBtw } from "./btw.ts";
+import { btwPrompt, piBtw, piRoute, ROUTE_SYSTEM } from "./btw.ts";
 
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 });
 const assistant = (text: string) => ({
@@ -54,4 +54,17 @@ test("piBtw: an error stop reason throws; empty text is a placeholder; no model 
   const f = fakePi({});
   (f.session as any).model = undefined;
   await expect(piBtw(f.session, "q")).rejects.toThrow("No model selected");
+});
+
+test("piRoute parses STEER and QUEUE, rejects garbage, and sends <new_message>", async () => {
+  const run = async (text: string) => {
+    const f = fakePi({ stopReason: "stop", content: [{ type: "text", text }] });
+    return { r: await piRoute(f.session, "do it"), f };
+  };
+  const a = await run("STEER: fixes the bug");
+  expect(a.r).toEqual({ steer: true, reason: "fixes the bug" });
+  expect(a.f.seen[0][1].messages[0].content[0].text).toContain("<new_message>\ndo it\n</new_message>");
+  expect(a.f.seen[0][1].systemPrompt).toBe(ROUTE_SYSTEM);
+  expect((await run("\nqueue - later")).r).toEqual({ steer: false, reason: "- later" });
+  await expect(run("maybe")).rejects.toThrow("unparsable route: maybe");
 });

@@ -170,6 +170,12 @@ export type SessionHandle = {
   prompt(text: string, o?: { images?: Image[] }): Promise<void>;
   steer(text: string, images?: Image[]): Promise<void>;
   followUp(text: string, images?: Image[]): Promise<void>;
+  /**
+   * A message for a session that may be busy. Idle: prompt. Busy: a throwaway fork of the session (one
+   * stateless side call, never recorded) answers STEER or QUEUE; a failed, slow (20 s) or unparsable fork
+   * queues. If the turn ended while the fork ran, prompt. `kind` is what was done.
+   */
+  route(text: string, images?: Image[]): Promise<{ kind: "steer" | "followUp" | "prompt"; reason: string }>;
   clearQueue(): Promise<void>;
   /** Side question answered from the conversation so far; never recorded anywhere. */
   btw(question: string): Promise<string>;

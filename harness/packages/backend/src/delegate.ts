@@ -15,7 +15,7 @@
 //! the ask it answers (`reply`).
 //! Delegated sessions ask through `deps.permit`, the daemon's gate: the card is raised for the caller's key on every connected TUI.
 //! The answer is the last assistant text seen before `agent_end`, tracked from the events. It only counts after
-//! the asked user message was seen (a busy session ends its CURRENT run before the followUp runs).
+//! the asked user message was seen (a busy target's message is routed: steered into its run or queued) (a busy session ends its CURRENT run before a queued message runs).
 //! A `workspace_ask` is saved to disk (asks.ts) while it is in flight and resent after a bench
 //! restart (`resumeAsks`), at most twice.
 import type { Cards } from "./cards.ts";
@@ -95,7 +95,8 @@ const textOf = (m: any): string =>
 
 /** Send `text`, then resolve at the `agent_end` of the run that answered IT. Armed only by the user
  * message carrying `text`: a busy session emits `agent_end` for its CURRENT run first and only then
- * runs a followUp, so an earlier end would hand back the wrong turn's text. A disposed session
+ * runs a queued message, so an earlier end would hand back the wrong turn's text. The message may instead be
+ * steered into the current run (`route` decides); either way the user message carrying `text` appears first. A disposed session
  * (`session_closed`) never ends a turn, so it resolves too. */
 function answer(h: SessionHandle, text: string, send: () => Promise<void>): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -251,7 +252,7 @@ function askOpts(deps: DelegateDeps, callerKey: string, a: PendingAsk, key: stri
 }
 
 /** Hand `reply` to the caller's session: a view of the live one, or (after a bench restart, when
- * nobody has it open) a freshly opened one. Prompt when idle, followUp when busy; main can start a
+ * nobody has it open) a freshly opened one. Prompt when idle, `route` (steer or queue) when busy; main can start a
  * turn between the check and the call, so a refused prompt retries as a followUp instead of losing
  * the reply. Not awaited: a prompt lasts the caller's whole turn. */
 /** The caller's model and settings as they are NOW (the daemon's state is the truth), else as it opened. */
@@ -270,7 +271,7 @@ async function deliver(
 ): Promise<void> {
   try {
     const c = await deps.open(to, { initial: { model: o.model, thinkingLevel: o.thinkingLevel, autoCompact: o.autoCompact, codemode: o.codemode }, tools: [] });
-    void (deps.busy.has(to) ? c.followUp(reply) : c.prompt(reply))
+    void (deps.busy.has(to) ? c.route(reply) : c.prompt(reply))
       .catch(() => c.followUp(reply))
       .catch((e) => console.error("reply lost", to, from, e))
       .finally(() => void c.dispose());
@@ -298,7 +299,7 @@ export async function dispatchAsk(deps: DelegateDeps, a: PendingAsk): Promise<vo
     const s = h;
     // the person typed these into the caller, not here; without them a quote of the person is "not in your messages"
     deps.lend?.(a.key, a.words ?? []);
-    reply = `[from ${a.key}] ${await answer(s, a.text, () => (deps.busy.has(a.key) ? s.followUp(a.text) : s.prompt(a.text)))}`;
+    reply = `[from ${a.key}] ${await answer(s, a.text, () => (deps.busy.has(a.key) ? s.route(a.text).then(() => {}) : s.prompt(a.text)))}`;
   } catch (err) {
     reply = `[from ${a.key}] failed: ${err instanceof Error ? err.message : String(err)}`;
   }
