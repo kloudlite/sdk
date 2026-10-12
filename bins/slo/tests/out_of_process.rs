@@ -334,6 +334,7 @@ fn child_command(suite: &str, url: &str, kubeconfig: &Path) -> std::process::Com
         .env("KLOUDLITE_WEB_URL", url)
         .env("KLOUDLITE_URL", url)
         .env("KLOUDLITE_REGISTRY", "127.0.0.1:1")
+        .env("KLOUDLITE_HUB_URL", "http://127.0.0.1:1")
         .env("KLOUDLITE_SSH_HOST", "127.0.0.1")
         .env("KLOUDLITE_REGION", "test")
         .env("KLOUDLITE_JWT_SECRET", "0123456789abcdef0123456789abcdef");

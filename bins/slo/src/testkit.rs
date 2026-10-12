@@ -19,6 +19,7 @@ pub async fn ctx() -> Ctx {
         web_url: "http://127.0.0.1:1".into(),
         git_url: "http://127.0.0.1:1".into(),
         registry: "127.0.0.1:1".into(),
+        hub_url: "http://127.0.0.1:1".into(),
         ssh_host: "127.0.0.1".into(),
         region: "test".into(),
         hosts: vec![],

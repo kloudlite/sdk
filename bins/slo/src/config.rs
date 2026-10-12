@@ -17,6 +17,8 @@ pub struct Config {
     pub web_url: String,
     pub git_url: String,
     pub registry: String,
+    /// The model hub's public base URL (`https://hub.…`), the listener `huggingface_hub` talks to.
+    pub hub_url: String,
     pub ssh_host: String,
     pub region: String,
     /// Extra hostnames stage 10 resolves and checks a certificate for, beyond the ones above.
@@ -106,6 +108,7 @@ impl Config {
             web_url: req("KLOUDLITE_WEB_URL")?,
             git_url: req("KLOUDLITE_URL")?,
             registry: req("KLOUDLITE_REGISTRY")?,
+            hub_url: req("KLOUDLITE_HUB_URL")?,
             ssh_host,
             region: req("KLOUDLITE_REGION")?,
             hosts: opt("KLOUDLITE_SLO_HOSTS", "")
