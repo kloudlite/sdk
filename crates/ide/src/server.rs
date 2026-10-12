@@ -1,4 +1,5 @@
 //! The HTTP surface: `/healthz`, `/tools`, `/fs`, and the two streams. Loopback only — see the crate doc.
+use crate::activity::Activity;
 use crate::procs::Procs;
 use crate::trees::{TreeCtx, Trees};
 use crate::tools::{container::Container, exec::Exec, files::Files, graft::GraftTools, watch::WatchTools, Registry};
@@ -15,6 +16,8 @@ pub struct App {
     /// Every tree this workspace serves, built lazily. There is no separate `graft` handle on the
     /// App any more: a graph belongs to a tree, and `main`'s is the one on `main`'s ctx.
     pub trees: Arc<Trees>,
+    /// Session activity, written to `~/.kl/activity` for the agent to read (spec 2026-10-12).
+    pub activity: Arc<Activity>,
 }
 
 impl App {
@@ -30,7 +33,8 @@ impl App {
             Box::new(GraftTools { trees: trees.clone(), procs: procs.clone() }),
             Box::new(Container { trees: trees.clone() }),
         ]);
-        App { cfg, registry, procs, watches, trees }
+        let activity = Arc::new(Activity::new(cfg.home.join(".kl/activity")));
+        App { cfg, registry, procs, watches, trees, activity }
     }
 
     /// The tree a request names, or the main one. The accessor every route goes through, so a
@@ -55,6 +59,7 @@ pub fn router(app: Arc<App>) -> Router {
     });
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/hold", post(hold))
         .route("/tools", get(crate::api::list))
         .route("/tools/{name}", post(crate::api::call))
         .route("/fs/tree", get(crate::fs::tree))
@@ -81,10 +86,18 @@ pub fn router(app: Arc<App>) -> Router {
         // them.
         // Below nothing else: every route but `/healthz` needs the credential, including the two
         // WebSocket upgrades, which carry headers like any other request.
+        // Activity sits INSIDE auth (auth is outermost), so an unauthenticated request never counts.
+        .layer(axum::middleware::from_fn_with_state(app.activity.clone(), crate::activity::track))
         .layer(axum::middleware::from_fn_with_state(tokens, crate::auth::require))
         .layer(axum::middleware::from_fn(kloudlite_trace::traced))
         .layer(DefaultBodyLimit::max(crate::tools::files::MAX_BYTES as usize + (1 << 20)))
         .with_state(app)
+}
+
+/// A caller that holds the workspace awake without a connection (a long local build, say).
+async fn hold(State(app): State<Arc<App>>) -> axum::http::StatusCode {
+    app.activity.touch();
+    axum::http::StatusCode::NO_CONTENT
 }
 
 async fn healthz(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
@@ -104,6 +117,8 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     let bind = cfg.bind;
     let app = Arc::new(App::new(cfg));
     app.graft().start();
+    app.activity.touch_now();
+    tokio::spawn(app.activity.clone().beat(bind.port()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "ide.listening");
     axum::serve(listener, router(app)).await?;
@@ -140,6 +155,38 @@ mod tests {
     async fn send(app: &Arc<App>, req: axum::http::request::Builder, body: axum::body::Body) -> u16 {
         let req = req.header("traceparent", PARENT).header(kloudlite_trace::PROBE_HEADER, "1").header("authorization", format!("Bearer {TOKEN}")).body(body).unwrap();
         router(app.clone()).oneshot(req).await.unwrap().status().as_u16()
+    }
+
+    fn authed(b: axum::http::request::Builder) -> axum::http::request::Builder {
+        b.header("authorization", format!("Bearer {TOKEN}"))
+    }
+
+    #[tokio::test]
+    async fn watcher_and_healthz_do_not_touch() {
+        let (dir, app) = traced_app();
+        let f = app.cfg.home.join(".kl/activity");
+        let _ = std::fs::remove_file(&f);
+        let r = router(app.clone());
+        r.clone().oneshot(axum::http::Request::get("/healthz").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        r.clone().oneshot(authed(axum::http::Request::get("/fs/changes").header("x-kl-watch", "1")).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert!(!f.exists(), "neither touched the activity file");
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn tool_request_and_hold_touch() {
+        let (dir, app) = traced_app();
+        let f = app.cfg.home.join(".kl/activity");
+        let r = router(app.clone());
+        let _ = std::fs::remove_file(&f);
+        r.clone().oneshot(authed(axum::http::Request::get("/fs/changes")).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert!(f.exists(), "an ordinary request touches");
+        let (dir2, app2) = traced_app();
+        let f2 = app2.cfg.home.join(".kl/activity");
+        let _ = std::fs::remove_file(&f2);
+        router(app2).oneshot(authed(axum::http::Request::post("/hold")).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert!(f2.exists(), "/hold touches");
+        drop((dir, dir2));
     }
 
     #[tokio::test(flavor = "current_thread")]

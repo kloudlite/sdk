@@ -16,7 +16,8 @@
 //! bubblewrap argv every exec runs under), `fs/` (the workspace-state routes a UI renders from: tree, stat,
 //! file, git, changes, diff — read-only, conditional, not tools), `paths` (confinement to the home), `tools/` (one file per tool
 //! family), `procs` (detached processes and their ring buffers), `stream` (the two WebSocket
-//! streams), `graft` (the child and the freshness triggers).
+//! streams), `activity` (the `~/.kl/activity` mtime the agent idle-stops by), `graft` (the child and the freshness triggers).
+pub mod activity;
 pub mod api;
 pub mod auth;
 pub mod fs;
