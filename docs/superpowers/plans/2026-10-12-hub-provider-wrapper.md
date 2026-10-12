@@ -28,11 +28,11 @@
 
 ## Review Focus
 
-1. **A person's own Hugging Face token must never reach our hub.** If `HF_TOKEN` is set, or `hf auth login` stored a token, and `kloudlite` has no token of its own, the child must send no token. `kl hf` removes `HF_TOKEN` and sets `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`. Python passes `token=False`. Tests are in Tasks 3 and 4.
+1. **A person's own Hugging Face token must never reach our hub.** If `HF_TOKEN` is set, or `hf auth login` stored a token, and `kloudlite` has no token of its own, the call stays anonymous and sends no token (owner decision, 2026-10-12). `kl hf` removes `HF_TOKEN` and sets `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`. Python passes `token=False`. Verified in huggingface_hub 2.2.0 `utils/_headers.py::get_token_to_send`: `token is False` returns None, and `HF_HUB_DISABLE_IMPLICIT_TOKEN` returns None before the stored token is read. Tests are in Tasks 3 and 4.
 2. **A token file with a trailing newline**, which is how Secrets project, must be trimmed. An empty file is anonymous. Tests are in Tasks 3 and 4.
 3. **`KL_HUB_URL` with a trailing slash** (`https://hub.khost.dev/`) is trimmed, so `huggingface_hub` never builds `//api/...`. Tests are in Tasks 3 and 4.
-4. **`--provider` after the `hf` arguments** passes through to `hf` untouched. It does not select the provider. A test is in Task 3.
-5. **An anonymous-scope registry JWT presented to the hub** (`sub == ""`) is a 401. It is never treated as anonymous, unlike `/v2`. A test is in Task 1.
+4. **`--provider` after the `hf` arguments** is refused with an error that says to put it first (owner decision, 2026-10-12). Otherwise `kl hf download x --provider kloudlite` would quietly go to Hugging Face. A test is in Task 3.
+5. **An anonymous-scope registry JWT presented to the hub** (`sub == ""`) is a 401. It is never treated as anonymous, unlike `/v2` (owner decision, 2026-10-12). A test is in Task 1.
 
 ---
 
@@ -303,6 +303,7 @@ use std::io::ErrorKind;
 use std::process::Command;
 
 const NO_HF: &str = "hf not found. Add the package with `kl pkg add python3Packages.huggingface-hub`.";
+const LATE_PROVIDER: &str = "put --provider before the hf arguments: kl hf --provider kloudlite <hf arguments>";
 const NO_HUB: &str = "hub address is missing: KL_HUB_URL is not set (a workspace sets it; elsewhere, set it to the hub's URL)";
 
 /// What the `hf` child gets on top of this process's env. Never the token in argv or an error.
@@ -334,8 +335,18 @@ pub fn child_env(provider: &str, hub_url: Option<String>, token: Option<String>,
     }
 }
 
+/// A `--provider` among the hf arguments was meant for us; passing it on would send the call to
+/// the default hub without a word.
+pub fn check_args(args: &[String]) -> Result<(), String> {
+    match args.iter().any(|a| a == "--provider" || a.starts_with("--provider=")) {
+        true => Err(LATE_PROVIDER.to_string()),
+        false => Ok(()),
+    }
+}
+
 /// Runs `hf` and exits with its code.
 pub fn run(provider: &str, args: &[String]) -> Result<(), String> {
+    check_args(args)?;
     let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
     let token = std::env::var("KL_HUB_TOKEN")
         .ok()
@@ -400,6 +411,15 @@ mod tests {
         let err = child_env("hugginface", None, None, "/home/kl").unwrap_err();
         assert!(err.contains("huggingface") && err.contains("kloudlite"), "{err}");
     }
+
+    #[test]
+    fn a_late_provider_is_refused() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for late in [args(&["download", "x", "--provider", "kloudlite"]), args(&["download", "x", "--provider=kloudlite"])] {
+            assert!(check_args(&late).unwrap_err().contains("before the hf arguments"));
+        }
+        assert!(check_args(&args(&["download", "x", "--repo-type", "dataset"])).is_ok());
+    }
 }
 ```
 
@@ -407,7 +427,7 @@ mod tests {
 
 Add `mod hf;` to `main.rs` first so the module compiles.
 Run: `CARGO_TARGET_DIR=/Volumes/kdisk/target-master cargo test -p kl hf:: 2>&1 | tail -10`
-Expected: 5 tests FAIL (panicked at `not yet implemented`).
+Expected: 6 tests FAIL (panicked at `not yet implemented`; stub `check_args` with `todo!()` too).
 
 - [ ] **Step 3: Fill in the bodies as above, and wire up the CLI**
 
@@ -417,7 +437,7 @@ In `main.rs`, add after `Env` in `enum Cmd`:
     /// Hugging Face's `hf` CLI, against Hugging Face (default) or the kloudlite hub:
     /// `kl hf --provider kloudlite download acme/model`
     Hf {
-        /// huggingface or kloudlite. Put it before the hf arguments; everything after goes to hf.
+        /// huggingface or kloudlite. Put it before the hf arguments; a later one is refused.
         #[arg(long, default_value = "huggingface")]
         provider: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -431,11 +451,12 @@ Add to `mod tests` in `main.rs`:
 
 ```rust
     #[test]
-    fn hf_takes_provider_first_and_passes_the_rest_through() {
+    fn hf_takes_provider_first_and_leaves_a_late_one_in_args() {
         let Cmd::Hf { provider, args } = Cli::try_parse_from(["kl", "hf", "--provider", "kloudlite", "download", "acme/m", "--repo-type", "dataset"]).unwrap().cmd else { panic!() };
         assert_eq!(provider, "kloudlite");
         assert_eq!(args, ["download", "acme/m", "--repo-type", "dataset"]);
-        // After the hf arguments, `--provider` is hf's business, not ours.
+        // clap stops at the first positional, so a late `--provider` lands in args;
+        // `hf::check_args` then refuses it before hf runs.
         let Cmd::Hf { provider, args } = Cli::try_parse_from(["kl", "hf", "download", "x", "--provider", "kloudlite"]).unwrap().cmd else { panic!() };
         assert_eq!(provider, "huggingface");
         assert_eq!(args, ["download", "x", "--provider", "kloudlite"]);
@@ -445,7 +466,7 @@ Add to `mod tests` in `main.rs`:
 - [ ] **Step 4: Run the tests**
 
 Run: `CARGO_TARGET_DIR=/Volumes/kdisk/target-master cargo test -p kl 2>&1 | tail -5`
-Expected: all pass. With `trailing_var_arg`, clap stops parsing options at the first positional, so a later `--provider` lands in `args`; this is spec section 4.
+Expected: all pass.
 
 - [ ] **Step 5: Clippy, then commit**
 
