@@ -14,6 +14,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import type { Backend } from "./index.ts";
 import { serve } from "./serve.ts";
 import { Peer } from "./wire.ts";
+import { podHold, touched } from "@kloudlite-tui/tools";
 
 export const sockPath = () => process.env.KL_HOST_SOCK ?? join(homedir(), ".kl", "host.sock");
 
@@ -31,6 +32,10 @@ export function attach(backend: Backend) {
     conn.on("error", () => {});
   };
 }
+
+/** Workspaces used since the oldest running turn began: those turns may still need them. */
+export const holdTargets = (t: Map<string, number>, oldest: number | undefined): string[] =>
+  oldest === undefined ? [] : [...t].filter(([, ms]) => ms >= oldest).map(([ws]) => ws);
 
 export function host(backend: Backend, sock: string): Promise<Server> {
   rmSync(sock, { force: true }); // a crashed daemon leaves its socket file behind
@@ -89,6 +94,11 @@ if (import.meta.main) {
     }
   };
   beat();
-  setInterval(beat, 5000);
+  // ponytail: fixed 60 s hold beat (every 12th 5 s tick); the tool server idles out far slower
+  let ticks = 0;
+  setInterval(() => {
+    beat();
+    if (++ticks % 12 === 0 && b.busyCount > 0) for (const ws of holdTargets(touched, b.oldestTurnStart())) void podHold(ws);
+  }, 5000);
   await b.resumeAsks();
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { host, listenTcp, openConnections } from "./daemon.ts";
+import { holdTargets, host, listenTcp, openConnections } from "./daemon.ts";
 import { connect, RemoteBackend } from "./remote.ts";
 import { connect as netConnect } from "node:net";
 import { Peer } from "./wire.ts";
@@ -172,4 +172,9 @@ test("an open 7791 connection counts until it closes", async () => {
   await new Promise((r) => setTimeout(r, 50));
   expect(open()).toBe(0);
   server.close();
+});
+
+test("hold targets only workspaces touched since the oldest running turn", () => {
+  expect(holdTargets(new Map([["w1", 100], ["w2", 50]]), 80)).toEqual(["w1"]);
+  expect(holdTargets(new Map([["w1", 100]]), undefined)).toEqual([]);
 });

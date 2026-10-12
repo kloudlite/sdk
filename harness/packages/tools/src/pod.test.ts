@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { anyPodTools, podTools } from "./pod.ts";
+import { anyPodTools, podGet, podHold, podTools, touched } from "./pod.ts";
 
 const realFetch = globalThis.fetch;
 let log: { url: string; auth: string | null }[] = [];
@@ -95,6 +95,7 @@ test("anyPodTools: schemas from the sample, each call reaches the named workspac
     u.endsWith("/v1/workspaces/w1/tools") ? j({ address: "10.0.0.1:7788" })
     : u.endsWith("/v1/workspaces/w2/tools") ? j({ address: "10.0.0.2:7788" })
     : u.endsWith("/v1/workspaces/off/tools") ? j({ error: "workspace not ready" }, 409)
+    : u.endsWith("/v1/workspaces/off") ? j({ state: "stopped" })
     : u.endsWith(":7788/tools") ? j({ tools: [{ name: "read", description: "Read a file", schema: { type: "object", properties: { path: {} }, required: ["path"] } }] })
     : j({ at: u });
   const t = await anyPodTools("w1");
@@ -105,6 +106,42 @@ test("anyPodTools: schemas from the sample, each call reaches the named workspac
   expect(await read.run({ workspace: "w2", path: "a" })).toContain("http://10.0.0.2:7788/tools/read");
   const posted = log.filter((l) => l.url.endsWith("/tools/read")).map((l) => l.url);
   expect(posted).toEqual(["http://10.0.0.2:7788/tools/read"]);
-  await expect(read.run({ workspace: "off", path: "a" })).rejects.toThrow("workspace not ready");
+  await expect(read.run({ workspace: "off", path: "a" })).rejects.toThrow("stopped; start it with `workspace_start`");
   await expect(read.run({ path: "a" })).rejects.toThrow("workspace is required");
+});
+
+test("podFetch marks itself a watcher", async () => {
+  let seen: any;
+  handler = (u, init) => {
+    if (u.endsWith("/tools")) return j({ address: "10.0.0.5:7788" });
+    seen = init.headers;
+    return j({ ok: 1 });
+  };
+  await podGet("w1", "/healthz");
+  expect(seen["x-kl-watch"]).toBe("1");
+});
+
+test("a tool call that hits NotReady wakes and retries once", async () => {
+  let lookups = 0;
+  handler = (u) => {
+    if (u.endsWith("/v1/workspaces/w1/tools")) return ++lookups <= 2 ? j({ error: "idle" }, 409) : j({ address: "10.0.0.5:7788" });
+    return j({ ok: 1 });
+  };
+  let woke = 0;
+  const t = await podTools("w1", { ensure: (async () => void woke++) as any });
+  expect(await t[0]!.run({})).toBe('{\n  "ok": 1\n}');
+  expect(woke).toBe(1);
+  expect(touched.has("w1")).toBe(true);
+});
+
+test("podHold never wakes", async () => {
+  handler = () => j({ error: "idle" }, 409);
+  await podHold("w1");
+  expect(log.some((l) => l.url.includes("/hold"))).toBe(false);
+});
+
+test("podHold posts /hold to a ready workspace", async () => {
+  handler = (u) => (u.endsWith("/tools") && u.includes("/v1/") ? j({ address: "10.0.0.5:7788" }) : new Response(null, { status: 204 }));
+  await podHold("w1");
+  expect(log.at(-1)!.url).toBe("http://10.0.0.5:7788/hold");
 });
