@@ -37,7 +37,7 @@ describe("ensureRunning", () => {
   test("timeout names the last condition reason", async () => {
     const f = fakeApi([
       doc({ state: "stopped", idle_since: "x" }),
-      doc({ state: "creating", packages_status: { type: "PackagesReady", status: "False", reason: "KeysNotReady" } }),
+      doc({ state: "creating", packages_status: { ready: false, reason: "KeysNotReady", message: "" } }),
     ]);
     await expect(ensureRunning("workspaces", "w1", { api: f.api as any, sleep, timeoutMs: 0 })).rejects.toThrow("KeysNotReady");
   });
@@ -47,7 +47,7 @@ describe("ensureRunning", () => {
     expect(f.calls.filter((c) => c.startsWith("POST"))).toEqual(["POST /v1/workspaces/wc/start"]);
   });
   test("error and deleted end the wait at once", async () => {
-    const f = fakeApi([doc({ state: "stopped", idle_since: "x" }), doc({ state: "error", degraded: { status: "False", reason: "Boom" } })]);
+    const f = fakeApi([doc({ state: "stopped", idle_since: "x" }), doc({ state: "error", degraded: { ready: false, reason: "Boom", message: "" } })]);
     await expect(ensureRunning("workspaces", "we", { api: f.api as any, sleep })).rejects.toThrow("is error: Boom");
     const g = fakeApi([doc({ state: "stopped", idle_since: "x" }), doc({ state: "deleted" })]);
     await expect(ensureRunning("workspaces", "wd", { api: g.api as any, sleep })).rejects.toThrow("is deleted");
