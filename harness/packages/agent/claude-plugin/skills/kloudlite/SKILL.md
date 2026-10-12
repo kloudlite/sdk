@@ -163,7 +163,7 @@ There are two model hubs: Hugging Face and the Kloudlite hub. Hugging Face is th
 4. To load a model from the Kloudlite hub, download it first. Then give the local path to `from_pretrained` or `load_dataset`. A repo name in `from_pretrained` always goes to Hugging Face.
 5. Upload trained models to the Kloudlite hub, under the name of the person or the team. Use `hub.api("kloudlite").upload_folder(...)` or `kl hf --provider kloudlite upload ...`. Do not upload to Hugging Face unless the person tells you to.
 6. Do not put a Hugging Face token in a file, a commit or a message. The Kloudlite hub needs no token in a workspace.
-7. If `hf` is not found, add it with `kl pkg add python3Packages.huggingface-hub`. If `kloudlite` is not installed in Python, install it with `pip install "kloudlite @ git+https://github.com/kloudlite/kloudlite-sdk#subdirectory=python"`.
+7. If `hf` is not found, add it with `kl pkg add python3Packages.huggingface-hub`. If `kloudlite` is not installed in Python, install it with `pip install kloudlite`.
 
 ## Team rules
 

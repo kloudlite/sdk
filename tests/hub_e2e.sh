@@ -26,7 +26,7 @@ python3 -m venv "$ROOT/venv" \
   || { echo "skip: python venv or pip install failed (offline?)"; exit 77; }
 PY="$ROOT/venv/bin/python"
 # The SDK lives in its own repo; override KL_SDK_PIP to test a local checkout.
-"$ROOT/venv/bin/pip" -q install "${KL_SDK_PIP:-kloudlite @ git+https://github.com/kloudlite/kloudlite-sdk#subdirectory=python}" >>"$ROOT/pip.log" 2>&1 \
+"$ROOT/venv/bin/pip" -q install "${KL_SDK_PIP:-kloudlite}" >>"$ROOT/pip.log" 2>&1 \
   || { echo "skip: kloudlite sdk install failed"; exit 77; }
 
 BIN=${CARGO_TARGET_DIR:-target}/debug/kloudlite
