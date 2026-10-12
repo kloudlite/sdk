@@ -14,6 +14,7 @@ pub(crate) async fn stop_workspace(
     prev: crd::WorkspaceStatus,
     gen: i64,
     ctx: &Arc<Ctx>,
+    ready: crd::Condition,
 ) -> Result<Action, ReconcileErr> {
     let id = prev.volume_ref.clone().unwrap_or_else(|| w.name_any());
     // Already stopped: the teardown is done, but `Replicated` is not a one-shot fact — a peer
@@ -74,7 +75,7 @@ pub(crate) async fn stop_workspace(
     // `ws_conditions`, not a bare vec: a stop that dropped `PackagesReady` left the web
     // showing "installing packages…" for a workspace that is simply off.
     let replicated = replicated_condition(ctx, &id, &w.name_any(), replicas_of(ctx, &id), &prev.conditions, gen).await?;
-    let conditions = replaced(&cleared_node_dead(&ws_conditions(&prev, stopped_condition(gen))), replicated);
+    let conditions = replaced(&cleared_node_dead(&ws_conditions(&prev, ready)), replicated);
     let st = crd::WorkspaceStatus {
         phase: crd::Phase::Stopped,
         observed_generation: Some(gen),
