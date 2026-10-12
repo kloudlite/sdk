@@ -88,7 +88,7 @@ pub use workspaces::keys_changed;
 use environments::{
     get_builder, get_my_builder, list_builders, start_builder, stop_builder,
     clear_intercept, clone_env, create_env, delete_env, get_env, watch_env, list_env, restore_env,
-    patch_env_services, restore_env_in_place, set_intercept, start_env, stop_env,
+    patch_env_services, set_intercept, start_env, stop_env,
 };
 use bench::{bench_session, bench_teams, create_bench, get_bench, start_bench, stop_bench};
 use me::{attach_gone, clear_my_environment, list_my_environments, set_my_environment, watch_my_environments};
@@ -111,7 +111,7 @@ pub const ENVIRONMENT_ID_ROUTES: &[&str] = &[
     "/v1/environments/{id}/stop",
     "/v1/environments/{id}/clone",
     "/v1/environments/{id}/push",
-    "/v1/environments/{id}/restore-in-place",
+    "/v1/environments/{id}/restore",
     "/v1/environments/{id}/intercepts",
     "/v1/environments/{id}/intercepts/{service}",
     "/v1/environments/{id}/watch",
@@ -147,7 +147,6 @@ pub(crate) const BENCH_TOOL_ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/v1/me/environments/{team}"),
     ("GET", "/v1/environments"),
     ("POST", "/v1/environments"),
-    ("POST", "/v1/environments/restore"),
     ("GET", "/v1/environments/{id}"),
     ("PATCH", "/v1/environments/{id}"),
     ("DELETE", "/v1/environments/{id}"),
@@ -155,7 +154,7 @@ pub(crate) const BENCH_TOOL_ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/environments/{id}/stop"),
     ("POST", "/v1/environments/{id}/clone"),
     ("POST", "/v1/environments/{id}/push"),
-    ("POST", "/v1/environments/{id}/restore-in-place"),
+    ("POST", "/v1/environments/{id}/restore"),
     ("POST", "/v1/environments/{id}/intercepts"),
     ("DELETE", "/v1/environments/{id}/intercepts/{service}"),
     ("GET", "/v1/builders/me"),
@@ -428,15 +427,13 @@ pub fn router(state: Arc<ApiState>) -> Router {
         .route("/v1/me/environments/{team}", axum::routing::put(set_my_environment).delete(clear_my_environment))
         .route("/v1/workspaces/{id}/ssh-session", post(ssh_session))
         .route("/v1/environments", post(create_env).get(list_env))
-        // Before `/{id}`: `restore` is a verb, not an environment id.
-        .route("/v1/environments/restore", post(restore_env))
         .route("/v1/environments/{id}", get(get_env).delete(delete_env).patch(patch_env_services))
         .route("/v1/environments/{id}/watch", get(watch_env))
         .route("/v1/environments/{id}/start", post(start_env))
         .route("/v1/environments/{id}/stop", post(stop_env))
         .route("/v1/environments/{id}/clone", post(clone_env))
         .route("/v1/environments/{id}/push", post(push_env))
-        .route("/v1/environments/{id}/restore-in-place", post(restore_env_in_place))
+        .route("/v1/environments/{id}/restore", post(restore_env))
         .route("/v1/environments/{id}/intercepts", post(set_intercept))
         .route("/v1/environments/{id}/intercepts/{service}", axum::routing::delete(clear_intercept))
         .route("/v1/builders/me", get(get_my_builder))

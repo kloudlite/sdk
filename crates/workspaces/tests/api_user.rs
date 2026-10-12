@@ -509,7 +509,8 @@ async fn creating_an_environment_past_the_quota_limit_is_refused() {
 #[tokio::test]
 async fn restoring_an_environment_past_the_quota_limit_is_refused() {
     let mut routes = vec![
-        get(format!("{API}/snapshots/snap-env"), ready_snap("snap-env", "env-src", "karthik", None)),
+        get(format!("{API}/snapshots/snap-env"), ready_snap("snap-env", "env-0000000000000001", "karthik", None)),
+        get(format!("{API}/environments/env-0000000000000001"), env_obj("env-0000000000000001", "karthik")),
         no_workspaces(),
         get(format!("{API}/environments"), list_of_envs(many_envs(2))),
         post(format!("{API}/environments"), new_env("env-new", "karthik")),
@@ -518,7 +519,7 @@ async fn restoring_an_environment_past_the_quota_limit_is_refused() {
     let s = server(routes).await;
     let r = restore(
         &s,
-        "/v1/environments/restore",
+        "/v1/environments/env-0000000000000001/clone",
         json!({"name": "back", "snapshot_id": "snap-env", "services": [{"name": "x", "image": "alpine", "command": [], "env": {}, "mounts": []}]}),
     )
     .await;
@@ -550,9 +551,9 @@ async fn creating_under_the_quota_limit_succeeds() {
 /// An unnamed restore is refused before anything is written, the same as a create.
 #[tokio::test]
 async fn an_environment_restore_refuses_an_empty_name() {
-    let s = server(vec![]).await;
+    let s = server_with_env_snapshot_only("snap-env", None).await;
     let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/restore", s.base))
+        .post(format!("{}/v1/environments/env-0000000000000001/clone", s.base))
         .bearer_auth(token(&s.jwt, "karthik"))
         .json(&json!({"name": "  ", "snapshot_id": "snap-env"}))
         .send()
@@ -566,9 +567,9 @@ async fn an_environment_restore_refuses_an_empty_name() {
 /// service list as a create is — an escaping mount must not get in through the new door.
 #[tokio::test]
 async fn an_environment_restore_refuses_an_escaping_mount() {
-    let s = server(vec![]).await;
+    let s = server_with_env_snapshot_only("snap-env", None).await;
     let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/restore", s.base))
+        .post(format!("{}/v1/environments/env-0000000000000001/clone", s.base))
         .bearer_auth(token(&s.jwt, "karthik"))
         .json(&json!({
             "name": "bad",
@@ -1739,7 +1740,8 @@ async fn server_with_snapshot_only(id: &str, state: Option<Value>) -> Server {
 
 async fn server_with_env_snapshot_only(id: &str, state: Option<Value>) -> Server {
     let mut routes = vec![
-        get(format!("{API}/snapshots/{id}"), ready_snap(id, "env-src", "karthik", state)),
+        get(format!("{API}/snapshots/{id}"), ready_snap(id, "env-0000000000000001", "karthik", state)),
+        get(format!("{API}/environments/env-0000000000000001"), env_obj("env-0000000000000001", "karthik")),
         no_workspaces(),
         no_environments(),
         post(format!("{API}/environments"), new_env("env-new", "karthik")),
@@ -1867,7 +1869,7 @@ async fn a_frozen_attachment_the_caller_cannot_see_is_dropped() {
 #[tokio::test]
 async fn restoring_an_environment_without_services_takes_the_snapshots() {
     let s = server_with_env_snapshot_only("snap-env", Some(environment_state(2, 9))).await;
-    let r = restore(&s, "/v1/environments/restore", json!({"name": "back", "snapshot_id": "snap-env"})).await;
+    let r = restore(&s, "/v1/environments/env-0000000000000001/clone", json!({"name": "back", "snapshot_id": "snap-env"})).await;
     assert_eq!(r.status(), 202, "{}", r.text().await.unwrap());
     let e = &s.rec.sent("POST", &format!("{API}/environments"))[0];
     assert_eq!(e["spec"]["services"].as_array().unwrap().len(), 2);
@@ -1881,7 +1883,7 @@ async fn restoring_an_environment_with_empty_services_takes_the_snapshots_too() 
     let s = server_with_env_snapshot_only("snap-env", Some(environment_state(2, 9))).await;
     let r = restore(
         &s,
-        "/v1/environments/restore",
+        "/v1/environments/env-0000000000000001/clone",
         json!({"name": "back", "snapshot_id": "snap-env", "services": []}),
     )
     .await;
@@ -1896,7 +1898,7 @@ async fn restoring_an_environment_with_empty_services_takes_the_snapshots_too() 
 #[tokio::test]
 async fn restoring_an_environment_with_no_services_anywhere_is_refused() {
     let s = server_with_env_snapshot_only("snap-env", None).await;
-    let r = restore(&s, "/v1/environments/restore", json!({"name": "back", "snapshot_id": "snap-env"})).await;
+    let r = restore(&s, "/v1/environments/env-0000000000000001/clone", json!({"name": "back", "snapshot_id": "snap-env"})).await;
     assert_eq!(r.status(), 400, "{}", r.text().await.unwrap());
     assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty());
 }
@@ -1908,7 +1910,7 @@ async fn a_frozen_service_with_an_escaping_mount_is_refused() {
     let mut state = environment_state(1, 9);
     state["services"][0]["mounts"] = json!([{"folder": "../../etc", "path": "/etc"}]);
     let s = server_with_env_snapshot_only("snap-env", Some(state)).await;
-    let r = restore(&s, "/v1/environments/restore", json!({"name": "back", "snapshot_id": "snap-env"})).await;
+    let r = restore(&s, "/v1/environments/env-0000000000000001/clone", json!({"name": "back", "snapshot_id": "snap-env"})).await;
     assert_eq!(r.status(), 400, "{}", r.text().await.unwrap());
     assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty(), "nothing written");
 }
@@ -1982,7 +1984,7 @@ async fn a_workspace_restore_refuses_an_environment_snapshot() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("/v1/environments/restore"), "the answer names the right route: {body}");
+    assert!(body.contains("/v1/environments/{id}/clone"), "the answer names the right route: {body}");
     assert!(s.rec.sent("POST", &format!("{API}/workspaces")).is_empty(), "nothing written");
 }
 
@@ -1998,15 +2000,21 @@ async fn an_environment_restore_refuses_a_workspace_snapshot() {
                            "quotaGb": 20}},
         "status": {"phase": "ready", "readyAt": "2026-08-27T09:00:00Z"}
     });
-    let s = server(vec![get(format!("{API}/snapshots/ws-0000000000000001-a"), snap)]).await;
+    let s = server(vec![
+        get(format!("{API}/snapshots/ws-0000000000000001-a"), snap),
+        get(format!("{API}/environments/env-0000000000000001"), env_obj("env-0000000000000001", "karthik")),
+    ])
+    .await;
     let resp = reqwest::Client::new()
-        .post(format!("{}/v1/environments/restore", s.base))
+        .post(format!("{}/v1/environments/env-0000000000000001/clone", s.base))
         .bearer_auth(token(&s.jwt, "karthik"))
         .json(&json!({"name": "wrong-kind", "snapshot_id": "ws-0000000000000001-a"}))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
+    // A workspace's snapshot lives on a workspace volume, never on this environment's: the volume
+    // filter in `find_snapshot` answers 404 before any kind check could.
+    assert_eq!(resp.status(), 404);
     assert!(s.rec.sent("POST", &format!("{API}/environments")).is_empty(), "nothing written");
 }
 
@@ -2044,11 +2052,10 @@ async fn every_v1_route_is_still_mounted() {
         ("POST", "/v1/workspaces/ws-0000000000000001/attach"), ("POST", "/v1/workspaces/ws-0000000000000001/detach"),
         ("POST", "/v1/workspaces/ws-0000000000000001/ssh-session"),
         ("POST", "/v1/environments"), ("GET", "/v1/environments"),
-        ("POST", "/v1/environments/restore"),
         ("GET", "/v1/environments/env-0000000000000001"), ("DELETE", "/v1/environments/env-0000000000000001"),
         ("POST", "/v1/environments/env-0000000000000001/start"), ("POST", "/v1/environments/env-0000000000000001/stop"),
         ("POST", "/v1/environments/env-0000000000000001/clone"), ("POST", "/v1/environments/env-0000000000000001/push"),
-        ("POST", "/v1/environments/env-0000000000000001/restore-in-place"),
+        ("POST", "/v1/environments/env-0000000000000001/restore"),
         ("GET", "/v1/volumes"), ("DELETE", "/v1/volumes/ws-0000000000000001"),
         ("GET", "/v1/volumes/ws-0000000000000001/history"), ("GET", "/v1/volumes/ws-0000000000000001/refs"),
         ("DELETE", "/v1/volumes/ws-0000000000000001/snapshots/ws-0000000000000001-a"),

@@ -370,7 +370,7 @@ async fn find_env_id(s: &ApiState, caller: &Caller, id: &str) -> Result<crd::Env
     let api: Api<crd::Environment> = Api::all(kube(s)?.clone());
     let e = api.get_opt(id).await.map_err(kube_err)?.ok_or_else(not_found)?;
     // The ONE visibility guard, in the lookup every environment route shares — get, start, stop,
-    // delete, clone, push, restore-in-place, the intercepts and `attach_ws` all come through here,
+    // delete, clone, push, restore, the intercepts and `attach_ws` all come through here,
     // so a route added later inherits it rather than having to remember it. A `system`
     // environment (the hidden per-owner builder) is indistinguishable from an id that does not
     // exist; the build gate reaches it through `/v1/internal/builders`, which never calls this.
