@@ -703,10 +703,10 @@ pub(crate) async fn start_ws(
         .patch(&id, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle))))
         .await
         .map_err(kube_err)?;
-    if idle.is_some() && !crd::wants_pod(&w) {
+    if idle.is_some() && w.spec.desired_state == DesiredState::Running && !crd::wants_pod(&w) {
         tracing::info!(kind = "workspace", id, by = "start", "idle.wake");
     }
-    wake_followers(c, &w, &id, now).await;
+    wake_followers(&s, &owner.name, &w, &id, now).await;
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
@@ -739,13 +739,16 @@ pub(crate) fn envs_to_wake(ws: &str, space_env: Option<&str>, envs: &[crd::Envir
 /// A workspace that starts must find its environment awake: otherwise the agent's follower
 /// check would see a running workspace over a stopped environment and the person waits on a
 /// second start. Failures here are logged, never the workspace's problem.
-async fn wake_followers(c: &kube::Client, w: &crd::Workspace, id: &str, now: k8s_openapi::jiff::Timestamp) {
+async fn wake_followers(s: &ApiState, caller: &str, w: &crd::Workspace, id: &str, now: k8s_openapi::jiff::Timestamp) {
+    let Ok(c) = kube(s) else { return };
     let space = Api::<crd::SpaceEnvironment>::all(c.clone())
         .get_opt(&crd::space_name(&w.spec.owner, &w.spec.team))
         .await
         .ok()
         .flatten()
         .map(|s| s.spec.environment);
+    // ponytail: a cluster-wide LIST per start (an env can idle while its workspace was stopped by
+    // hand, so it cannot be skipped); move to the reflector/index if starts get hot.
     let envs = match Api::<crd::Environment>::all(c.clone()).list(&ListParams::default()).await {
         Ok(l) => l.items,
         Err(e) => {
@@ -755,7 +758,13 @@ async fn wake_followers(c: &kube::Client, w: &crd::Workspace, id: &str, now: k8s
     };
     let api = Api::<crd::Environment>::all(c.clone());
     for eid in envs_to_wake(id, space.as_deref(), &envs) {
-        let idle = envs.iter().find(|e| kube::ResourceExt::name_any(*e) == eid).and_then(|e| e.status.as_ref()?.idle_since.clone());
+        let Some(env) = envs.iter().find(|e| kube::ResourceExt::name_any(*e) == eid) else { continue };
+        // The quota gate start_env applies: a workspace start must not be a way round it.
+        if super::guard_fill(s, &env.spec.owner, env.spec.owner != caller).await.is_err() {
+            tracing::warn!(id = eid, "idle.wake follower skipped: over quota");
+            continue;
+        }
+        let idle = env.status.as_ref().and_then(|st| st.idle_since.clone());
         match api.patch(&eid, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle.as_deref())))).await {
             Ok(_) => tracing::info!(kind = "environment", id = eid, by = "follower", "idle.wake"),
             Err(e) => tracing::warn!(id = eid, error = %e, "idle.wake follower patch failed"),
@@ -1081,5 +1090,8 @@ mod tests {
         let envs = vec![env("e1", None, true), env("e2", Some("w1"), true), env("e3", Some("w1"), false)];
         assert_eq!(super::envs_to_wake("w1", Some("e1"), &envs), vec!["e1".to_string(), "e2".to_string()]);
         assert!(super::envs_to_wake("w1", None, &[env("e3", Some("w1"), false)]).is_empty());
+        let mut stopped = env("e4", Some("w1"), true);
+        stopped.spec.desired_state = crd::DesiredState::Stopped;
+        assert!(super::envs_to_wake("w1", Some("e4"), &[stopped]).is_empty(), "stopped by hand stays stopped");
     }
 }
