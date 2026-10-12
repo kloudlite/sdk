@@ -4,6 +4,7 @@ pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod events;
+pub mod hubrepo;
 pub mod index;
 pub mod metered;
 pub mod local_cas;
@@ -11,6 +12,8 @@ pub mod ownership;
 pub mod pool;
 pub mod refmeta;
 pub mod store;
+
+pub use hubrepo::{hub_pool_coords, hub_routing_key, HubKind};
 
 /// Take a `std::sync::Mutex` without dying of someone else's panic.
 ///

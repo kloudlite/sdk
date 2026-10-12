@@ -130,6 +130,11 @@ impl Store {
         if !crate::store::valid_owner(owner) || !crate::store::valid_segment(name) {
             return Err(err("invalid repo path"));
         }
+        self.create_repo_unchecked(owner, name).await
+    }
+
+    /// `create_repo` minus the path check, for hub repos (see `hubrepo`).
+    pub(crate) async fn create_repo_unchecked(&self, owner: &str, name: &str) -> Result<()> {
         if self.repo_exists(owner, name).await? {
             return Err(err("repository already exists"));
         }
