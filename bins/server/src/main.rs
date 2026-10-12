@@ -243,25 +243,34 @@ async fn serve() -> Result<()> {
         .with_graceful_shutdown(wait(term_rx.clone()));
     let peer_srv = axum::serve(l.peer_http, kloudlite_server::router::peer_router(a3))
         .with_graceful_shutdown(wait(term_rx.clone()));
-    // Optional listeners: not part of the drain join below, they hold no state of their own (the
-    // hub's repo DBs are released by the pool close that follows the drain).
-    if let Some(h) = l.hub {
-        let svc = kloudlite_server::router::hub_router(app.clone());
-        tracing::info!(listener = "hub", addr = %h.local_addr()?, "listener.started");
-        let rx = term_rx.clone();
-        tokio::spawn(async move { axum::serve(h, svc).with_graceful_shutdown(wait(rx)).await });
-    }
-    if let Some(c) = l.cas {
-        let svc = kloudlite_server::router::cas_router(app.clone());
-        tracing::info!(listener = "cas", addr = %c.local_addr()?, "listener.started");
-        let rx = term_rx.clone();
-        tokio::spawn(async move { axum::serve(c, svc).with_graceful_shutdown(wait(rx)).await });
-    }
-    // Both HTTP servers as ONE select arm: select! returns when its first arm resolves, and if
+    // Optional listeners join the same drain: a hub commit in flight must finish before pool.close().
+    let hub_srv = async {
+        match l.hub {
+            Some(h) => {
+                tracing::info!(listener = "hub", addr = %h.local_addr()?, "listener.started");
+                axum::serve(h, kloudlite_server::router::hub_router(app.clone()))
+                    .with_graceful_shutdown(wait(term_rx.clone()))
+                    .await
+            }
+            None => Ok(()),
+        }
+    };
+    let cas_srv = async {
+        match l.cas {
+            Some(c) => {
+                tracing::info!(listener = "cas", addr = %c.local_addr()?, "listener.started");
+                axum::serve(c, kloudlite_server::router::cas_router(app.clone()))
+                    .with_graceful_shutdown(wait(term_rx.clone()))
+                    .await
+            }
+            None => Ok(()),
+        }
+    };
+    // All HTTP servers as ONE select arm: select! returns when its first arm resolves, and if
     // each server were its own arm the first to finish draining would end the select and
-    // pool.close() would run under the other's in-flight requests. try_join waits for both.
+    // pool.close() would run under the other's in-flight requests. try_join waits for all.
     tokio::select! {
-        r = async { tokio::try_join!(http_srv, peer_srv) } => { r?; }
+        r = async { tokio::try_join!(http_srv, peer_srv, hub_srv, cas_srv) } => { r?; }
         _ = deadline => { tracing::warn!(step = "drain", timeout_s = DRAIN_DEADLINE.as_secs(), "process.shutdown.stalled"); }
         r = kloudlite_server::proxy::serve_peer_streams(a4, l.peer_stream) => { r?; }
         r = kloudlite_server::ssh::serve(app.clone(), l.ssh, key) => { r?; }
