@@ -120,6 +120,20 @@ class Repos:
             "owner": owner, "name": name, "visibility": visibility, "description": description,
         })
 
+    def import_github(self, repo: str, github: str, visibility: str = "private", description: str = ""):
+        """A new repo whose contents are fetched from a PUBLIC GitHub repository — ``github`` is
+        its ``"owner/name"`` pair, never a URL. Answers 202: the repo exists but the fetch runs
+        in the background; poll :meth:`import_status`."""
+        owner, name = _split(repo)
+        return self._c.request("POST", "/v1/repos/import", {
+            "owner": owner, "name": name, "github": github,
+            "visibility": visibility, "description": description,
+        })
+
+    def import_status(self, repo: str):
+        """``{"from", "state": queued|running|done|failed, "detail"?}`` for an imported repo."""
+        return self._c.request("GET", self._path(repo, "/import"))
+
     # branches
     def branches(self, repo: str):
         return self._c.request("GET", self._path(repo, "/branches"))

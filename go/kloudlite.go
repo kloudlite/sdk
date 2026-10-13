@@ -262,6 +262,33 @@ func (r *Repos) Fork(src, dst string, opts RepoOpts) (*Repo, error) {
 	return &out, nil
 }
 
+// ImportGithub makes a new repo whose contents are fetched from a PUBLIC GitHub
+// repository — github is its "owner/name" pair, never a URL. The server answers
+// 202: the repo exists but the fetch runs in the background; poll ImportStatus.
+func (r *Repos) ImportGithub(repo, github string, opts RepoOpts) (*Repo, error) {
+	body, err := newRepoBody(repo, opts)
+	if err != nil {
+		return nil, err
+	}
+	body["github"] = github
+	var out Repo
+	if err := r.c.Request("POST", "/v1/repos/import", nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ImportStatus answers {from, state: queued|running|done|failed, detail?}.
+func (r *Repos) ImportStatus(repo string) (map[string]any, error) {
+	p, err := repoPath(repo, "/import")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = r.c.Request("GET", p, nil, nil, &out)
+	return out, err
+}
+
 func (r *Repos) Branches(repo string) ([]Branch, error) {
 	p, err := repoPath(repo, "/branches")
 	if err != nil {
