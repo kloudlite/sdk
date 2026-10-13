@@ -417,7 +417,8 @@ pub(super) async fn clone_from_snapshot(
     };
     let c = kube(s)?;
     guard_alloc(s, &owner, owner != caller_id.name, &environment_cost(services.len())).await?;
-    crate::api::image_pin::pin_images(s, &owner, &mut services).await;
+    // Restore is never blocked by an image that vanished upstream: the returned missing list is dropped.
+    let _ = crate::api::image_pin::pin_images(s, &owner, &mut services).await;
     // The volume holding the bytes still names its region.
     let region = match body.region {
         Some(r) => r,

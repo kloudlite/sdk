@@ -103,6 +103,14 @@ pub(super) fn default_env_quota() -> u64 {
     crd::DEFAULT_ENV_QUOTA_GB
 }
 
+/// A registry-confirmed 404 is refused before anything is written; see `image_pin`.
+fn refuse_missing(missing: &[String]) -> Result<(), Response> {
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err((StatusCode::UNPROCESSABLE_ENTITY, format!("image not found in its registry: {}", missing.join(", "))).into_response())
+}
+
 /// The trust boundary for services: create, restore and `patch_env_services` are the routes that
 /// accept caller-authored ones (`clone_env` copies an already-validated doc), so a mount that gets
 /// past here is treated as trusted by a root agent from then on — and a name that gets past here
@@ -162,7 +170,13 @@ pub(crate) async fn patch_env_services(
             .collect();
         guard_alloc(&s, &e.spec.owner, e.spec.owner != caller_id.name, &want).await?;
     }
-    super::image_pin::pin_images(&s, &e.spec.owner, &mut body.services).await;
+    // An image the owner's environment already holds stays editable even if upstream lost it.
+    let missing: Vec<_> = super::image_pin::pin_images(&s, &e.spec.owner, &mut body.services)
+        .await
+        .into_iter()
+        .filter(|m| !e.spec.services.iter().any(|x| &x.image == m))
+        .collect();
+    refuse_missing(&missing)?;
     let api: Api<crd::Environment> = Api::all(kube(&s)?.clone());
     let patch = serde_json::json!({"spec": {"services": body.services}});
     let e = api.patch(&id, &PatchParams::default(), &Patch::Merge(&patch)).await.map_err(kube_err)?;
@@ -223,7 +237,7 @@ pub(crate) async fn create_env(
     let c = kube(&s)?;
     let quota_gb = clamp_quota(&s, body.quota_gb.unwrap_or_else(default_env_quota));
     guard_alloc(&s, &owner, owner != caller_id.name, &environment_cost(body.services.len())).await?;
-    super::image_pin::pin_images(&s, &owner, &mut body.services).await;
+    refuse_missing(&super::image_pin::pin_images(&s, &owner, &mut body.services).await)?;
     let id = rid("env");
     let e = create_environment(
         &s,

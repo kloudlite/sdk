@@ -9,6 +9,8 @@
 //! Best effort by design: a registry that is down, slow or private to someone else leaves the tag
 //! as written (`image.unpinned` in the log) and the service pull policy `Always` still fetches
 //! the newest bytes. Refusing the write over a lookup would block every deploy on Docker Hub.
+//! The one exception is a definite 404 after the token dance: the callers refuse that name
+//! (incident 2026-10-13: `ghcr.io/ggerganov/llama.cpp:server` sat in ImagePullBackOff forever).
 
 use super::ApiState;
 use crate::model::Service;
@@ -56,7 +58,30 @@ fn token_url(challenge: &str, repo: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-async fn digest_of(http: &reqwest::Client, host: &str, repo: &str, tag: &str, basic: Option<(&str, &str)>) -> Result<String, String> {
+/// Why a lookup gave no digest: the registry said the name is absent, or we could not find out.
+#[derive(Debug, PartialEq)]
+enum Lookup {
+    Missing,
+    Failed(String),
+}
+
+impl From<String> for Lookup {
+    fn from(e: String) -> Self {
+        Lookup::Failed(e)
+    }
+}
+impl From<&str> for Lookup {
+    fn from(e: &str) -> Self {
+        Lookup::Failed(e.into())
+    }
+}
+
+/// Only a 404 is a positive "does not exist"; 401/403/5xx say nothing about the name.
+fn classify(status: reqwest::StatusCode) -> Lookup {
+    if status == reqwest::StatusCode::NOT_FOUND { Lookup::Missing } else { Lookup::Failed(format!("manifest {status}")) }
+}
+
+async fn digest_of(http: &reqwest::Client, host: &str, repo: &str, tag: &str, basic: Option<(&str, &str)>) -> Result<String, Lookup> {
     let url = format!("https://{host}/v2/{repo}/manifests/{tag}");
     let head = |auth: Option<String>, basic: Option<(&str, &str)>| {
         let mut r = http.head(&url).header("Accept", ACCEPT);
@@ -77,30 +102,35 @@ async fn digest_of(http: &reqwest::Client, host: &str, repo: &str, tag: &str, ba
         resp = head(Some(token.to_string()), None).await.map_err(|e| e.to_string())?;
     }
     if !resp.status().is_success() {
-        return Err(format!("manifest {}", resp.status()));
+        return Err(classify(resp.status()));
     }
     let d = resp.headers().get("docker-content-digest").and_then(|v| v.to_str().ok()).ok_or("no Docker-Content-Digest")?;
     if !d.starts_with("sha256:") {
-        return Err(format!("unexpected digest {d}"));
+        return Err(format!("unexpected digest {d}").into());
     }
     Ok(d.to_string())
 }
 
 /// Rewrite each unpinned image of `services` to `image@digest`. Own-registry images are read as
 /// `owner` (the same short-lived credential the `registry-pull` Secret carries), others
-/// anonymously; the lookups run together, each bounded by `LOOKUP`.
-pub(crate) async fn pin_images(s: &ApiState, owner: &str, services: &mut [Service]) {
+/// anonymously; the lookups run together, each bounded by `LOOKUP`. Returns the images (as
+/// written) the registry answered 404 for; every other failure leaves the image unpinned.
+pub(crate) async fn pin_images(s: &ApiState, owner: &str, services: &mut [Service]) -> Vec<String> {
     let own = std::env::var("KLOUDLITE_REGISTRY_HOST").ok().map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
     let token = own.as_ref().and_then(|_| s.jwt.mint_registry(owner, "*", 300).ok());
-    let Ok(http) = reqwest::Client::builder().timeout(LOOKUP).build() else { return };
+    let Ok(http) = reqwest::Client::builder().timeout(LOOKUP).build() else { return Vec::new() };
     let lookups = services.iter().map(|svc| {
         let (http, own, token) = (&http, own.as_deref(), token.as_deref());
         async move {
             let (host, repo, tag) = split_ref(&svc.image)?;
             let basic = (Some(host.as_str()) == own).then_some(token).flatten().map(|t| (owner, t));
             match digest_of(http, &host, &repo, &tag, basic).await {
-                Ok(d) => Some(d),
-                Err(e) => {
+                Ok(d) => Some(Ok(d)),
+                Err(Lookup::Missing) => {
+                    tracing::warn!(image = %svc.image, "image.missing");
+                    Some(Err(()))
+                }
+                Err(Lookup::Failed(e)) => {
                     tracing::warn!(image = %svc.image, error = %e, "image.unpinned");
                     None
                 }
@@ -108,12 +138,18 @@ pub(crate) async fn pin_images(s: &ApiState, owner: &str, services: &mut [Servic
         }
     });
     let digests = futures::future::join_all(lookups).await;
+    let mut missing = Vec::new();
     for (svc, d) in services.iter_mut().zip(digests) {
-        if let Some(d) = d {
-            tracing::info!(image = %svc.image, digest = %d, "image.pinned");
-            svc.image = format!("{}@{d}", svc.image);
+        match d {
+            Some(Ok(d)) => {
+                tracing::info!(image = %svc.image, digest = %d, "image.pinned");
+                svc.image = format!("{}@{d}", svc.image);
+            }
+            Some(Err(())) => missing.push(svc.image.clone()),
+            None => {}
         }
     }
+    missing
 }
 
 #[cfg(test)]
@@ -141,6 +177,15 @@ mod tests {
     fn a_pinned_or_empty_image_is_left_as_written() {
         assert_eq!(r("nats:2.10@sha256:abc"), None);
         assert_eq!(r(""), None);
+    }
+
+    #[test]
+    fn only_a_404_means_the_image_is_missing() {
+        use reqwest::StatusCode as S;
+        assert_eq!(classify(S::NOT_FOUND), Lookup::Missing);
+        assert_eq!(classify(S::UNAUTHORIZED), Lookup::Failed("manifest 401 Unauthorized".into()));
+        assert!(matches!(classify(S::FORBIDDEN), Lookup::Failed(_)));
+        assert!(matches!(classify(S::INTERNAL_SERVER_ERROR), Lookup::Failed(_)));
     }
 
     #[test]
