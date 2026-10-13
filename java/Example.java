@@ -18,32 +18,32 @@ public class Example {
 
         try {
             // 1. Fork: objects and refs, never the upstream's pull requests or settings.
-            String fork = kl.repos().fork(upstream, myFork, null, null);
+            String fork = kl.codeRepos().fork(upstream, myFork, null, null);
             System.out.println("forked: " + fork);
 
             // 2. Commit a change onto a NEW branch of the fork (the fork's main stays put).
             String content = Base64.getEncoder()
                 .encodeToString("# Payments\n\nFixed rounding.\n".getBytes());
-            String committed = kl.repos().commit(myFork, """
+            String committed = kl.codeRepos().commit(myFork, """
                 {"branch":"main","newBranch":"fix-rounding",
                  "message":"Fix rounding in invoice totals",
                  "changes":[{"path":"README.md","contentBase64":"%s"}]}""".formatted(content));
             System.out.println("committed: " + committed);
 
             // 3. Propose it back: head names the FORK's branch, headRepo says where it lives.
-            String pr = kl.repos().openPull(upstream,
+            String pr = kl.codeRepos().openPull(upstream,
                 "Fix rounding in invoice totals", "fix-rounding", "main", "", myFork);
             long number = numberOf(pr);
             System.out.println("opened #" + number);
 
             // 4. The diff upstream reviews is the mirror: pull/{n}/head.
-            kl.repos().compare(upstream, "main", "pull/" + number + "/head");
-            kl.repos().comment(upstream, number, "Ready for review");
+            kl.codeRepos().compare(upstream, "main", "pull/" + number + "/head");
+            kl.codeRepos().comment(upstream, number, "Ready for review");
 
             // 5. Merge. 202 — a job; the pull reports where it got to.
-            kl.repos().merge(upstream, number, "squash");
+            kl.codeRepos().merge(upstream, number, "squash");
             for (int i = 0; i < 30; i++) {
-                String got = kl.repos().pull(upstream, number);
+                String got = kl.codeRepos().pull(upstream, number);
                 if (!got.contains("\"state\":\"open\"")) {
                     System.out.println("pull is no longer open");
                     break;

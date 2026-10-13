@@ -7,7 +7,7 @@ half being a person's handle or a team slug::
     from kloudlite import Kloudlite
 
     kl = Kloudlite("https://api.example.com", token="…")
-    repo = kl.repos.create("acme/payments")
+    repo = kl.code_repos.create("acme/payments")
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ class Kloudlite:
         self.hub_url = hub_url.rstrip("/") if hub_url else None
         self._token = token
         self._timeout = timeout
-        self.repos = Repos(self)
-        self.models = HubRepos(self, "model")
-        self.datasets = HubRepos(self, "dataset")
+        self.code_repos = CodeRepos(self)
+        self.model_repos = HubRepos(self, "model")
+        self.data_repos = HubRepos(self, "dataset")
 
     # ── request core ──────────────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ def _split(repo: str) -> tuple[str, str]:
     return owner, name
 
 
-class Repos:
+class CodeRepos:
     """Code repositories: ``/v1/repos``. Every ``repo`` argument is one
     ``"owner/name"`` string; only owner-scoped calls (``list``) take a bare handle."""
 
@@ -219,7 +219,7 @@ class HubRepos:
     """Model and dataset repositories, on the hub listener (Hugging Face Hub API).
     Management level: create, read, refs, visibility, delete — files move with
     git/`huggingface_hub` against the same hub URL. Every ``repo`` is one
-    ``"owner/name"`` string, exactly as in :class:`Repos`."""
+    ``"owner/name"`` string, exactly as in :class:`CodeRepos`."""
 
     def __init__(self, client: Kloudlite, kind: str):
         self._c = client

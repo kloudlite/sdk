@@ -6,7 +6,7 @@
 #
 #   require_relative "kloudlite"
 #   kl = Kloudlite::Client.new("https://api.example.com", token: "…")
-#   repo = kl.repos.create("acme/payments")
+#   repo = kl.code_repos.create("acme/payments")
 
 require "json"
 require "net/http"
@@ -28,16 +28,16 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :repos, :models, :datasets
+    attr_reader :code_repos, :model_repos, :data_repos
 
     def initialize(base_url, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
       @hub_url = hub_url&.sub(%r{/+\z}, "")
       @token = token
       @timeout = timeout
-      @repos = Repos.new(self)
-      @models = HubRepos.new(self, "model")
-      @datasets = HubRepos.new(self, "dataset")
+      @code_repos = CodeRepos.new(self)
+      @model_repos = HubRepos.new(self, "model")
+      @data_repos = HubRepos.new(self, "dataset")
     end
 
     # One HTTP round trip. Returns parsed JSON (or nil on an empty body);
@@ -88,7 +88,7 @@ module Kloudlite
 
   # Code repositories: /v1/repos. Every +repo+ argument is one "owner/name"
   # string; only owner-scoped calls (+list+) take a bare handle.
-  class Repos
+  class CodeRepos
     def initialize(client)
       @c = client
     end
@@ -231,7 +231,7 @@ module Kloudlite
   # Model and dataset repositories, on the hub listener (Hugging Face Hub API).
   # Management level: create, read, refs, visibility, delete — files move with
   # git/huggingface_hub against the same hub URL. Every +repo+ is one
-  # "owner/name" string, exactly as in Repos.
+  # "owner/name" string, exactly as in CodeRepos.
   class HubRepos
     def initialize(client, kind)
       @c = client
