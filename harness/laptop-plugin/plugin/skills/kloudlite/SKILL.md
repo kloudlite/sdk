@@ -151,7 +151,7 @@ Each role has a different set of tools. Its role text gives its tools. If a tool
 | Account | `quota`, `regions`, `requests_list`, `request_get`, `request_create` |
 | Web | `web_fetch`, `web_search` |
 
-These kl tools belong to the bench sessions. Do not use them from the laptop: `workspace_ask`, `main_tell`, `subagent`, `task_add`, `task_update`, `task_list`, `workspace_tasks`. Main uses `scratch_read` and `scratch_write` only for its contract files (`contract-<feature>.md`). Main does not use `scratch_bash`.
+These kl tools belong to the bench sessions. Do not use them from the laptop: `workspace_ask`, `main_tell`, `subagent`, `task_add`, `task_update`, `task_list`, `workspace_tasks`. Main uses `scratch_read` and `scratch_write` only for its contract files (`contract-<feature>.md`) and its progress ledgers (`progress-<feature>.md`, refer to the `develop` skill). Main does not use `scratch_bash`.
 
 ## Repos and images
 
