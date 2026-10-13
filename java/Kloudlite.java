@@ -40,6 +40,8 @@ public class Kloudlite {
     private final CodeRepos codeRepos = new CodeRepos();
     private final HubRepos modelRepos = new HubRepos("model", "models");
     private final HubRepos dataRepos = new HubRepos("dataset", "datasets");
+    private final Workspaces workspaces = new Workspaces();
+    private final Volumes volumes = new Volumes();
 
     /** token may be null for anonymous access to public data. */
     public Kloudlite(String baseUrl, String token) {
@@ -67,6 +69,26 @@ public class Kloudlite {
     /** Dataset repositories, on the hub listener. */
     public HubRepos dataRepos() {
         return dataRepos;
+    }
+
+    /** Btrfs-backed dev workspaces: {@code /v1/workspaces}. */
+    public Workspaces workspaces() {
+        return workspaces;
+    }
+
+    /** The volumes behind workspaces and environments: {@code /v1/volumes}. */
+    public Volumes volumes() {
+        return volumes;
+    }
+
+    /** The regions an admin has registered — a workspace is created into one of them. */
+    public String regions() throws IOException, InterruptedException {
+        return request("GET", "/v1/regions", null);
+    }
+
+    /** The ceiling and what is against it; a null owner means the caller's own. */
+    public String quota(String owner) throws IOException, InterruptedException {
+        return request("GET", owner == null ? "/v1/quota" : "/v1/quota?owner=" + seg(owner), null);
     }
 
     /**
@@ -316,6 +338,118 @@ public class Kloudlite {
         private String path(String repo, String tail) {
             String[] on = split(repo);
             return "/api/" + plural + "/" + seg(on[0]) + "/" + seg(on[1]) + tail;
+        }
+    }
+
+    /**
+     * Btrfs-backed dev workspaces, over {@code /v1/workspaces}. A workspace is named by its id
+     * (the name given at create); pushes cut snapshots, kept on the workspace's VOLUME — see
+     * {@link Volumes} for history, restore targets and deletion. The create and restore bodies
+     * are raw JSON, like every other structured body in this client.
+     */
+    public class Workspaces {
+        /** {@code createJson}: name, region, quota_gb, team?, image?, repo?, branch?, packages. */
+        public String create(String createJson) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces", createJson);
+        }
+
+        /** The caller's workspaces; a non-null team scopes to their workspaces in that team. */
+        public String list(String team) throws IOException, InterruptedException {
+            return request("GET", team == null ? "/v1/workspaces" : "/v1/workspaces?team=" + seg(team), null);
+        }
+
+        public String get(String id) throws IOException, InterruptedException {
+            return request("GET", "/v1/workspaces/" + seg(id), null);
+        }
+
+        /** Runs the worktree finalizer: the volume survives while a pushed snapshot references it. */
+        public String delete(String id) throws IOException, InterruptedException {
+            return request("DELETE", "/v1/workspaces/" + seg(id), null);
+        }
+
+        public String start(String id) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces/" + seg(id) + "/start", null);
+        }
+
+        /** A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica. */
+        public String stop(String id) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces/" + seg(id) + "/stop", null);
+        }
+
+        /** Cut a SNAPSHOT of the working copy — the one durable, restorable state. */
+        public String push(String id, String message) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces/" + seg(id) + "/push",
+                message == null ? null : obj("message", message));
+        }
+
+        /**
+         * A new workspace from this one's state, cut at the moment of the request; the answer's
+         * {@code based_on} names exactly what it grafted onto.
+         */
+        public String clone_(String id, String name, String task) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces/" + seg(id) + "/clone", obj("name", name, "task", task));
+        }
+
+        /** {@code restoreJson}: name, snapshot_id, image?, packages?, quota_gb?. */
+        public String restore(String restoreJson) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces/restore", restoreJson);
+        }
+
+        /** {@code packagesJson}: {"packages": [...]} — pinned entries are locked before writing. */
+        public String setPackages(String id, String packagesJson) throws IOException, InterruptedException {
+            return request("PATCH", "/v1/workspaces/" + seg(id), packagesJson);
+        }
+
+        /** Re-resolve every pinned package — the only call that moves existing locks. */
+        public String updatePackages(String id) throws IOException, InterruptedException {
+            return request("POST", "/v1/workspaces/" + seg(id) + "/packages/update", null);
+        }
+
+        /** The workspace's tool-server address — answered to the owner alone. */
+        public String tools(String id) throws IOException, InterruptedException {
+            return request("GET", "/v1/workspaces/" + seg(id) + "/tools", null);
+        }
+    }
+
+    /**
+     * The btrfs volumes behind workspaces and environments: snapshot history, restore targets,
+     * and the two deletes — over {@code /v1/volumes}.
+     */
+    public class Volumes {
+        /** Either filter may be null: kind is "workspace" or "environment", owner a handle or team slug. */
+        public String list(String kind, String owner) throws IOException, InterruptedException {
+            StringBuilder p = new StringBuilder("/v1/volumes");
+            char sep = '?';
+            if (kind != null) {
+                p.append(sep).append("kind=").append(seg(kind));
+                sep = '&';
+            }
+            if (owner != null) {
+                p.append(sep).append("owner=").append(seg(owner));
+            }
+            return request("GET", p.toString(), null);
+        }
+
+        /** The chain of PUSHED snapshots, newest first — each row a restore target. */
+        public String history(String name) throws IOException, InterruptedException {
+            return request("GET", "/v1/volumes/" + seg(name) + "/history", null);
+        }
+
+        public String refs(String name) throws IOException, InterruptedException {
+            return request("GET", "/v1/volumes/" + seg(name) + "/refs", null);
+        }
+
+        /**
+         * Refused (409) for a sync point or a running worktree's base; deleting a detached
+         * volume's last snapshot deletes the volume.
+         */
+        public String deleteSnapshot(String name, String snapshotId) throws IOException, InterruptedException {
+            return request("DELETE", "/v1/volumes/" + seg(name) + "/snapshots/" + seg(snapshotId), null);
+        }
+
+        /** Takes a DETACHED volume with all its snapshots; refused while a working copy remains. */
+        public String delete(String name) throws IOException, InterruptedException {
+            return request("DELETE", "/v1/volumes/" + seg(name), null);
         }
     }
 

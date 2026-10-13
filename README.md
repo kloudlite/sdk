@@ -64,6 +64,33 @@ kl.code_repos.signature("acme/payments", "<commit sha>")
 A cross-repo pull's diff is read with the mirror spelling:
 `kl.code_repos.compare("acme/payments", base="main", head="pull/7/head")`.
 
+## The `workspaces` and `volumes` modules
+
+Btrfs-backed dev workspaces over `/v1/workspaces`; their snapshot history lives
+on volumes (`/v1/volumes`). `push` is the one durable verb — it cuts a snapshot
+that outlives the workspace and is a restore target forever:
+
+```python
+kl.regions()                                         # pick one for create
+kl.quota()                                           # the ceiling, and what is used
+
+ws = kl.workspaces.create(name="dev", region="blr1", quota_gb=40,
+                          repo="acme/payments", branch="main",
+                          packages=["nodejs@22", "ripgrep"])
+kl.workspaces.list(team="acme")
+kl.workspaces.stop("dev"); kl.workspaces.start("dev")
+
+kl.workspaces.push("dev", message="before the refactor")   # a kept snapshot
+kl.workspaces.clone("dev", "dev-experiment", task="try the new parser")
+snaps = kl.volumes.history("dev")                          # restore targets
+kl.workspaces.restore(name="dev-again", snapshot_id=snaps[0]["id"])
+
+kl.workspaces.set_packages("dev", ["nodejs@22", "ripgrep", "jq"])
+kl.workspaces.update_packages("dev")                       # re-resolve pins
+kl.workspaces.delete("dev")                                # snapshots survive on the volume
+kl.volumes.delete_snapshot("dev", snaps[0]["id"])
+```
+
 ## The `model_repos` and `data_repos` modules
 
 Model and dataset repositories live on the HUB listener (the Hugging Face Hub
