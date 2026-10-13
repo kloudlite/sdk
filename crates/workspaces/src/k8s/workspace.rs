@@ -39,7 +39,6 @@ pub(super) fn login_env(
         // space. It is the `{team}` segment of `/v1/me/environments/{team}` and the `space` claim
         // the workspace-token is refused against.
         var("KL_TEAM", crate::crd::space_slug(owner, team)),
-        var("CARGO_TARGET_DIR", format!("{HOME_DIR}/.cache/cargo-target")),
         var("GIT_CONFIG_SYSTEM", format!("{USER_KEY_PATH}/gitconfig")),
         var("BUILDKIT_HOST", BUILDKIT_HOST.to_string()),
         var("KL_OWNER", owner.to_string()),
@@ -58,22 +57,10 @@ pub(super) fn login_env(
         var("LANG", "C.UTF-8".into()),
         var("MANPATH", format!("{}/share/man:", crate::packages::PROFILE_LINK)),
         var("XDG_DATA_DIRS", format!("{}/share:/usr/local/share:/usr/share", crate::packages::PROFILE_LINK)),
-        // The volume IS the home now (2026-09-22 ruling): every cache lives under `~/.cache`
-        // because the whole tree travels with the workspace on clone/restore/push, and a cold
-        // cache never blocks on network I/O since there is no NFS home left to touch. Under
-        // `~/.cache`, never a tool's own `./target`: nothing the platform places may collide with
-        // a directory a repository versions, and the global git ignore
-        // (`/etc/kloudlite/gitignore-global`, appended to `~/.config/git/ignore` by `prelude`) is
-        // one line per kind rather than one per tool.
-        var("RUSTUP_HOME", format!("{HOME_DIR}/.cache/rustup")),
-        var("GOMODCACHE", format!("{HOME_DIR}/.cache/gomod")),
-        var("MAVEN_OPTS", format!("-Dmaven.repo.local={HOME_DIR}/.cache/m2")),
-        var("PLAYWRIGHT_BROWSERS_PATH", format!("{HOME_DIR}/.cache/ms-playwright")),
-        var("NUGET_PACKAGES", format!("{HOME_DIR}/.cache/nuget")),
+        // No cache variables (owner, 2026-10-13): the volume IS the home and execs see all of it,
+        // so every tool's own default (`~/.cargo`, `~/.rustup`, `~/go`, `./target`) is already in
+        // what a clone, restore or push carries. One variable per tool was a list that never ended.
         var("DO_NOT_TRACK", "1".into()),
-        var("UV_CACHE_DIR", format!("{HOME_DIR}/.cache/uv")),
-        var("PIP_CACHE_DIR", format!("{HOME_DIR}/.cache/pip")),
-        var("DENO_DIR", format!("{HOME_DIR}/.cache/deno")),
         // History belongs to the WORK, not the node (owner, 2026-09-16): in the volume it
         // is snapshotted, replicated and cloned with it, so a start on another node or a restore
         // finds what was typed, where the per-node state dir left every move blank.
@@ -617,7 +604,7 @@ pub fn workspace_pod(
                     mount_path: HOME_DIR.to_string(),
                     ..Default::default()
                 },
-                // Every cache (`login_env`) lives under `~/.cache` inside the volume itself now,
+                // Every cache lives at its tool's default under the home, inside the volume itself,
                 // so none of the old per-tool subPath mounts are needed; `TMPDIR` lost its
                 // node-local home too, so this emptyDir covers it and anything else that must not
                 // travel with the tree.

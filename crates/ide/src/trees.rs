@@ -45,6 +45,9 @@ fn name_ok(s: &str) -> bool {
 pub struct TreeCtx {
     pub name: String,
     pub root: PathBuf,
+    /// The HOME an exec in this tree sees, bound read-write: the person's `/home/kl` for `main`,
+    /// the tree's own copy of it (`{top}/.agents/{name}`) otherwise. Holds `root`.
+    pub home: PathBuf,
     /// One graph per tree: a subagent's graft answers about ITS files, and the main session's
     /// about the workspace's.
     pub graft: Arc<Graft>,
@@ -66,16 +69,10 @@ impl TreeCtx {
         self.name == MAIN
     }
 
-    /// The per-tree dotfile home `bwrap` sets `HOME` to, so a subagent's git, npm and cargo config
-    /// lands in its own tree rather than in the person's home.
-    pub fn sandbox_home(&self) -> PathBuf {
-        self.root.join(".home")
-    }
-
-    /// The `/tmp` every exec of this tree shares, inside the git-ignored `.home`. A tmpfs per exec
-    /// made `/tmp/test.log` written by one exec missing in the next (2026-10-10, session report).
+    /// The `/tmp` every exec of this tree shares, under its home and outside the source tree. A
+    /// tmpfs per exec made `/tmp/test.log` written by one exec missing in the next (2026-10-10).
     pub fn sandbox_tmp(&self) -> PathBuf {
-        self.sandbox_home().join("tmp")
+        self.home.join(".cache/kl-tmp")
     }
 }
 
@@ -178,7 +175,8 @@ impl Trees {
         // `main` keeps the configured graft context; a tree's is its own `{tree}/graft`, since the
         // graph it answers about is its own files.
         let graft_dir = if name == MAIN { self.graft_dir.clone() } else { None };
-        let ctx = Arc::new(TreeCtx { name: name.to_string(), root: root.clone(), graft: Graft::new(root, graft_dir), port_block });
+        let home = if name == MAIN { self.top.clone() } else { self.top.join(TREES_DIR).join(name) };
+        let ctx = Arc::new(TreeCtx { name: name.to_string(), root: root.clone(), home, graft: Graft::new(root, graft_dir), port_block });
         map.insert(name.to_string(), ctx.clone());
         ctx
     }

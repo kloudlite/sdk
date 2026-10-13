@@ -43,7 +43,7 @@ fn words_of(args: &Value) -> Result<(Vec<String>, String), ToolError> {
 /// group so a kill reaches the children.
 ///
 /// The environment a model can print is the profile's own plus exactly three of ours —
-/// `KL_TREE`, `PORT`, `KL_PORT_RANGE`. `HOME` is the sandbox's (`{tree}/.home`) and `KL_WORKSPACE`
+/// `KL_TREE`, `PORT`, `KL_PORT_RANGE`. `HOME` is the tree's home (`TreeCtx::home`) and `KL_WORKSPACE`
 /// is REMOVED: it names the layout §3.5 says a model is never taught, and it was in the pod
 /// environment this process inherited.
 pub(crate) fn command(t: &TreeCtx, args: &Value) -> Result<(Command, String), ToolError> {

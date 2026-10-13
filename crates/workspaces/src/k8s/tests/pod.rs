@@ -415,19 +415,16 @@ pub(crate) fn a_clones_pod_is_named_after_the_workspace_not_the_shared_volume() 
 }
 
 
-/// Every cache now lives under `HOME_DIR/.cache/` inside the volume itself, so a clone or a
-/// restore arrives warm — and never at a tool's own `./target`, which a repository may version.
+/// No cache is redirected: execs see the whole home, so each tool's own default is already in the
+/// volume a clone or restore carries (owner, 2026-10-13).
 #[test]
-pub(crate) fn the_login_env_redirects_every_cache_into_the_volume() {
+pub(crate) fn the_login_env_leaves_every_cache_at_its_default() {
     let env = login_env("w-abc123", "ws-1", "acme", "", "registry.kloudlite.io", "https://api.kloudlite.io", "git.khost.dev", "22", "");
     let get = |n: &str| env.iter().find(|e| e.name == n).unwrap().value.clone().unwrap();
     assert_eq!(get("KL_WORKSPACE"), WORKSPACE_DIR);
-    assert_eq!(get("CARGO_TARGET_DIR"), format!("{HOME_DIR}/.cache/cargo-target"));
-    assert_eq!(get("RUSTUP_HOME"), format!("{HOME_DIR}/.cache/rustup"));
-    assert_eq!(get("GOMODCACHE"), format!("{HOME_DIR}/.cache/gomod"));
-    assert_eq!(get("MAVEN_OPTS"), format!("-Dmaven.repo.local={HOME_DIR}/.cache/m2"));
-    assert_eq!(get("PLAYWRIGHT_BROWSERS_PATH"), format!("{HOME_DIR}/.cache/ms-playwright"));
-    assert_eq!(get("NUGET_PACKAGES"), format!("{HOME_DIR}/.cache/nuget"));
+    for k in ["CARGO_TARGET_DIR", "RUSTUP_HOME", "GOMODCACHE", "MAVEN_OPTS", "PLAYWRIGHT_BROWSERS_PATH", "NUGET_PACKAGES", "UV_CACHE_DIR", "PIP_CACHE_DIR", "DENO_DIR"] {
+        assert!(env.iter().all(|e| e.name != k), "{k} is set");
+    }
     // History is in the volume too: it travels with a clone, a restore and a move.
     assert_eq!(get("HISTFILE"), format!("{HOME_DIR}/.cache/zsh/history"));
     assert_eq!(get("DO_NOT_TRACK"), "1");
