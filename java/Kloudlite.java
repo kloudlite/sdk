@@ -401,9 +401,97 @@ public class Kloudlite {
             return request("POST", "/v1/workspaces/" + seg(id) + "/packages/update", null);
         }
 
-        /** The workspace's tool-server address — answered to the owner alone. */
+        /** The workspace's tool-server address and token — answered to the owner alone. */
         public String tools(String id) throws IOException, InterruptedException {
             return request("GET", "/v1/workspaces/" + seg(id) + "/tools", null);
+        }
+
+        /**
+         * An {@link Ide} bound to this workspace's tool server. The address is a pod IP:
+         * reachable from inside the fleet (a bench); from a laptop, tunnel with
+         * {@code kl-connect ws ide} and use {@code new Ide("http://127.0.0.1:7788", token)}.
+         */
+        public Ide ide(String id) throws IOException, InterruptedException {
+            String doc = tools(id);
+            String address = field(doc, "address");
+            if (address == null) {
+                throw new ApiException(502, "the tools answer named no address");
+            }
+            return new Ide("http://" + address, field(doc, "token"));
+        }
+    }
+
+    /**
+     * A workspace's tool server ({@code kl ide serve}): the full tool set over plain HTTP —
+     * {@link #list} answers every tool with its JSON schema (the authority on arguments) and
+     * {@link #call} runs one with a raw JSON args object; the helpers cover the everyday files
+     * and exec calls, and watch_*, graft_* and container_* go through {@code call} with the
+     * arguments the listing names.
+     */
+    public static class Ide {
+        private final String url;
+        private final String token; // null = none
+        private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
+
+        public Ide(String url, String token) {
+            this.url = url.replaceAll("/+$", "");
+            this.token = token;
+        }
+
+        /** Every tool, with its JSON schema. */
+        public String list() throws IOException, InterruptedException {
+            return send("GET", "/tools", null);
+        }
+
+        /** Run one tool by name; {@code argsJson} is the JSON object its schema names. */
+        public String call(String name, String argsJson) throws IOException, InterruptedException {
+            return send("POST", "/tools/" + seg(name), argsJson == null ? "{}" : argsJson);
+        }
+
+        public String read(String path) throws IOException, InterruptedException {
+            return call("read", obj("path", path));
+        }
+
+        public String write(String path, String content) throws IOException, InterruptedException {
+            return call("write", obj("path", path, "content", content));
+        }
+
+        /** Apply a unified diff; it never applies in part. A null cwd means the working directory. */
+        public String patch(String diff, String cwd) throws IOException, InterruptedException {
+            return call("patch", obj("diff", diff, "cwd", cwd));
+        }
+
+        public String glob(String pattern, String cwd) throws IOException, InterruptedException {
+            return call("glob", obj("pattern", pattern, "cwd", cwd));
+        }
+
+        public String grep(String pattern, String cwd) throws IOException, InterruptedException {
+            return call("grep", obj("pattern", pattern, "cwd", cwd));
+        }
+
+        /** Run a shell command and wait; the schema's other knobs go through {@link #call}. */
+        public String exec(String cmd) throws IOException, InterruptedException {
+            return call("exec", obj("cmd", cmd));
+        }
+
+        private String send(String method, String path, String jsonBody)
+                throws IOException, InterruptedException {
+            HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(url + path))
+                // exec may legitimately run for ten minutes; the request outlasts it.
+                .timeout(Duration.ofSeconds(630))
+                .header("User-Agent", "kloudlite-sdk-java/" + VERSION)
+                .header("Accept", "application/json")
+                .method(method, jsonBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(jsonBody));
+            if (jsonBody != null) b.header("Content-Type", "application/json");
+            if (token != null) b.header("Authorization", "Bearer " + token);
+            HttpResponse<String> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() < 200 || resp.statusCode() > 299) {
+                throw new ApiException(resp.statusCode(), errorText(resp.body()));
+            }
+            return resp.body();
         }
     }
 
@@ -491,6 +579,16 @@ public class Kloudlite {
             }
         }
         return b.append('"').toString();
+    }
+
+    /** One string field of a flat JSON object — enough parsing for an address and a token. */
+    static String field(String json, String name) {
+        String key = "\"" + name + "\"";
+        int k = json == null ? -1 : json.indexOf(key);
+        if (k < 0) return null;
+        int q1 = json.indexOf('"', json.indexOf(':', k + key.length()) + 1);
+        int q2 = q1 < 0 ? -1 : json.indexOf('"', q1 + 1);
+        return q2 > q1 ? json.substring(q1 + 1, q2) : null;
     }
 
     /** The server answers errors as {"error": …} or plain text; take either. */

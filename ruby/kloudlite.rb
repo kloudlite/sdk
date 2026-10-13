@@ -306,15 +306,168 @@ module Kloudlite
       @c.request("POST", "/v1/workspaces/#{seg(id)}/packages/update")
     end
 
-    # The workspace's tool-server address — answered to the owner alone.
+    # The workspace's tool-server address and token — answered to the owner alone.
     def tools(id)
       @c.request("GET", "/v1/workspaces/#{seg(id)}/tools")
+    end
+
+    # An Ide bound to this workspace's tool server. The address is a pod IP: reachable from
+    # inside the fleet (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
+    # Ide.new("http://127.0.0.1:7788", token: token) instead.
+    def ide(id)
+      doc = tools(id)
+      Ide.new("http://#{doc['address']}", token: doc["token"])
     end
 
     private
 
     def seg(s)
       URI.encode_uri_component(s.to_s)
+    end
+  end
+
+  # A workspace's tool server (`kl ide serve`): the full tool set over plain HTTP — GET /tools
+  # lists every tool with its schema, POST /tools/{name} runs one. +call+ takes anything the
+  # listing names; nil arguments are dropped, so every optional means "the tool's own default".
+  # The +in+ argument of the graft tools is spelled +in_+ (a Ruby keyword otherwise).
+  class Ide
+    def initialize(url, token: nil, timeout: 630)
+      @url = url.sub(%r{/+\z}, "")
+      @token = token
+      @timeout = timeout
+    end
+
+    # Every tool, with its JSON schema — the authority on arguments.
+    def list
+      http("GET", "/tools")
+    end
+
+    def call(name, **args)
+      body = args.compact.transform_keys { |k| k == :in_ ? "in" : k.to_s }
+      http("POST", "/tools/#{URI.encode_uri_component(name)}", body)
+    end
+
+    # files
+    def read(path: nil, paths: nil, offset: nil, limit: nil)
+      call("read", path: path, paths: paths, offset: offset, limit: limit)
+    end
+
+    def write(path, content)
+      call("write", path: path, content: content)
+    end
+
+    # One file as (path:, edits:), several as files: [{path:, edits:}]; each edit is
+    # {old:, new:, replace_all:?} and the whole call is atomic.
+    def edit(path: nil, edits: nil, files: nil)
+      call("edit", path: path, edits: edits, files: files)
+    end
+
+    def patch(diff, cwd: nil)
+      call("patch", diff: diff, cwd: cwd)
+    end
+
+    def glob(pattern, cwd: nil)
+      call("glob", pattern: pattern, cwd: cwd)
+    end
+
+    def grep(pattern, cwd: nil, glob: nil, mode: nil, context: nil, ignore_case: nil, max: nil)
+      call("grep", pattern: pattern, cwd: cwd, glob: glob, mode: mode,
+                   context: context, ignore_case: ignore_case, max: max)
+    end
+
+    # commands and processes — detach: true answers {id} for the process_* calls
+    def exec(cmd, cwd: nil, env: nil, timeout_ms: nil, head: nil, tail: nil, quiet: nil, detach: nil)
+      call("exec", cmd: cmd, cwd: cwd, env: env, timeout_ms: timeout_ms,
+                   head: head, tail: tail, quiet: quiet, detach: detach)
+    end
+
+    def process_list
+      call("process_list")
+    end
+
+    def process_output(id, since: nil, since_err: nil)
+      call("process_output", id: id, since: since, since_err: since_err)
+    end
+
+    def process_write(id, data)
+      call("process_write", id: id, data: data)
+    end
+
+    def process_kill(id, signal: nil)
+      call("process_kill", id: id, signal: signal)
+    end
+
+    # watches
+    def watch(paths: nil, cmd: nil, pattern: nil, once: nil)
+      call("watch", paths: paths, cmd: cmd, pattern: pattern, once: once)
+    end
+
+    def watch_poll(id, since: nil)
+      call("watch_poll", id: id, since: since)
+    end
+
+    def watch_stop(id)
+      call("watch_stop", id: id)
+    end
+
+    # graft (the repo context graph)
+    def graft_find_code(query, limit: nil, full: nil, in_: nil)
+      call("graft_find_code", query: query, limit: limit, full: full, in_: in_)
+    end
+
+    def graft_find_all(pattern, in_: nil, ignore_case: nil, fixed: nil)
+      call("graft_find_all", pattern: pattern, in_: in_, ignore_case: ignore_case, fixed: fixed)
+    end
+
+    def graft_trace_calls(symbol, direction: nil, depth: nil, in_: nil)
+      call("graft_trace_calls", symbol: symbol, direction: direction, depth: depth, in_: in_)
+    end
+
+    def graft_file_api(file)
+      call("graft_file_api", file: file)
+    end
+
+    def graft_repo_map(max_dirs: nil)
+      call("graft_repo_map", max_dirs: max_dirs)
+    end
+
+    def graft_build(deep: nil, no_reuse: nil)
+      call("graft_build", deep: deep, no_reuse: no_reuse)
+    end
+
+    def graft_blast(base: nil, depth: nil)
+      call("graft_blast", base: base, depth: depth)
+    end
+
+    # containers (the hidden per-owner builder)
+    def container_build(tags, context: nil, file: nil, build_args: nil, platform: nil,
+                        no_cache: nil, timeout_ms: nil, head: nil, tail: nil)
+      call("container_build", tags: tags, context: context, file: file, build_args: build_args,
+                              platform: platform, no_cache: no_cache, timeout_ms: timeout_ms,
+                              head: head, tail: tail)
+    end
+
+    def container_push(src, dst)
+      call("container_push", src: src, dst: dst)
+    end
+
+    private
+
+    def http(method, path, body = nil)
+      uri = URI.parse(@url + path)
+      req = Net::HTTP.const_get(method.capitalize).new(uri)
+      req["User-Agent"] = USER_AGENT
+      req["Accept"] = "application/json"
+      req["Authorization"] = "Bearer #{@token}" if @token
+      if body
+        req["Content-Type"] = "application/json"
+        req.body = JSON.generate(body)
+      end
+      resp = Net::HTTP.start(uri.hostname, uri.port,
+                             use_ssl: uri.scheme == "https",
+                             open_timeout: @timeout, read_timeout: @timeout) { |http| http.request(req) }
+      raise ApiError.new(resp.code.to_i, Client.error_text(resp.body)) unless resp.is_a?(Net::HTTPSuccess)
+      resp.body.nil? || resp.body.empty? ? nil : JSON.parse(resp.body)
     end
   end
 

@@ -369,9 +369,156 @@ export class Workspaces {
     return this.c.request("POST", `/v1/workspaces/${seg(id)}/packages/update`);
   }
 
-  /** The workspace's tool-server address — answered to the owner alone. */
+  /** The workspace's tool-server address and token — answered to the owner alone. */
   tools(id: string) {
-    return this.c.request("GET", `/v1/workspaces/${seg(id)}/tools`);
+    return this.c.request<{ address: string; token?: string }>("GET", `/v1/workspaces/${seg(id)}/tools`);
+  }
+
+  /**
+   * An {@link Ide} bound to this workspace's tool server. The address is a pod IP: reachable
+   * from inside the fleet (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
+   * `new Ide("http://127.0.0.1:7788", token)` instead.
+   */
+  async ide(id: string): Promise<Ide> {
+    const doc = await this.tools(id);
+    return new Ide(`http://${doc.address}`, doc.token);
+  }
+}
+
+type ToolArgs = Record<string, unknown>;
+
+/**
+ * A workspace's tool server (`kl ide serve`): the full tool set over plain HTTP — `GET /tools`
+ * lists every tool with its schema, `POST /tools/{name}` runs one. The typed methods cover them
+ * all; {@link call} takes anything the listing names. `undefined` arguments are dropped, so
+ * every optional means "the tool's own default".
+ */
+export class Ide {
+  private readonly url: string;
+
+  constructor(
+    url: string,
+    private readonly token?: string,
+    private readonly timeoutMs = 630_000,
+  ) {
+    this.url = url.replace(/\/+$/, "");
+  }
+
+  /** Every tool, with its JSON schema — the authority on arguments. */
+  list() {
+    return this.http("GET", "/tools");
+  }
+
+  call<T = unknown>(name: string, args: ToolArgs = {}): Promise<T> {
+    return this.http<T>("POST", `/tools/${seg(name)}`, args);
+  }
+
+  // files
+  read(args: { path?: string; paths?: unknown[]; offset?: number; limit?: number }) {
+    return this.call("read", args);
+  }
+  write(path: string, content: string) {
+    return this.call("write", { path, content });
+  }
+  /**
+   * One file as `{path, edits}`, several as `{files: [{path, edits}]}`; each edit is
+   * `{old, new, replace_all?}` and the whole call is atomic.
+   */
+  edit(args: { path?: string; edits?: unknown[]; files?: unknown[] }) {
+    return this.call("edit", args);
+  }
+  patch(diff: string, cwd?: string) {
+    return this.call("patch", { diff, cwd });
+  }
+  glob(pattern: string, cwd?: string) {
+    return this.call("glob", { pattern, cwd });
+  }
+  grep(
+    pattern: string,
+    opts?: { cwd?: string; glob?: string; mode?: "content" | "files" | "count"; context?: number; ignore_case?: boolean; max?: number },
+  ) {
+    return this.call("grep", { pattern, ...opts });
+  }
+
+  // commands and processes — `detach: true` answers `{id}` for the process_* calls
+  exec(
+    cmd: string | string[],
+    opts?: { cwd?: string; env?: Record<string, string>; timeout_ms?: number; head?: number; tail?: number; quiet?: boolean; detach?: boolean },
+  ) {
+    return this.call("exec", { cmd, ...opts });
+  }
+  processList() {
+    return this.call("process_list");
+  }
+  processOutput(id: string, opts?: { since?: number; since_err?: number }) {
+    return this.call("process_output", { id, ...opts });
+  }
+  processWrite(id: string, data: string) {
+    return this.call("process_write", { id, data });
+  }
+  processKill(id: string, signal?: "TERM" | "KILL") {
+    return this.call("process_kill", { id, signal });
+  }
+
+  // watches
+  watch(args: { paths?: string[]; cmd?: string | string[]; pattern?: string; once?: boolean }) {
+    return this.call("watch", args);
+  }
+  watchPoll(id: string, since?: number) {
+    return this.call("watch_poll", { id, since });
+  }
+  watchStop(id: string) {
+    return this.call("watch_stop", { id });
+  }
+
+  // graft (the repo context graph)
+  graftFindCode(query: string, opts?: { limit?: number; full?: boolean; in?: string }) {
+    return this.call("graft_find_code", { query, ...opts });
+  }
+  graftFindAll(pattern: string, opts?: { in?: string; ignore_case?: boolean; fixed?: boolean }) {
+    return this.call("graft_find_all", { pattern, ...opts });
+  }
+  graftTraceCalls(symbol: string, opts?: { direction?: "in" | "out"; depth?: number | "all"; in?: string }) {
+    return this.call("graft_trace_calls", { symbol, ...opts });
+  }
+  graftFileApi(file: string) {
+    return this.call("graft_file_api", { file });
+  }
+  graftRepoMap(maxDirs?: number) {
+    return this.call("graft_repo_map", { max_dirs: maxDirs });
+  }
+  graftBuild(opts?: { deep?: boolean; no_reuse?: boolean }) {
+    return this.call("graft_build", { ...opts });
+  }
+  graftBlast(opts?: { base?: string; depth?: number | "all" }) {
+    return this.call("graft_blast", { ...opts });
+  }
+
+  // containers (the hidden per-owner builder)
+  containerBuild(
+    tags: string[],
+    opts?: { context?: string; file?: string; build_args?: string[]; platform?: string; no_cache?: boolean; timeout_ms?: number; head?: number; tail?: number },
+  ) {
+    return this.call("container_build", { tags, ...opts });
+  }
+  containerPush(src: string, dst: string[]) {
+    return this.call("container_push", { src, dst });
+  }
+
+  private async http<T = unknown>(method: string, path: string, body?: ToolArgs): Promise<T> {
+    const headers: Record<string, string> = { "User-Agent": USER_AGENT, Accept: "application/json" };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const resp = await fetch(this.url + path, {
+      method,
+      headers,
+      // JSON.stringify drops undefined values, which is the "tool's own default" rule above.
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const raw = await resp.text();
+    if (!resp.ok) throw new ApiError(resp.status, errorText(raw));
+    return (raw ? JSON.parse(raw) : null) as T;
   }
 }
 
