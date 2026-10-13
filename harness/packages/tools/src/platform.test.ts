@@ -167,6 +167,11 @@ test("service_logs reads the build gate's logs port, defaulting env in a workspa
     const m = platformTools("main");
     expect(await tool(m, "service_logs").run({ env: "e1", service: "web", tail: 50, previous: true })).toBe("{\"pods\":[]}");
     expect(seen.at(-1)).toBe("/logs/e1/web?tail=50&previous=true");
+    // a quoted flag reads as the flag: "false" must not ask for the crashed container
+    await tool(m, "service_logs").run({ env: "e1", service: "web", previous: "false" });
+    expect(seen.at(-1)).toBe("/logs/e1/web");
+    await tool(m, "service_logs").run({ env: "e1", service: "web", previous: "true" });
+    expect(seen.at(-1)).toBe("/logs/e1/web?previous=true");
     expect((tool(m, "service_logs").inputSchema as any).required).toEqual(["env", "service"]);
     // workspace: env defaults through /v1/me/environments
     const t = platformTools("workspace", "w1");

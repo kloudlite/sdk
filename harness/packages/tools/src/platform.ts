@@ -255,7 +255,7 @@ function basePlatformTools(kind: "main" | "workspace" | "all", wsId?: string, ti
       async (env, a) => {
         await wake(env);
         const base = (process.env.KL_LOGS_URL ?? "http://builder-gate.kloudlite-system.svc:1235").replace(/\/$/, "");
-        const q = qs({ tail: a.tail === undefined ? undefined : String(a.tail), since: a.since === undefined ? undefined : String(a.since), previous: a.previous ? "true" : undefined });
+        const q = qs({ tail: a.tail === undefined ? undefined : String(a.tail), since: a.since === undefined ? undefined : String(a.since), previous: a.previous === true || String(a.previous).trim().toLowerCase() === "true" ? "true" : undefined });
         // no auth header: the gate identifies this pod by its source IP
         const res = await fetch(`${base}/logs/${env}/${seg(a.service)}${q}`, { signal: AbortSignal.timeout(15_000) });
         const text = await res.text();

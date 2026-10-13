@@ -78,6 +78,24 @@ test("a timeout is never resent: the pod may still be running the first call", a
   expect(posts).toBe(1);
 });
 
+test("a quoted timeout_ms is a number: \"300000\" + 15000 must not concatenate", async () => {
+  handler = (u) => {
+    if (u.endsWith("/v1/workspaces/w1/tools")) return j({ address: "10.0.0.1:7788" });
+    if (u.endsWith("/tools")) return j({ tools: [] });
+    return j({ exit_code: 0, stdout: "", stderr: "" });
+  };
+  const seen: number[] = [];
+  const orig = AbortSignal.timeout;
+  AbortSignal.timeout = (ms: number) => (seen.push(ms), orig.call(AbortSignal, ms));
+  try {
+    const t = await podTools("w1");
+    await t.find((x) => x.name === "exec")!.run({ cmd: "true", timeout_ms: "300000" });
+  } finally {
+    AbortSignal.timeout = orig;
+  }
+  expect(seen).toContain(315_000);
+});
+
 test("a 4xx from a pod tool throws with tool name and status; a non-zero exit stays a result", async () => {
   handler = (u) => {
     if (u.endsWith("/v1/workspaces/w1/tools")) return j({ address: "10.0.0.1:7788" });

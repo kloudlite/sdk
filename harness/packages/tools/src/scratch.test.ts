@@ -35,6 +35,7 @@ test("write creates nested dirs, read returns it, missing is an error", async ()
   expect(readFileSync(join(root, "a/b/c.txt"), "utf8")).toBe("l1\nl2\nl3");
   expect(await t.read!.run({ path: join(root, "a/b/c.txt") })).toBe("l1\nl2\nl3");
   expect(await t.read!.run({ path: "a/b/c.txt", offset: 2, limit: 1 })).toBe("l2");
+  expect(await t.read!.run({ path: "a/b/c.txt", offset: "2", limit: "1" })).toBe("l2");
   expect(await t.read!.run({ path: "gone" })).toBe("error: no such file: gone");
 });
 
