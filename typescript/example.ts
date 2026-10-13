@@ -15,16 +15,16 @@ const kl = new Kloudlite({
   token: process.env.KLOUDLITE_TOKEN,
 });
 
-const [upOwner, upName] = ["acme", "payments"]; // the repo being contributed to
-const me = "dev"; // the handle the fork lands under
+const upstream = "acme/payments"; // the repo being contributed to
+const myFork = "dev/payments"; // where the fork lands (a handle or a team slug)
 
 try {
   // 1. Fork: objects and refs, never the upstream's pull requests or settings.
-  const fork = await kl.repos.fork(upOwner, upName, { owner: me, name: "payments" });
+  const fork = await kl.repos.fork(upstream, myFork);
   console.log(`forked into ${fork.owner}/${fork.name}`);
 
   // 2. Commit a change onto a NEW branch of the fork (the fork's main stays put).
-  const out = await kl.repos.commit(me, "payments", {
+  const out = await kl.repos.commit(myFork, {
     branch: "main",
     newBranch: "fix-rounding",
     message: "Fix rounding in invoice totals",
@@ -33,22 +33,22 @@ try {
   console.log(`committed ${out.commit} on ${out.branch}`);
 
   // 3. Propose it back: head names the FORK's branch, head_repo says where it lives.
-  const pr = (await kl.repos.openPull(upOwner, upName, {
+  const pr = (await kl.repos.openPull(upstream, {
     title: "Fix rounding in invoice totals",
     head: "fix-rounding",
     base: "main",
-    head_repo: `${me}/payments`,
+    head_repo: myFork,
   })) as { _id: string; number: number };
   console.log(`opened ${pr._id}`);
 
   // 4. The diff upstream reviews is the mirror: pull/{n}/head.
-  await kl.repos.compare(upOwner, upName, "main", `pull/${pr.number}/head`);
-  await kl.repos.comment(upOwner, upName, pr.number, "Ready for review");
+  await kl.repos.compare(upstream, "main", `pull/${pr.number}/head`);
+  await kl.repos.comment(upstream, pr.number, "Ready for review");
 
   // 5. Merge. 202 — a job; the pull reports where it got to.
-  await kl.repos.merge(upOwner, upName, pr.number, "squash");
+  await kl.repos.merge(upstream, pr.number, "squash");
   for (let i = 0; i < 30; i++) {
-    const state = ((await kl.repos.pull(upOwner, upName, pr.number)) as { state: string }).state;
+    const state = ((await kl.repos.pull(upstream, pr.number)) as { state: string }).state;
     if (state !== "open") {
       console.log("pull is", state);
       break;

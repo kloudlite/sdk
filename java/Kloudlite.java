@@ -1,10 +1,11 @@
 // Kloudlite SDK for Java — one file, no dependencies (java.net.http, Java 11+).
 //
 // Auth is a Bearer token (a session or CLI token). Every module hangs off the
-// one client:
+// one client, and every repository is named by ONE "owner/name" string — the
+// owner half being a person's handle or a team slug:
 //
 //   Kloudlite kl = new Kloudlite("https://api.example.com", "…");
-//   String repo = kl.repos().create("acme", "payments", "private", "billing");
+//   String repo = kl.repos().create("acme/payments", null, null);
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper.
 
@@ -71,12 +72,17 @@ public class Kloudlite {
         return resp.body();
     }
 
+    /**
+     * Every {@code repo} argument is one "owner/name" string; only owner-scoped
+     * calls ({@link #list}) take a bare handle.
+     */
     public class Repos {
         // repos
-        public String create(String owner, String name, String visibility, String description)
+        public String create(String repo, String visibility, String description)
                 throws IOException, InterruptedException {
+            String[] on = split(repo);
             return request("POST", "/v1/repos", obj(
-                "owner", owner, "name", name,
+                "owner", on[0], "name", on[1],
                 "visibility", visibility == null ? "private" : visibility,
                 "description", description == null ? "" : description));
         }
@@ -85,114 +91,129 @@ public class Kloudlite {
             return request("GET", "/v1/repos?owner=" + seg(owner), null);
         }
 
-        public String get(String owner, String name) throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, ""), null);
+        public String get(String repo) throws IOException, InterruptedException {
+            return request("GET", path(repo, ""), null);
         }
 
         /** Either argument may be null to leave it unchanged. */
-        public String update(String owner, String name, String visibility, String description)
+        public String update(String repo, String visibility, String description)
                 throws IOException, InterruptedException {
-            return request("PATCH", repo(owner, name, ""), obj("visibility", visibility, "description", description));
+            return request("PATCH", path(repo, ""), obj("visibility", visibility, "description", description));
         }
 
-        public String delete(String owner, String name) throws IOException, InterruptedException {
-            return request("DELETE", repo(owner, name, ""), null);
+        public String delete(String repo) throws IOException, InterruptedException {
+            return request("DELETE", path(repo, ""), null);
         }
 
         /**
-         * A new repo copied from another: objects and refs, never its pull requests or settings.
-         * A null visibility means private, whatever the source was.
+         * A new repo {@code dst} copied from {@code src}: objects and refs, never its pull
+         * requests or settings. A null visibility means private, whatever the source was.
          */
-        public String fork(String srcOwner, String srcName, String owner, String name,
-                           String visibility, String description) throws IOException, InterruptedException {
-            return request("POST", repo(srcOwner, srcName, "/fork"), obj(
-                "owner", owner, "name", name,
+        public String fork(String src, String dst, String visibility, String description)
+                throws IOException, InterruptedException {
+            String[] on = split(dst);
+            return request("POST", path(src, "/fork"), obj(
+                "owner", on[0], "name", on[1],
                 "visibility", visibility == null ? "private" : visibility,
                 "description", description == null ? "" : description));
         }
 
         // branches
-        public String branches(String owner, String name) throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, "/branches"), null);
+        public String branches(String repo) throws IOException, InterruptedException {
+            return request("GET", path(repo, "/branches"), null);
         }
 
         /** {@code oid} is the head the caller saw; the delete is refused if the branch moved. */
-        public String deleteBranch(String owner, String name, String branch, String oid)
+        public String deleteBranch(String repo, String branch, String oid)
                 throws IOException, InterruptedException {
-            return request("DELETE", repo(owner, name, "/branches/" + seg(branch) + "?oid=" + seg(oid)), null);
+            return request("DELETE", path(repo, "/branches/" + seg(branch) + "?oid=" + seg(oid)), null);
         }
 
         // protection
-        public String protection(String owner, String name) throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, "/protection"), null);
+        public String protection(String repo) throws IOException, InterruptedException {
+            return request("GET", path(repo, "/protection"), null);
         }
 
-        public String protect(String owner, String name, String pattern, boolean remove)
+        public String protect(String repo, String pattern, boolean remove)
                 throws IOException, InterruptedException {
-            return request("POST", repo(owner, name, "/protection"),
+            return request("POST", path(repo, "/protection"),
                 "{\"pattern\":" + quote(pattern) + ",\"remove\":" + remove + "}");
         }
 
         // pull requests
-        public String pulls(String owner, String name) throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, "/pulls"), null);
+        public String pulls(String repo) throws IOException, InterruptedException {
+            return request("GET", path(repo, "/pulls"), null);
         }
 
-        public String pull(String owner, String name, long number) throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, "/pulls/" + number), null);
+        public String pull(String repo, long number) throws IOException, InterruptedException {
+            return request("GET", path(repo, "/pulls/" + number), null);
         }
 
-        public String openPull(String owner, String name, String title, String head, String base, String description)
+        public String openPull(String repo, String title, String head, String base, String description)
                 throws IOException, InterruptedException {
-            return openPull(owner, name, title, head, base, description, null);
+            return openPull(repo, title, head, base, description, null);
         }
 
-        /** {@code headRepo} ("owner/name") makes it a cross-repo pull: {@code head} then names that fork's branch. */
-        public String openPull(String owner, String name, String title, String head, String base,
+        /**
+         * {@code headRepo} (another "owner/name") makes it a cross-repo pull: {@code head} then
+         * names a branch of that fork, proposed onto this repo's {@code base}.
+         */
+        public String openPull(String repo, String title, String head, String base,
                                String description, String headRepo) throws IOException, InterruptedException {
-            return request("POST", repo(owner, name, "/pulls"), obj(
+            if (headRepo != null) split(headRepo);
+            return request("POST", path(repo, "/pulls"), obj(
                 "title", title, "head", head, "base", base,
                 "description", description == null ? "" : description,
                 "head_repo", headRepo));
         }
 
-        public String comment(String owner, String name, long number, String body)
+        public String comment(String repo, long number, String body)
                 throws IOException, InterruptedException {
-            return request("POST", repo(owner, name, "/pulls/" + number + "/comments"), obj("body", body));
+            return request("POST", path(repo, "/pulls/" + number + "/comments"), obj("body", body));
         }
 
         /** The merge is a job (202); strategy is fast-forward, squash, merge or rebase. */
-        public String merge(String owner, String name, long number, String strategy)
+        public String merge(String repo, long number, String strategy)
                 throws IOException, InterruptedException {
-            return request("POST", repo(owner, name, "/pulls/" + number + "/merge?strategy=" + seg(strategy)), null);
+            return request("POST", path(repo, "/pulls/" + number + "/merge?strategy=" + seg(strategy)), null);
         }
 
-        public String close(String owner, String name, long number) throws IOException, InterruptedException {
-            return request("POST", repo(owner, name, "/pulls/" + number + "/close"), null);
+        public String close(String repo, long number) throws IOException, InterruptedException {
+            return request("POST", path(repo, "/pulls/" + number + "/close"), null);
         }
 
         // commits
-        public String compare(String owner, String name, String base, String head)
+        public String compare(String repo, String base, String head)
                 throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, "/compare?base=" + seg(base) + "&head=" + seg(head)), null);
+            return request("GET", path(repo, "/compare?base=" + seg(base) + "&head=" + seg(head)), null);
         }
 
         /** {@code commitJson} is the whole body: branch, message, changes, expect?, newBranch?. */
-        public String commit(String owner, String name, String commitJson)
+        public String commit(String repo, String commitJson)
                 throws IOException, InterruptedException {
-            return request("POST", repo(owner, name, "/commits"), commitJson);
+            return request("POST", path(repo, "/commits"), commitJson);
         }
 
-        public String signature(String owner, String name, String sha) throws IOException, InterruptedException {
-            return request("GET", repo(owner, name, "/commits/" + seg(sha) + "/signature"), null);
+        public String signature(String repo, String sha) throws IOException, InterruptedException {
+            return request("GET", path(repo, "/commits/" + seg(sha) + "/signature"), null);
         }
 
-        private String repo(String owner, String name, String tail) {
-            return "/v1/repos/" + seg(owner) + "/" + seg(name) + tail;
+        private String path(String repo, String tail) {
+            String[] on = split(repo);
+            return "/v1/repos/" + seg(on[0]) + "/" + seg(on[1]) + tail;
         }
     }
 
     // ── small helpers, so a one-file SDK needs no JSON dependency ──────────
+
+    /** "owner/name" → its two halves, refused client-side when malformed. */
+    static String[] split(String repo) {
+        int at = repo == null ? -1 : repo.indexOf('/');
+        if (at <= 0 || at == repo.length() - 1 || repo.indexOf('/', at + 1) >= 0) {
+            throw new IllegalArgumentException("a repository is named owner/name, got " + repo);
+        }
+        return new String[] { repo.substring(0, at), repo.substring(at + 1) };
+    }
 
     static String seg(String s) {
         return URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
