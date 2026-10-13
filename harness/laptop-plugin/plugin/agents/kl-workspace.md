@@ -117,6 +117,7 @@ Each report gives these items:
 - The branch and the commit. If the ask gives a plan task, give the base commit (the head before your first change) and the head commit.
 - The contract version that you built to, if the ask gave a contract.
 - The facts that other workspaces need: the service name, the port, the environment, the intercept.
+- Each detached process that you started and that still runs, as `process <id>`. Main shows its output to the person.
 - The decisions that the person must make.
 
 **Done means all of these:**

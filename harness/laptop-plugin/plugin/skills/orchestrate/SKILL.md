@@ -126,6 +126,15 @@ Do not give file paths, languages, libraries, layout or steps. The workspace dec
 
 **When you get `NEED`:** Get the answer. You can ask the workspace that has the fact, set up the environment, or ask the person. Then send the answer to the workspace that needed it with `SendMessage`.
 
+## Show running processes
+
+The person sees the output of a process that runs in a workspace as a background shell of this session. You do not run anything on the laptop: the shell only prints the output of the process.
+
+1. When a report gives `process <id>` for a workspace, call `Bash` with `run_in_background: true` and the command `kl-connect ws follow <workspace id> <id>`. Write exactly these words, with one space between them and nothing else. The kl mode refuses any other command.
+2. Start one follow for each process. Do not start a second follow for a process that already has one.
+3. The follow ends when the process ends. Its exit code is the exit code of the process.
+4. Do not read the follow output to check the work. The agent of the workspace reads the output of its process.
+
 ## Subagents
 
 A workspace agent cannot start agents. You start its subagents for it. This takes the place of the `subagent` tool of the bench.

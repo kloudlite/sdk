@@ -1,13 +1,19 @@
 //! `kl-connect mode gate|prompt` — kl mode for the laptop `kloudlite` Claude Code plugin
-//! (`harness/laptop-plugin/plugin/hooks/hooks.json`). While the mode is on, every tool call
-//! except the kl tools and Claude Code's own coordination tools is denied, in the main session
-//! and in its subagents: nothing reads, writes or runs on this laptop. The mode is a flag file
+//! (`harness/laptop-plugin/plugin/hooks/hooks.json`). While the mode is on, every tool that runs,
+//! reads or writes on this laptop is denied, in the main session and in its subagents; everything
+//! else (the kl tools, coordination, Artifact, the web) passes. The mode is a flag file
 //! `~/.claude/kl-mode/<key>`; `/kloudlite:on` and `/kloudlite:off` set and clear it from the
 //! `UserPromptSubmit` hook, before the command's own body runs.
 //!
-//! An allow list, not a deny list: a tool Claude Code adds later is denied until named here.
+//! A deny list since 2026-10-13: the allow list it replaced also refused Artifact and every other
+//! tool that touches nothing local, and the person wanted only the laptop fenced. A local tool
+//! Claude Code adds later passes until named here.
 //!
-//! The read-only kl tools are also ALLOWED outright, mode on or off: without an answer from this
+//! One Bash command passes anyway: `kl-connect ws follow <ws> <id>` in the background
+//! (`is_follow`), which only prints a workspace process's output, so a server running in the
+//! workspace shows up as a Claude Code background shell.
+//!
+//! The read-only kl tools are also allowed outright, mode on or off: without an answer from this
 //! hook, auto mode's classifier judges every kl call and refused `workspace_list` (2026-10-11).
 //! While the mode is on, EVERY kl tool is allowed too: turning it on is the person's choice to work
 //! through kl, so the classifier never stands between them and a kl call. With the mode off,
@@ -20,11 +26,13 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 const KL_PREFIX: &str = "mcp__plugin_kloudlite_kl__";
-/// Claude Code's coordination tools: they move work between agents, they touch no file.
-const ALLOWED: &[&str] = &[
-    "Agent", "Task", "Skill", "ToolSearch", "AskUserQuestion", "SendMessage", "TaskCreate", "TaskUpdate", "TaskList",
-    "TaskGet", "TodoWrite",
+/// Claude Code's tools that run, read or write on this laptop.
+const LOCAL: &[&str] = &[
+    "Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
+    "NotebookRead", "Glob", "Grep", "LS", "LSP",
 ];
+/// MCP servers whose tools act on this laptop's files.
+const LOCAL_MCP: &[&str] = &["mcp__serena__"];
 /// kl tools that only read: lists, docs, history, files and the code graph. `graft_build` writes
 /// the graph cache and `web_*` reach outside, so they stay with the classifier.
 const READ_ONLY: &[&str] = &[
@@ -36,10 +44,23 @@ const READ_ONLY: &[&str] = &[
 const ALLOW_REASON: &str = "kl: read-only tool";
 const ON_ALLOW_REASON: &str = "kl mode: kl tool";
 pub const DENY_REASON: &str = "kl mode: use the kl tools; nothing runs on this laptop";
+const FOLLOW_REASON: &str = "kl: follow a workspace process";
 const ON_CONTEXT: &str = "kl mode is on: work only through the kl tools; nothing runs on this laptop.";
 
-pub fn allowed(tool: &str) -> bool {
-    tool.starts_with(KL_PREFIX) || ALLOWED.contains(&tool)
+fn local(tool: &str) -> bool {
+    LOCAL.contains(&tool) || LOCAL_MCP.iter().any(|p| tool.starts_with(p))
+}
+
+/// `kl-connect ws follow <ws> <id> [--team <t>]`, backgrounded. Every word is held to a plain
+/// charset, so nothing rides along (`;`, `&&`, `$(…)`, a redirect, a newline).
+fn is_follow(input: &Value) -> bool {
+    let i = input.get("tool_input");
+    let bg = i.and_then(|i| i.get("run_in_background")).and_then(Value::as_bool) == Some(true);
+    let cmd = i.and_then(|i| i.get("command")).and_then(Value::as_str).unwrap_or("");
+    let plain = |w: &&str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    let words: Vec<&str> = cmd.split(' ').collect();
+    bg && matches!(words.as_slice(), ["kl-connect", "ws", "follow", rest @ ..]
+        if (rest.len() == 2 || (rest.len() == 4 && rest[2] == "--team")) && rest.iter().all(plain))
 }
 
 // KEY = session_id (Task 1 found a subagent's hook input carries its parent's session_id).
@@ -53,8 +74,8 @@ fn flag(dir: &Path, input: &Value) -> Option<PathBuf> {
     key(input).map(|k| dir.join(k))
 }
 
-/// The `PreToolUse` answer: allow a read-only kl tool, and every kl tool while the mode is on; deny
-/// while the mode is on and the tool is not allowed; otherwise nothing, and Claude Code's own
+/// The `PreToolUse` answer: allow a read-only kl tool and a follow, and every kl tool while the
+/// mode is on; deny a local tool while the mode is on; otherwise nothing, and Claude Code's own
 /// permission mode decides.
 pub fn gate(dir: &Path, input: &Value) -> Option<String> {
     let on = flag(dir, input).is_some_and(|f| f.exists());
@@ -68,10 +89,13 @@ pub fn gate(dir: &Path, input: &Value) -> Option<String> {
     if tool.strip_prefix(KL_PREFIX).is_some_and(|t| READ_ONLY.contains(&t)) {
         return Some(answer("allow", ALLOW_REASON));
     }
+    if tool == "Bash" && is_follow(input) {
+        return Some(answer("allow", FOLLOW_REASON));
+    }
     if on && tool.starts_with(KL_PREFIX) {
         return Some(answer("allow", ON_ALLOW_REASON));
     }
-    (on && !allowed(tool)).then(|| answer("deny", DENY_REASON))
+    (on && local(tool)).then(|| answer("deny", DENY_REASON))
 }
 
 /// The `UserPromptSubmit` answer: switch the mode on `/kloudlite:on|off`, then add the context
@@ -127,16 +151,16 @@ mod tests {
     }
 
     #[test]
-    fn on_allows_kl_and_coordination_only() {
+    fn on_denies_local_tools_only() {
         let d = tmp("on");
         assert!(prompt(&d, &input("", "/kloudlite:on")).unwrap().unwrap().contains(ON_CONTEXT));
         for t in ["exec", "env_delete", "workspace_stop"] {
             assert!(gate(&d, &input(&format!("{KL_PREFIX}{t}"), "")).unwrap().contains(ON_ALLOW_REASON), "{t}");
         }
-        for t in ["Agent", "Skill", "SendMessage", "TodoWrite"] {
+        for t in ["Agent", "Skill", "SendMessage", "TodoWrite", "Artifact", "WebFetch", "WebSearch", "mcp__kl__read"] {
             assert_eq!(gate(&d, &input(t, "")), None, "{t}");
         }
-        for t in ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit", "mcp__serena__find_symbol", "mcp__kl__read"] {
+        for t in ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit", "Monitor", "LSP", "mcp__serena__find_symbol"] {
             assert!(gate(&d, &input(t, "")).unwrap().contains(DENY_REASON), "{t}");
         }
     }
@@ -156,7 +180,28 @@ mod tests {
                 // off: the classifier decides; on: the mode allows it
                 assert_eq!(a.is_some_and(|a| a.contains(ON_ALLOW_REASON)), on, "{t} on={on}");
             }
-            assert_eq!(gate(&d, &input("mcp__kl__workspace_list", "")).is_some(), on); // not our plugin's server
+            assert_eq!(gate(&d, &input("mcp__kl__workspace_list", "")), None); // not our plugin's server, and not local
+        }
+    }
+
+    fn bash(cmd: &str, bg: bool) -> Value {
+        json!({ "session_id": "abc-123", "tool_name": "Bash", "tool_input": { "command": cmd, "run_in_background": bg } })
+    }
+
+    #[test]
+    fn only_a_backgrounded_follow_passes_as_bash() {
+        let d = tmp("follow");
+        prompt(&d, &input("", "/kloudlite:on")).unwrap();
+        for ok in ["kl-connect ws follow syncserver p-18de02ad09685f92", "kl-connect ws follow api p-1 --team acme-co"] {
+            assert!(gate(&d, &bash(ok, true)).unwrap().contains(FOLLOW_REASON), "{ok}");
+        }
+        assert!(gate(&d, &bash("kl-connect ws follow api p-1", false)).unwrap().contains(DENY_REASON));
+        for bad in [
+            "kl-connect ws follow api p-1; rm -rf ~", "kl-connect ws follow api p-1 && ls", "kl-connect ws follow api $(id)",
+            "kl-connect ws follow api p-1 > /tmp/x", "kl-connect ws follow api p-1\nls", "kl-connect ws follow  api p-1",
+            "kl-connect ws follow api", "kl-connect ws follow api p-1 --tea x", "kl-connect ws ssh api", "/tmp/kl-connect ws follow a b",
+        ] {
+            assert!(gate(&d, &bash(bad, true)).unwrap().contains(DENY_REASON), "{bad}");
         }
     }
 
