@@ -2,12 +2,17 @@
 //!
 //! `paths::confine` guards what the TOOLS touch, but an `exec` is a shell and a shell can `cd ..`.
 //! Wrapping each exec — never the server, which must see every tree to serve them — is what closes
-//! that. What the command sees: its own tree read-write, the Nix store and profile read-only, a
-//! fresh `/tmp`, the pod's network, and nothing else — not the workspace root, not another tree,
-//! not the home, not the token, not `kl`. The owner's SSH key file is the one credential inside, so
-//! `git push` works through exec.
+//! that. What the command sees: its tree's home read-write (the person's home for `main`, the
+//! tree's own copy for a subagent) with the tree as its working directory, the Nix store and
+//! profile read-only, the tree's own `/tmp`, the pod's network, and nothing else — not another
+//! tree, not the server's `.kl` state, not the token, not `kl`. The owner's SSH key file is the one
+//! credential inside, so `git push` works through exec.
 //!
-//! The tree is bound at THE SAME PATH inside and out. That is deliberate: §3.5 concedes that `pwd`
+//! The home is whole, never the source dir alone (owner, 2026-10-13): with only the tree bound,
+//! `CARGO_TARGET_DIR=~/.cache/...` pointed nowhere and every exec rebuilt from cold. Tools keep
+//! their own defaults under the home, and the home is what a snapshot carries.
+//!
+//! The home is bound at THE SAME PATH inside and out. That is deliberate: §3.5 concedes that `pwd`
 //! inside an exec leaks one string, and rewriting the path would make it two — the real one and a
 //! fake one that every compiler error and every stack trace would disagree with.
 //!
@@ -43,9 +48,9 @@ const BINDS: [&str; 3] = ["/nix", "/etc/passwd", "/etc/resolv.conf"];
 ///
 /// `/etc/kloudlite` is deliberately NOT here and must never be: the workspace token lives there,
 /// and the whole point of the wrapper is that an exec cannot read it. The one file of it that IS
-/// here is the platform's git ignore, bound alone: HOME is the tree's own `.home`, so the person's
-/// `~/.config/git/ignore` is invisible inside and a session's `git add -A` committed three thousand
-/// files of `.home/` go cache and telemetry (2026-10-09). `GIT_IGNORE` below points git at it.
+/// here is the platform's git ignore, bound alone: a subagent's home is a copy that may predate the
+/// person's `~/.config/git/ignore`, and a session's `git add -A` once committed three thousand files
+/// of go cache and telemetry (2026-10-09). `GIT_IGNORE` below points git at it.
 /// The owner's SSH key is bound alone too, so a session can `git push` its clone's work to its
 /// workspace with plain git through exec (owner, 2026-10-09: "push wont become tool. it will be
 /// available via exec and git"); the tokens beside it (`workspace-token`, `registry-token`) never are.
@@ -95,7 +100,7 @@ pub fn bwrap_argv_with(tree: &TreeCtx, cmd: &[String], env: &[(String, String)])
 }
 
 pub fn bwrap_argv_with_cwd(tree: &TreeCtx, cmd: &[String], env: &[(String, String)], cwd: &std::path::Path) -> Vec<String> {
-    let root = tree.root.to_string_lossy().into_owned();
+    let home = tree.home.to_string_lossy().into_owned();
     let mut a: Vec<String> = vec![
         "--unshare-all".into(),
         // Everything but the network: ports are the pod's, and §4.6 divides them by convention
@@ -104,12 +109,18 @@ pub fn bwrap_argv_with_cwd(tree: &TreeCtx, cmd: &[String], env: &[(String, Strin
         // A detached process dies with the server, the way its ring already ends with it.
         "--die-with-parent".into(),
         "--new-session".into(),
+        // The whole home, which holds the tree: every tool's default cache and config (`~/.cargo`,
+        // `~/.npm`, `./target`) lands where the snapshot carries it, with no per-tool variable.
         "--bind".into(),
-        root.clone(),
-        root.clone(),
+        home.clone(),
+        home.clone(),
     ];
     if tree.is_main() {
-        a.extend(["--tmpfs".to_string(), format!("{root}/.agents")]);
+        // Main's home holds every subagent's copy and the server's own state (`.kl/procs.json`
+        // holds commands the server revives); neither is the command's to read or write.
+        for hidden in [crate::trees::TREES_DIR, ".kl"] {
+            a.extend(["--tmpfs".to_string(), format!("{home}/{hidden}")]);
+        }
     }
     for f in BINDS {
         a.extend(["--ro-bind".to_string(), f.into(), f.into()]);
@@ -128,17 +139,16 @@ pub fn bwrap_argv_with_cwd(tree: &TreeCtx, cmd: &[String], env: &[(String, Strin
         "/proc".into(),
         "--dev".into(),
         "/dev".into(),
-        // Per tree, so git/npm/cargo config a subagent writes lands in the tree and travels with
-        // it, instead of in a home the sandbox does not even bind.
+        // The tree's home: a subagent's config and caches land in its own copy, not main's.
         "--setenv".into(),
         "HOME".into(),
-        tree.sandbox_home().to_string_lossy().into_owned(),
+        home,
         "--chdir".into(),
         cwd.to_string_lossy().into_owned(),
     ]);
     // The trust store's own variables, and then the caller's: both explicit, so nothing the child
     // is promised depends on what bwrap chooses to pass through.
-    // `GIT_CONFIG_*`, not a gitconfig in `.home`: the tree's own config stays the agent's, and
+    // `GIT_CONFIG_*`, not a gitconfig in the home: the tree's own config stays the agent's, and
     // this cannot be edited away from inside.
     if std::path::Path::new(GIT_IGNORE).exists() {
         for (k, v) in [("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "core.excludesFile"), ("GIT_CONFIG_VALUE_0", GIT_IGNORE)] {
@@ -272,7 +282,10 @@ pub fn available() -> bool {
 /// a weaker boundary, and the only honest one available.
 pub fn usable(tree: &TreeCtx) -> Option<&'static str> {
     if tree.is_main() {
-        let _ = std::fs::create_dir_all(tree.root.join(crate::trees::TREES_DIR));
+        // The tmpfs mountpoints `bwrap_argv` hides; bwrap cannot create them under a bind.
+        for hidden in [crate::trees::TREES_DIR, ".kl"] {
+            let _ = std::fs::create_dir_all(tree.home.join(hidden));
+        }
     }
     static OK: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
     *OK.get_or_init(|| preflight(binary()?, tree))
@@ -350,23 +363,30 @@ mod tests {
     #[test]
     fn the_wrapper_binds_the_tree_and_names_nothing_else_of_the_pod() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("workspaces/ws-1");
-        std::fs::create_dir_all(root.join(".agents/x")).unwrap();
-        let trees = Trees::new(root.clone(), None);
+        let top = tmp.path().join("home/kl");
+        let root = top.join("workspace");
+        std::fs::create_dir_all(top.join(".agents/x/workspace")).unwrap();
+        let trees = Trees::under(top.clone(), root.clone(), None);
         let x = trees.resolve(Some("x")).unwrap();
         let argv = bwrap_argv(&x, &["sh".into(), "-c".into(), "true".into()]);
-        let tree_path = x.root.to_string_lossy().into_owned();
-        // Bound at the same path in and out — the one string §3.5 concedes stays one string.
-        let bind = argv.windows(3).find(|w| w[0] == "--bind").expect("the tree is bound");
-        assert_eq!((bind[1].as_str(), bind[2].as_str()), (tree_path.as_str(), tree_path.as_str()));
-        // HOME is the tree's own, never the person's.
+        let home_path = top.join(".agents/x").to_string_lossy().into_owned();
+        // The tree's whole home, bound at the same path in and out — the one string §3.5 concedes
+        // stays one string.
+        let bind = argv.windows(3).find(|w| w[0] == "--bind").expect("the home is bound");
+        assert_eq!((bind[1].as_str(), bind[2].as_str()), (home_path.as_str(), home_path.as_str()));
+        // HOME is the tree's own copy, never the person's.
         let home = argv.windows(3).find(|w| w[0] == "--setenv" && w[1] == "HOME").expect("HOME is set");
-        assert_eq!(home[2], format!("{tree_path}/.home"));
+        assert_eq!(home[2], home_path);
+        // The source tree is where the command starts.
+        let cd = argv.windows(2).find(|w| w[0] == "--chdir").expect("cwd is set");
+        assert_eq!(cd[1], x.root.to_string_lossy());
         // /tmp is the tree's, so one exec's file is there for the next.
         let t = argv.windows(3).find(|w| w[0] == "--bind" && w[2] == "/tmp").expect("/tmp is bound");
-        assert_eq!(t[1], format!("{tree_path}/.home/tmp"));
-        // Nothing names the workspace root, so a `cd ..` has nowhere to land.
-        assert!(!argv.iter().any(|s| *s == root.to_string_lossy()), "{argv:?}");
+        assert_eq!(t[1], format!("{home_path}/.cache/kl-tmp"));
+        // Nothing names the person's home or workspace, so a `cd ..` has nowhere to land.
+        for p in [&top, &root] {
+            assert!(!argv.iter().any(|s| *s == p.to_string_lossy()), "{argv:?}");
+        }
         // The command is last, whole, after the `--`.
         let dashdash = argv.iter().position(|s| s == "--").unwrap();
         assert_eq!(&argv[dashdash + 1..], &["sh".to_string(), "-c".into(), "true".into()]);
@@ -377,6 +397,20 @@ mod tests {
         let sources: Vec<&String> = argv.windows(3).filter(|w| w[0] == "--ro-bind").map(|w| &w[1]).collect();
         assert!(sources[..BINDS.len()].iter().zip(BINDS).all(|(got, want)| *got == want), "{argv:?}");
         assert!(sources[BINDS.len()..].iter().all(|s| OPTIONAL_BINDS.contains(&s.as_str())), "{sources:?}");
+    }
+
+    #[test]
+    fn main_sees_the_home_but_not_the_subagents_or_the_server_state() {
+        let top = std::path::PathBuf::from("/home/kl");
+        let trees = Trees::under(top.clone(), top.join("workspace"), None);
+        let main = trees.resolve(None).unwrap();
+        let argv = bwrap_argv(&main, &["true".into()]);
+        let bind = argv.windows(3).find(|w| w[0] == "--bind").unwrap();
+        assert_eq!((bind[1].as_str(), bind[2].as_str()), ("/home/kl", "/home/kl"));
+        let hidden: Vec<&String> = argv.windows(2).filter(|w| w[0] == "--tmpfs").map(|w| &w[1]).collect();
+        assert!(hidden.contains(&&"/home/kl/.agents".to_string()) && hidden.contains(&&"/home/kl/.kl".to_string()), "{hidden:?}");
+        let cd = argv.windows(2).find(|w| w[0] == "--chdir").unwrap();
+        assert_eq!(cd[1], "/home/kl/workspace");
     }
 
     /// A `bwrap` that EXISTS but cannot START must not be trusted. Under the workspace pods'

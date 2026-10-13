@@ -112,7 +112,7 @@ fn every_path_out_is_relative_to_its_own_tree() {
 fn the_sandbox_binds_the_tree_the_store_and_nothing_else() {
     let (_t, app) = workspace();
     let x = app.tree(Some("x")).unwrap();
-    let root = x.root.to_string_lossy().into_owned();
+    let home_path = x.home.to_string_lossy().into_owned();
     let argv = bwrap_argv(&x, &["sh".into(), "-c".into(), "true".into()]);
 
     // The flags that make it a sandbox, in order, before any bind.
@@ -120,15 +120,15 @@ fn the_sandbox_binds_the_tree_the_store_and_nothing_else() {
         &argv[..4],
         &["--unshare-all".to_string(), "--share-net".into(), "--die-with-parent".into(), "--new-session".into()]
     );
-    // The tree, bound at the same path in and out — the one string §3.5 concedes stays one string.
-    let bind = argv.windows(3).find(|w| w[0] == "--bind").expect("the tree is bound");
-    assert_eq!((bind[1].as_str(), bind[2].as_str()), (root.as_str(), root.as_str()));
+    // The tree's home, bound at the same path in and out — the one string §3.5 concedes stays one string.
+    let bind = argv.windows(3).find(|w| w[0] == "--bind").expect("the home is bound");
+    assert_eq!((bind[1].as_str(), bind[2].as_str()), (home_path.as_str(), home_path.as_str()));
     // The store, and read-only everywhere.
     let sources: Vec<&String> = argv.windows(3).filter(|w| w[0] == "--ro-bind").map(|w| &w[1]).collect();
     assert_eq!(sources[0], "/nix", "{argv:?}");
-    // HOME is the tree's own, never the person's.
+    // HOME is the tree's own copy, never the person's.
     let home = argv.windows(3).find(|w| w[0] == "--setenv" && w[1] == "HOME").expect("HOME is set");
-    assert_eq!(home[2], format!("{root}/.home"));
+    assert_eq!(home[2], home_path);
     // The command is last, whole, after the `--`.
     let dashdash = argv.iter().position(|s| s == "--").unwrap();
     assert_eq!(&argv[dashdash + 1..], &["sh".to_string(), "-c".into(), "true".into()]);
@@ -151,9 +151,11 @@ fn the_main_sandbox_masks_agent_trees() {
     let agent = app.tree(Some("x")).unwrap();
     let main_argv = bwrap_argv(&main, &["true".into()]);
     let agent_argv = bwrap_argv(&agent, &["true".into()]);
-    let main_agents = format!("{}/.agents", main.root.to_string_lossy());
-    assert!(main_argv.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == main_agents), "{main_argv:?}");
-    assert!(!agent_argv.iter().any(|arg| arg == &format!("{}/.agents", agent.root.to_string_lossy())), "{agent_argv:?}");
+    for hidden in [".agents", ".kl"] {
+        let masked = main.home.join(hidden).to_string_lossy().into_owned();
+        assert!(main_argv.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == masked), "{main_argv:?}");
+    }
+    assert!(!agent_argv.iter().any(|arg| arg == "--tmpfs"), "{agent_argv:?}");
 }
 
 #[test]

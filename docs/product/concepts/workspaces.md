@@ -8,7 +8,7 @@ A workspace is one running pod with your source tree, a Nix profile of the packa
 |---|---|---|
 | `/home/kl` | The workspace's own btrfs volume, sized by `quota_gb`; this workspace's home, not shared with any other | Across stop and start; snapshotted by push; replicated |
 | `/home/kl/workspace` | Your source tree | With the home: a clone or a restore arrives warm |
-| `/home/kl/workspace/.cache` | Every cache: build output (`CARGO_TARGET_DIR`, `GOCACHE`), package stores (npm, pnpm, bun, yarn, pip, uv, deno, Go modules, Maven, Composer, NuGet), toolchains (`RUSTUP_HOME`, the cargo registry), browsers, editor servers (VS Code, Cursor, Zed, Windsurf, JetBrains) | With the home: a clone or a restore arrives warm |
+| Caches under `/home/kl` | Every cache at its tool's own default (`./target`, `~/.cargo`, `~/.rustup`, `~/go`, `~/.cache`): build output, package stores, toolchains, browsers, editor servers | With the home: a clone or a restore arrives warm |
 | `PATH` | The packages in `packages`, plus a base set | Rebuilt from the spec on every start |
 
 **The standard: a workspace carries its caches.** Everything a tool would cache — build output, downloaded packages, toolchains, editor servers — lives under `.cache/` inside the home volume, so it is snapshotted by push, replicated on the sync beat, and present the moment a clone or a restore comes up. A clone or restore carries the whole home, credentials included; it is always your own workspace, never shared with another. Nothing rebuildable is left behind on a node.

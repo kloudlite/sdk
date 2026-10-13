@@ -325,7 +325,7 @@ pub async fn home_travels(c: &mut Ctx) {
 }
 
 /// `ws.cache.travels`: build output written under `/home/kl/.cache` travels with a push and is there
-/// on a restore — the property the 2026-09-11 move of `CARGO_TARGET_DIR` into the tree exists for.
+/// on a restore — where every tool keeps its default cache, now that execs see the whole home.
 /// Read on the RESTORED copy: the source proves nothing.
 pub async fn cache_in_tree(c: &mut Ctx) {
     if c.kube.is_none() {
@@ -339,7 +339,7 @@ pub async fn cache_in_tree(c: &mut Ctx) {
             // Before the push: once pushed the volume outlives both workspaces, and it is named by
             // the workspace id, so no prefix sweep ever sees it — teardown deletes it by name.
             c.state.extra_volumes.push(src.clone());
-            let write = format!("set -e\nmkdir -p \"$CARGO_TARGET_DIR\"\nprintf %s {want} > \"$CARGO_TARGET_DIR/marker\"\nsync \"$CARGO_TARGET_DIR/marker\"");
+            let write = format!("set -e\nmkdir -p \"$HOME/.cache\"\nprintf %s {want} > \"$HOME/.cache/slo-marker\"\nsync \"$HOME/.cache/slo-marker\"");
             let (code, _, err) = ws_exec(c, &src, &write, EXEC).await?;
             if code != 0 {
                 drop_ws(c, &src).await;
@@ -355,7 +355,7 @@ pub async fn cache_in_tree(c: &mut Ctx) {
                     return Err(e);
                 }
             };
-            let (code, out, err) = ws_exec(c, &restored, "cat \"$CARGO_TARGET_DIR/marker\"", EXEC).await?;
+            let (code, out, err) = ws_exec(c, &restored, "cat \"$HOME/.cache/slo-marker\"", EXEC).await?;
             drop_ws(c, &restored).await;
             drop_vol(c, &src).await;
             if code != 0 {
