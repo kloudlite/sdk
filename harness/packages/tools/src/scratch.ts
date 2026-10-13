@@ -136,9 +136,11 @@ export function scratchTools(root: string): ToolDef[] {
         if (!existsSync(p)) return `error: no such file: ${a.path}`;
         try {
           let text = readFileSync(p, "utf8");
-          if (a.offset || a.limit) {
-            const from = Math.max(0, (a.offset ?? 1) - 1);
-            text = text.split("\n").slice(from, a.limit ? from + a.limit : undefined).join("\n");
+          // a model may send "5" for 5: `from + "10"` would concatenate
+          const offset = Number(a.offset) || 0, limit = Number(a.limit) || 0;
+          if (offset || limit) {
+            const from = Math.max(0, (offset || 1) - 1);
+            text = text.split("\n").slice(from, limit ? from + limit : undefined).join("\n");
           }
           if (Buffer.byteLength(text) <= READ_CAP) return text;
           return `${Buffer.from(text).subarray(0, READ_CAP).toString("utf8")}\n[truncated at 256 KiB]`;

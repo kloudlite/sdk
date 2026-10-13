@@ -87,8 +87,8 @@ export async function podTools(ws: string, o: { ensure?: typeof ensureRunning } 
 
   async function call(name: string, args: any): Promise<string> {
     // A build waits on the builder and the registry: same long leash as a job, its own default.
-    const timeout = name === "exec" ? (args?.timeout_ms ?? 120_000) + 15_000
-      : name === "container_build" ? (args?.timeout_ms ?? 600_000) + 15_000
+    const timeout = name === "exec" ? (Number(args?.timeout_ms) || 120_000) + 15_000
+      : name === "container_build" ? (Number(args?.timeout_ms) || 600_000) + 15_000
       : name === "container_push" ? 180_000 : 60_000;
     try {
       let res: Response | undefined;
