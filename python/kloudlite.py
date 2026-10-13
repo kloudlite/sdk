@@ -289,8 +289,146 @@ class Workspaces:
         return self._c.request("POST", f"/v1/workspaces/{_seg(id)}/packages/update")
 
     def tools(self, id: str):
-        """The workspace's tool-server address — answered to the owner alone."""
+        """The workspace's tool-server address and token — answered to the owner alone."""
         return self._c.request("GET", f"/v1/workspaces/{_seg(id)}/tools")
+
+    def ide(self, id: str) -> "Ide":
+        """An :class:`Ide` bound to this workspace's tool server. The address is a pod IP:
+        reachable from inside the fleet (a bench); from a laptop, tunnel with
+        ``kl-connect ws ide`` and use ``Ide("http://127.0.0.1:7788", token)`` instead."""
+        doc = self.tools(id)
+        return Ide(f"http://{doc['address']}", token=doc.get("token"))
+
+
+class Ide:
+    """A workspace's tool server (``kl ide serve``): the full tool set over plain HTTP —
+    ``GET /tools`` lists every tool with its schema, ``POST /tools/{name}`` runs one. The typed
+    methods below cover them all; :meth:`call` takes anything the listing names. ``None``
+    arguments are dropped, so every optional means "the tool's own default"."""
+
+    def __init__(self, url: str, token: str | None = None, timeout: float = 630.0):
+        self.url = url.rstrip("/")
+        self._token = token
+        self._timeout = timeout
+
+    def list(self):
+        """Every tool, with its JSON schema — the authority on arguments."""
+        return self._http("GET", "/tools")
+
+    def call(self, name: str, **args):
+        return self._http("POST", f"/tools/{_seg(name)}", {k: v for k, v in args.items() if v is not None})
+
+    # ── files ─────────────────────────────────────────────────────────────
+    def read(self, path: str | None = None, paths: list | None = None,
+             offset: int | None = None, limit: int | None = None):
+        return self.call("read", path=path, paths=paths, offset=offset, limit=limit)
+
+    def write(self, path: str, content: str):
+        return self.call("write", path=path, content=content)
+
+    def edit(self, path: str | None = None, edits: list | None = None, files: list | None = None):
+        """One file as ``(path, edits)``, several as ``files=[{path, edits}]``; each edit is
+        ``{"old", "new", "replace_all"?}`` and the whole call is atomic."""
+        return self.call("edit", path=path, edits=edits, files=files)
+
+    def patch(self, diff: str, cwd: str | None = None):
+        return self.call("patch", diff=diff, cwd=cwd)
+
+    def glob(self, pattern: str, cwd: str | None = None):
+        return self.call("glob", pattern=pattern, cwd=cwd)
+
+    def grep(self, pattern: str, cwd: str | None = None, glob: str | None = None,
+             mode: str | None = None, context: int | None = None,
+             ignore_case: bool | None = None, max: int | None = None):
+        return self.call("grep", pattern=pattern, cwd=cwd, glob=glob, mode=mode,
+                         context=context, ignore_case=ignore_case, max=max)
+
+    # ── commands and processes ────────────────────────────────────────────
+    def exec(self, cmd, cwd: str | None = None, env: dict | None = None,
+             timeout_ms: int | None = None, head: int | None = None, tail: int | None = None,
+             quiet: bool | None = None, detach: bool | None = None):
+        """``cmd`` is a shell string or an argv list. ``detach=True`` answers ``{id}`` and the
+        command becomes a process for the ``process_*`` calls."""
+        return self.call("exec", cmd=cmd, cwd=cwd, env=env, timeout_ms=timeout_ms,
+                         head=head, tail=tail, quiet=quiet, detach=detach)
+
+    def process_list(self):
+        return self.call("process_list")
+
+    def process_output(self, id: str, since: int | None = None, since_err: int | None = None):
+        return self.call("process_output", id=id, since=since, since_err=since_err)
+
+    def process_write(self, id: str, data: str):
+        return self.call("process_write", id=id, data=data)
+
+    def process_kill(self, id: str, signal: str | None = None):
+        return self.call("process_kill", id=id, signal=signal)
+
+    # ── watches ───────────────────────────────────────────────────────────
+    def watch(self, paths: list | None = None, cmd=None, pattern: str | None = None,
+              once: bool | None = None):
+        return self.call("watch", paths=paths, cmd=cmd, pattern=pattern, once=once)
+
+    def watch_poll(self, id: str, since: int | None = None):
+        return self.call("watch_poll", id=id, since=since)
+
+    def watch_stop(self, id: str):
+        return self.call("watch_stop", id=id)
+
+    # ── graft (the repo context graph) ────────────────────────────────────
+    def graft_find_code(self, query: str, limit: int | None = None, full: bool | None = None,
+                        in_: str | None = None):
+        return self.call("graft_find_code", query=query, limit=limit, full=full, **{"in": in_})
+
+    def graft_find_all(self, pattern: str, in_: str | None = None,
+                       ignore_case: bool | None = None, fixed: bool | None = None):
+        return self.call("graft_find_all", pattern=pattern, ignore_case=ignore_case,
+                         fixed=fixed, **{"in": in_})
+
+    def graft_trace_calls(self, symbol: str, direction: str | None = None, depth=None,
+                          in_: str | None = None):
+        return self.call("graft_trace_calls", symbol=symbol, direction=direction, depth=depth,
+                         **{"in": in_})
+
+    def graft_file_api(self, file: str):
+        return self.call("graft_file_api", file=file)
+
+    def graft_repo_map(self, max_dirs: int | None = None):
+        return self.call("graft_repo_map", max_dirs=max_dirs)
+
+    def graft_build(self, deep: bool | None = None, no_reuse: bool | None = None):
+        return self.call("graft_build", deep=deep, no_reuse=no_reuse)
+
+    def graft_blast(self, base: str | None = None, depth=None):
+        return self.call("graft_blast", base=base, depth=depth)
+
+    # ── containers (the hidden per-owner builder) ─────────────────────────
+    def container_build(self, tags: list, context: str | None = None, file: str | None = None,
+                        build_args: list | None = None, platform: str | None = None,
+                        no_cache: bool | None = None, timeout_ms: int | None = None,
+                        head: int | None = None, tail: int | None = None):
+        return self.call("container_build", tags=tags, context=context, file=file,
+                         build_args=build_args, platform=platform, no_cache=no_cache,
+                         timeout_ms=timeout_ms, head=head, tail=tail)
+
+    def container_push(self, src: str, dst: list):
+        return self.call("container_push", src=src, dst=dst)
+
+    def _http(self, method: str, path: str, body=None):
+        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(self.url + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            raise ApiError(e.code, _error_text(e.read())) from None
+        return json.loads(raw) if raw else None
 
 
 class Volumes:

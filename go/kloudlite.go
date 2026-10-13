@@ -681,10 +681,172 @@ func (w *Workspaces) UpdatePackages(id string) error {
 	return w.c.Request("POST", "/v1/workspaces/"+seg(id)+"/packages/update", nil, nil, nil)
 }
 
-// Tools answers the workspace's tool-server address — to the owner alone.
+// Tools answers the workspace's tool-server address and token — to the owner
+// alone.
 func (w *Workspaces) Tools(id string) (map[string]any, error) {
 	var out map[string]any
 	err := w.c.Request("GET", "/v1/workspaces/"+seg(id)+"/tools", nil, nil, &out)
+	return out, err
+}
+
+// Ide answers an *Ide bound to this workspace's tool server. The address is a
+// pod IP: reachable from inside the fleet (a bench); from a laptop, tunnel
+// with `kl-connect ws ide` and use NewIde("http://127.0.0.1:7788", token)
+// instead.
+func (w *Workspaces) Ide(id string) (*Ide, error) {
+	doc, err := w.Tools(id)
+	if err != nil {
+		return nil, err
+	}
+	addr, _ := doc["address"].(string)
+	if addr == "" {
+		return nil, fmt.Errorf("the tools answer named no address")
+	}
+	token, _ := doc["token"].(string)
+	return NewIde("http://"+addr, token), nil
+}
+
+// Ide is a workspace's tool server (`kl ide serve`): the full tool set over
+// plain HTTP — List answers every tool with its JSON schema (the authority on
+// arguments) and Call runs one with an args map; nil-valued and absent keys
+// mean "the tool's own default". The typed helpers cover the everyday files
+// and exec calls; watch_*, graft_* and container_* go through Call with the
+// arguments the listing names.
+type Ide struct {
+	url   string
+	token string
+	http  *http.Client
+}
+
+func NewIde(url, token string) *Ide {
+	return &Ide{
+		url:   strings.TrimRight(url, "/"),
+		token: token,
+		// exec may legitimately run for ten minutes; the client outlasts it.
+		http: &http.Client{Timeout: 630 * time.Second},
+	}
+}
+
+// List answers every tool, with its JSON schema.
+func (i *Ide) List() (any, error) {
+	return i.send("GET", "/tools", nil)
+}
+
+// Call runs one tool by name with the arguments its schema names.
+func (i *Ide) Call(name string, args map[string]any) (any, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	return i.send("POST", "/tools/"+seg(name), args)
+}
+
+// Read pages text files; one path, or several as `paths`.
+func (i *Ide) Read(args map[string]any) (any, error) { return i.Call("read", args) }
+
+// Write creates or overwrites a file atomically.
+func (i *Ide) Write(path, content string) (any, error) {
+	return i.Call("write", map[string]any{"path": path, "content": content})
+}
+
+// Edit makes exact string replacements, atomically across the whole call:
+// `path`+`edits` for one file, `files` for several.
+func (i *Ide) Edit(args map[string]any) (any, error) { return i.Call("edit", args) }
+
+// Patch applies a unified diff; it never applies in part.
+func (i *Ide) Patch(diff string, cwd string) (any, error) {
+	args := map[string]any{"diff": diff}
+	if cwd != "" {
+		args["cwd"] = cwd
+	}
+	return i.Call("patch", args)
+}
+
+// Glob lists the files matching a pattern, newest first, gitignore respected.
+func (i *Ide) Glob(pattern, cwd string) (any, error) {
+	args := map[string]any{"pattern": pattern}
+	if cwd != "" {
+		args["cwd"] = cwd
+	}
+	return i.Call("glob", args)
+}
+
+// Grep searches with a regex; opts carries cwd, glob, mode, context,
+// ignore_case and max per the schema.
+func (i *Ide) Grep(pattern string, opts map[string]any) (any, error) {
+	args := map[string]any{"pattern": pattern}
+	for k, v := range opts {
+		args[k] = v
+	}
+	return i.Call("grep", args)
+}
+
+// Exec runs a command (a shell string or an argv slice); opts carries cwd,
+// env, timeout_ms, head, tail, quiet and detach per the schema. With
+// detach:true the answer is {id} for ProcessOutput/ProcessKill.
+func (i *Ide) Exec(cmd any, opts map[string]any) (any, error) {
+	args := map[string]any{"cmd": cmd}
+	for k, v := range opts {
+		args[k] = v
+	}
+	return i.Call("exec", args)
+}
+
+func (i *Ide) ProcessList() (any, error) { return i.Call("process_list", nil) }
+
+func (i *Ide) ProcessOutput(id string, since, sinceErr int64) (any, error) {
+	return i.Call("process_output", map[string]any{"id": id, "since": since, "since_err": sinceErr})
+}
+
+func (i *Ide) ProcessWrite(id, data string) (any, error) {
+	return i.Call("process_write", map[string]any{"id": id, "data": data})
+}
+
+func (i *Ide) ProcessKill(id, signal string) (any, error) {
+	args := map[string]any{"id": id}
+	if signal != "" {
+		args["signal"] = signal
+	}
+	return i.Call("process_kill", args)
+}
+
+func (i *Ide) send(method, path string, body map[string]any) (any, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, i.url+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "kloudlite-sdk-go/"+Version)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if i.token != "" {
+		req.Header.Set("Authorization", "Bearer "+i.token)
+	}
+	resp, err := i.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, &ApiError{Status: resp.StatusCode, Message: errorText(raw)}
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out any
+	err = json.Unmarshal(raw, &out)
 	return out, err
 }
 
