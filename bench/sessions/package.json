@@ -1,8 +1,0 @@
-{
-  "name": "kl-sessions",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "description": "Idle/readiness probe for the bench pod (/idle, --ping).",
-  "dependencies": {}
-}
