@@ -124,13 +124,13 @@ module Kloudlite
                  body: { owner: owner, name: name, visibility: visibility, description: description })
     end
 
-    # A new repo whose contents are fetched from a PUBLIC GitHub repository — +github+ is its
-    # "owner/name" pair, never a URL. Answers 202: the repo exists but the fetch runs in the
-    # background; poll +import_status+.
-    def import_github(repo, github, visibility: "private", description: "")
+    # A new repo whose contents are fetched from a PUBLIC git remote — +git+ is a strict
+    # "https://" URL (GitHub is one host among any). Answers 202: the repo exists but the fetch
+    # runs in the background; poll +import_status+.
+    def import_git(repo, git, visibility: "private", description: "")
       owner, name = split(repo)
       @c.request("POST", "/v1/repos/import",
-                 body: { owner: owner, name: name, github: github,
+                 body: { owner: owner, name: name, git: git,
                          visibility: visibility, description: description })
     end
 
@@ -261,11 +261,11 @@ module Kloudlite
       @c.hub_request("DELETE", "/api/repos/delete", body: body_of(repo))
     end
 
-    # A new repo whose contents — large files included — are fetched from a PUBLIC Hugging Face
-    # repo of the same kind; +hf+ is its "owner/name" pair, never a URL. Answers 202; poll
-    # +import_status+.
-    def import_hf(repo, hf, private: true)
-      @c.hub_request("POST", path(repo, "/import"), body: { from: hf, private: private })
+    # A new repo whose contents — large files included, through git-lfs — are fetched from a
+    # PUBLIC git remote; +git+ is a strict "https://" URL (the Hugging Face Hub is one host among
+    # any). Answers 202; poll +import_status+.
+    def import_git(repo, git, private: true)
+      @c.hub_request("POST", path(repo, "/import"), body: { from: git, private: private })
     end
 
     # {"from", "state" (queued|running|done|failed), "detail"?} for an imported repo.

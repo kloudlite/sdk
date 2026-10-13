@@ -188,16 +188,16 @@ export class CodeRepos {
   }
 
   /**
-   * A new repo whose contents are fetched from a PUBLIC GitHub repository — `github` is its
-   * `"owner/name"` pair, never a URL. Answers 202: the repo exists but the fetch runs in the
-   * background; poll {@link importStatus}.
+   * A new repo whose contents are fetched from a PUBLIC git remote — `git` is a strict
+   * `https://` URL (GitHub is one host among any). Answers 202: the repo exists but the fetch
+   * runs in the background; poll {@link importStatus}.
    */
-  importGithub(repo: string, github: string, opts?: { visibility?: "public" | "private"; description?: string }) {
+  importGit(repo: string, git: string, opts?: { visibility?: "public" | "private"; description?: string }) {
     const [owner, name] = split(repo);
     return this.c.request<Repo>("POST", "/v1/repos/import", {
       owner,
       name,
-      github,
+      git,
       visibility: "private",
       description: "",
       ...opts,
@@ -329,12 +329,12 @@ export class HubRepos {
   }
 
   /**
-   * A new repo whose contents — large files included — are fetched from a PUBLIC Hugging Face
-   * repo of the same kind; `hf` is its `"owner/name"` pair, never a URL. Answers 202; poll
-   * {@link importStatus}.
+   * A new repo whose contents — large files included, through git-lfs — are fetched from a
+   * PUBLIC git remote; `git` is a strict `https://` URL (the Hugging Face Hub is one host among
+   * any). Answers 202; poll {@link importStatus}.
    */
-  importHf(repo: string, hf: string, opts?: { private?: boolean }) {
-    return this.c.hubRequest("POST", this.path(repo, "/import"), { from: hf, private: opts?.private ?? true });
+  importGit(repo: string, git: string, opts?: { private?: boolean }) {
+    return this.c.hubRequest("POST", this.path(repo, "/import"), { from: git, private: opts?.private ?? true });
   }
 
   /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */

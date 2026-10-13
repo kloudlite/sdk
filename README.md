@@ -34,8 +34,8 @@ kl = Kloudlite("https://api.example.com", token="…")
 
 kl.code_repos.create("acme/payments", visibility="private", description="…")
 kl.code_repos.fork("acme/payments", "me/payments")   # objects + refs, private by default
-kl.code_repos.import_github("acme/rails", "rails/rails")   # 202 — a job; a PUBLIC GitHub repo
-kl.code_repos.import_status("acme/rails")                  # queued | running | done | failed
+kl.code_repos.import_git("acme/rails", "https://github.com/rails/rails.git")
+kl.code_repos.import_status("acme/rails")   # 202 — a job: queued | running | done | failed
 kl.code_repos.list("acme")
 kl.code_repos.get("acme/payments")
 kl.code_repos.update("acme/payments", visibility="public")
@@ -81,9 +81,9 @@ kl.model_repos.delete("acme/bert-finetune")
 
 kl.data_repos.create("acme/support-tickets")         # same five verbs, dataset kind
 
-kl.model_repos.import_hf("acme/bert", "google-bert/bert-base-uncased")  # 202 — a job,
-kl.model_repos.import_status("acme/bert")               # large files included (git-lfs);
-kl.data_repos.import_hf("acme/squad", "rajpurkar/squad")             # PUBLIC sources only
+kl.model_repos.import_git("acme/bert", "https://huggingface.co/google-bert/bert-base-uncased")
+kl.model_repos.import_status("acme/bert")   # 202 — a job; large files included (git-lfs)
+kl.data_repos.import_git("acme/squad", "https://huggingface.co/datasets/rajpurkar/squad")
 ```
 
 Each SDK directory carries a runnable `example` file walking the whole fork

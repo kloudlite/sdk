@@ -133,13 +133,13 @@ class CodeRepos:
             "owner": owner, "name": name, "visibility": visibility, "description": description,
         })
 
-    def import_github(self, repo: str, github: str, visibility: str = "private", description: str = ""):
-        """A new repo whose contents are fetched from a PUBLIC GitHub repository — ``github`` is
-        its ``"owner/name"`` pair, never a URL. Answers 202: the repo exists but the fetch runs
-        in the background; poll :meth:`import_status`."""
+    def import_git(self, repo: str, git: str, visibility: str = "private", description: str = ""):
+        """A new repo whose contents are fetched from a PUBLIC git remote — ``git`` is a strict
+        ``https://`` URL (GitHub is one host among any). Answers 202: the repo exists but the
+        fetch runs in the background; poll :meth:`import_status`."""
         owner, name = _split(repo)
         return self._c.request("POST", "/v1/repos/import", {
-            "owner": owner, "name": name, "github": github,
+            "owner": owner, "name": name, "git": git,
             "visibility": visibility, "description": description,
         })
 
@@ -254,11 +254,11 @@ class HubRepos:
     def delete(self, repo: str):
         return self._c.hub_request("DELETE", "/api/repos/delete", self._body(repo))
 
-    def import_hf(self, repo: str, hf: str, private: bool = True):
-        """A new repo whose contents — large files included — are fetched from a PUBLIC
-        Hugging Face repo of the same kind; ``hf`` is its ``"owner/name"`` pair, never a URL.
-        Answers 202; poll :meth:`import_status`."""
-        return self._c.hub_request("POST", self._path(repo, "/import"), {"from": hf, "private": private})
+    def import_git(self, repo: str, git: str, private: bool = True):
+        """A new repo whose contents — large files included, through git-lfs — are fetched from a
+        PUBLIC git remote; ``git`` is a strict ``https://`` URL (the Hugging Face Hub is one host
+        among any). Answers 202; poll :meth:`import_status`."""
+        return self._c.hub_request("POST", self._path(repo, "/import"), {"from": git, "private": private})
 
     def import_status(self, repo: str):
         """``{"from", "state": queued|running|done|failed, "detail"?}`` for an imported repo."""
