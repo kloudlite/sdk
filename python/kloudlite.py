@@ -42,6 +42,16 @@ class Kloudlite:
         self.code_repos = CodeRepos(self)
         self.model_repos = HubRepos(self, "model")
         self.data_repos = HubRepos(self, "dataset")
+        self.workspaces = Workspaces(self)
+        self.volumes = Volumes(self)
+
+    def regions(self):
+        """The regions an admin has registered — a workspace is created into one of them."""
+        return self.request("GET", "/v1/regions")
+
+    def quota(self, owner: str | None = None):
+        """The ceiling and what is against it; ``owner`` defaults to the caller's own."""
+        return self.request("GET", "/v1/quota", query={"owner": owner})
 
     # ── request core ──────────────────────────────────────────────────────
 
@@ -213,6 +223,105 @@ class CodeRepos:
 
     def signature(self, repo: str, sha: str):
         return self._c.request("GET", self._path(repo, f"/commits/{_seg(sha)}/signature"))
+
+
+class Workspaces:
+    """Btrfs-backed dev workspaces, over ``/v1/workspaces``. A workspace is named by its id (the
+    ``name`` given at create); pushes cut snapshots, kept on the workspace's VOLUME — see
+    :class:`Volumes` for history, restore targets and deletion."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    def create(self, name: str, region: str, quota_gb: int, team: str | None = None,
+               image: str | None = None, repo: str | None = None, branch: str | None = None,
+               packages: list | None = None):
+        """``repo`` seeds from a PLATFORM repo ("owner/name", with ``branch``); ``packages`` are
+        nixpkgs attributes, optionally pinned (``attr@version``)."""
+        body = {"name": name, "region": region, "quota_gb": quota_gb,
+                "team": team, "repo": repo, "branch": branch,
+                "packages": packages or []}
+        if image is not None:
+            body["image"] = image
+        return self._c.request("POST", "/v1/workspaces", body)
+
+    def list(self, team: str | None = None):
+        """The caller's workspaces; ``team`` scopes to their workspaces in that team."""
+        return self._c.request("GET", "/v1/workspaces", query={"team": team})
+
+    def get(self, id: str):
+        return self._c.request("GET", f"/v1/workspaces/{_seg(id)}")
+
+    def delete(self, id: str):
+        """Runs the worktree finalizer: the volume survives while a pushed snapshot references it."""
+        return self._c.request("DELETE", f"/v1/workspaces/{_seg(id)}")
+
+    def start(self, id: str):
+        return self._c.request("POST", f"/v1/workspaces/{_seg(id)}/start")
+
+    def stop(self, id: str):
+        """A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica."""
+        return self._c.request("POST", f"/v1/workspaces/{_seg(id)}/stop")
+
+    def push(self, id: str, message: str | None = None):
+        """Cut a SNAPSHOT of the working copy — the one durable, restorable state."""
+        body = {"message": message} if message is not None else None
+        return self._c.request("POST", f"/v1/workspaces/{_seg(id)}/push", body)
+
+    def clone(self, id: str, name: str, task: str | None = None):
+        """A new workspace from this one's state, cut at the moment of the request; the answer's
+        ``based_on`` names exactly what it grafted onto."""
+        return self._c.request("POST", f"/v1/workspaces/{_seg(id)}/clone",
+                               {"name": name, "task": task})
+
+    def restore(self, name: str, snapshot_id: str, image: str | None = None,
+                packages: list | None = None, quota_gb: int | None = None):
+        """A new workspace grafted onto a PUSHED snapshot — also one whose workspace is long
+        gone. Absent overrides mean "whatever the snapshot froze"."""
+        return self._c.request("POST", "/v1/workspaces/restore", {
+            "name": name, "snapshot_id": snapshot_id,
+            "image": image, "packages": packages, "quota_gb": quota_gb,
+        })
+
+    def set_packages(self, id: str, packages: list):
+        """Replace the package list; pinned entries are locked before anything is written."""
+        return self._c.request("PATCH", f"/v1/workspaces/{_seg(id)}", {"packages": packages})
+
+    def update_packages(self, id: str):
+        """Re-resolve every pinned package — the only call that moves existing locks."""
+        return self._c.request("POST", f"/v1/workspaces/{_seg(id)}/packages/update")
+
+    def tools(self, id: str):
+        """The workspace's tool-server address — answered to the owner alone."""
+        return self._c.request("GET", f"/v1/workspaces/{_seg(id)}/tools")
+
+
+class Volumes:
+    """The btrfs volumes behind workspaces and environments: snapshot history, restore targets,
+    and the two deletes — over ``/v1/volumes``."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    def list(self, kind: str | None = None, owner: str | None = None):
+        """``kind`` is ``workspace`` or ``environment``; ``owner`` a handle or team slug."""
+        return self._c.request("GET", "/v1/volumes", query={"kind": kind, "owner": owner})
+
+    def history(self, name: str):
+        """The chain of PUSHED snapshots, newest first — each row a restore target."""
+        return self._c.request("GET", f"/v1/volumes/{_seg(name)}/history")
+
+    def refs(self, name: str):
+        return self._c.request("GET", f"/v1/volumes/{_seg(name)}/refs")
+
+    def delete_snapshot(self, name: str, snapshot_id: str):
+        """Refused (409) for a sync point or a running worktree's base; deleting a detached
+        volume's last snapshot deletes the volume."""
+        return self._c.request("DELETE", f"/v1/volumes/{_seg(name)}/snapshots/{_seg(snapshot_id)}")
+
+    def delete(self, name: str):
+        """Takes a DETACHED volume with all its snapshots; refused while a working copy remains."""
+        return self._c.request("DELETE", f"/v1/volumes/{_seg(name)}")
 
 
 class HubRepos:

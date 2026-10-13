@@ -40,6 +40,8 @@ export class Kloudlite {
   readonly codeRepos: CodeRepos;
   readonly modelRepos: HubRepos;
   readonly dataRepos: HubRepos;
+  readonly workspaces: Workspaces;
+  readonly volumes: Volumes;
   private readonly baseUrl: string;
   private readonly hubUrl?: string;
   private readonly token?: string;
@@ -53,6 +55,18 @@ export class Kloudlite {
     this.codeRepos = new CodeRepos(this);
     this.modelRepos = new HubRepos(this, "model");
     this.dataRepos = new HubRepos(this, "dataset");
+    this.workspaces = new Workspaces(this);
+    this.volumes = new Volumes(this);
+  }
+
+  /** The regions an admin has registered — a workspace is created into one of them. */
+  regions() {
+    return this.request("GET", "/v1/regions");
+  }
+
+  /** The ceiling and what is against it; `owner` defaults to the caller's own. */
+  quota(owner?: string) {
+    return this.request("GET", "/v1/quota", undefined, { owner });
   }
 
   /**
@@ -277,6 +291,126 @@ export class CodeRepos {
 
   signature(repo: string, sha: string) {
     return this.c.request("GET", this.path(repo, `/commits/${seg(sha)}/signature`));
+  }
+}
+
+/**
+ * Btrfs-backed dev workspaces, over `/v1/workspaces`. A workspace is named by its id (the `name`
+ * given at create); pushes cut snapshots, kept on the workspace's VOLUME — see {@link Volumes}
+ * for history, restore targets and deletion.
+ */
+export class Workspaces {
+  constructor(private readonly c: Kloudlite) {}
+
+  /**
+   * `repo` seeds from a PLATFORM repo ("owner/name", with `branch`); `packages` are nixpkgs
+   * attributes, optionally pinned (`attr@version`).
+   */
+  create(opts: {
+    name: string;
+    region: string;
+    quota_gb: number;
+    team?: string;
+    image?: string;
+    repo?: string;
+    branch?: string;
+    packages?: string[];
+  }) {
+    return this.c.request("POST", "/v1/workspaces", { packages: [], ...opts });
+  }
+
+  /** The caller's workspaces; `team` scopes to their workspaces in that team. */
+  list(team?: string) {
+    return this.c.request<unknown[]>("GET", "/v1/workspaces", undefined, { team });
+  }
+
+  get(id: string) {
+    return this.c.request("GET", `/v1/workspaces/${seg(id)}`);
+  }
+
+  /** Runs the worktree finalizer: the volume survives while a pushed snapshot references it. */
+  delete(id: string) {
+    return this.c.request("DELETE", `/v1/workspaces/${seg(id)}`);
+  }
+
+  start(id: string) {
+    return this.c.request("POST", `/v1/workspaces/${seg(id)}/start`);
+  }
+
+  /** A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica. */
+  stop(id: string) {
+    return this.c.request("POST", `/v1/workspaces/${seg(id)}/stop`);
+  }
+
+  /** Cut a SNAPSHOT of the working copy — the one durable, restorable state. */
+  push(id: string, message?: string) {
+    return this.c.request("POST", `/v1/workspaces/${seg(id)}/push`, message === undefined ? undefined : { message });
+  }
+
+  /**
+   * A new workspace from this one's state, cut at the moment of the request; the answer's
+   * `based_on` names exactly what it grafted onto.
+   */
+  clone(id: string, name: string, task?: string) {
+    return this.c.request("POST", `/v1/workspaces/${seg(id)}/clone`, { name, task });
+  }
+
+  /**
+   * A new workspace grafted onto a PUSHED snapshot — also one whose workspace is long gone.
+   * Absent overrides mean "whatever the snapshot froze".
+   */
+  restore(opts: { name: string; snapshot_id: string; image?: string; packages?: string[]; quota_gb?: number }) {
+    return this.c.request("POST", "/v1/workspaces/restore", opts);
+  }
+
+  /** Replace the package list; pinned entries are locked before anything is written. */
+  setPackages(id: string, packages: string[]) {
+    return this.c.request("PATCH", `/v1/workspaces/${seg(id)}`, { packages });
+  }
+
+  /** Re-resolve every pinned package — the only call that moves existing locks. */
+  updatePackages(id: string) {
+    return this.c.request("POST", `/v1/workspaces/${seg(id)}/packages/update`);
+  }
+
+  /** The workspace's tool-server address — answered to the owner alone. */
+  tools(id: string) {
+    return this.c.request("GET", `/v1/workspaces/${seg(id)}/tools`);
+  }
+}
+
+/**
+ * The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
+ * the two deletes — over `/v1/volumes`.
+ */
+export class Volumes {
+  constructor(private readonly c: Kloudlite) {}
+
+  /** `kind` is `workspace` or `environment`; `owner` a handle or team slug. */
+  list(query?: { kind?: "workspace" | "environment"; owner?: string }) {
+    return this.c.request<unknown[]>("GET", "/v1/volumes", undefined, query);
+  }
+
+  /** The chain of PUSHED snapshots, newest first — each row a restore target. */
+  history(name: string) {
+    return this.c.request("GET", `/v1/volumes/${seg(name)}/history`);
+  }
+
+  refs(name: string) {
+    return this.c.request("GET", `/v1/volumes/${seg(name)}/refs`);
+  }
+
+  /**
+   * Refused (409) for a sync point or a running worktree's base; deleting a detached volume's
+   * last snapshot deletes the volume.
+   */
+  deleteSnapshot(name: string, snapshotId: string) {
+    return this.c.request("DELETE", `/v1/volumes/${seg(name)}/snapshots/${seg(snapshotId)}`);
+  }
+
+  /** Takes a DETACHED volume with all its snapshots; refused while a working copy remains. */
+  delete(name: string) {
+    return this.c.request("DELETE", `/v1/volumes/${seg(name)}`);
   }
 }
 
