@@ -29,9 +29,11 @@ fn ts(s: &str) -> Option<SystemTime> {
 /// A workspace that wants a pod follows, Running yet or not: one slow to start (node full, cold
 /// package copy, clone graft) must keep its environment up, or the env idles first and nothing
 /// wakes it when the workspace finally arrives. A stopped workspace follows nothing, and its own
-/// idle verdict turns `wants_pod` false.
+/// idle verdict turns `wants_pod` false. A bench never follows: it hands work to workspaces, which
+/// follow (and wake their environment on start) themselves, and counting it kept the owner's space
+/// environment up for as long as the bench stayed awake (drill 2026-10-13).
 fn live(w: &crd::Workspace) -> bool {
-    crd::wants_pod(w)
+    crd::wants_pod(w) && !crd::is_bench(w)
 }
 
 /// `resolve` returns `None` when the space cache is unknown, `Some(None)` when the workspace has
@@ -153,6 +155,13 @@ mod tests {
         let mut w = (*running_ws("w1")).clone();
         w.status.get_or_insert_with(Default::default).idle_since = Some("2026-10-12T10:00:00Z".into());
         assert_eq!(followed(&e, Some(&[Arc::new(w)]), |_| Some(None), now(), S), Followed::No);
+    }
+    #[test]
+    fn a_running_bench_is_not_a_follower() {
+        let e = env("e1");
+        let mut w = (*running_ws("b1")).clone();
+        w.spec.bench = Some(crd::BenchOptions::default());
+        assert_eq!(followed(&e, Some(&[Arc::new(w)]), |_| Some(Some("e1".into())), now(), S), Followed::No);
     }
     #[test]
     fn a_workspace_still_starting_follows() {
