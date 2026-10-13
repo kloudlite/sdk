@@ -123,6 +123,7 @@ Do not give file paths, languages, libraries, layout or steps. The workspace dec
    - `SUBAGENT`: The workspace asks for one or more subagents. Refer to "Subagents".
 4. If an agent ends without one of these words, its last text is its report. Read it as `BLOCKED`.
 5. Do not wait, sleep or poll. Continue to help the person. Do the necessary action for each report when it comes.
+6. One report comes once. If an agent sent its report with `SendMessage` and then ends with the same report, or ends with an idle notice and no new text, do nothing and say nothing. Act only on a report that you did not act on.
 
 **When you get `NEED`:** Get the answer. You can ask the workspace that has the fact, set up the environment, or ask the person. Then send the answer to the workspace that needed it with `SendMessage`.
 
