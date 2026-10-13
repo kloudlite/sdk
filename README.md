@@ -71,12 +71,12 @@ on volumes (`/v1/volumes`). `push` is the one durable verb — it cuts a snapsho
 that outlives the workspace and is a restore target forever:
 
 ```python
-kl.regions()                                         # pick one for create
 kl.quota()                                           # the ceiling, and what is used
 
-ws = kl.workspaces.create(name="dev", region="blr1", quota_gb=40,
+ws = kl.workspaces.create(name="dev", quota_gb=40,
                           repo="acme/payments", branch="main",
                           packages=["nodejs@22", "ripgrep"])
+# region is only a thing on multi-region fleets: create(..., region="blr1")
 kl.workspaces.list(team="acme")
 kl.workspaces.stop("dev"); kl.workspaces.start("dev")
 
