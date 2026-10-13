@@ -35,6 +35,8 @@ type Client struct {
 	// plain error until a hub URL is given (New's hubURL, or NewWithHub).
 	ModelRepos *HubRepos
 	DataRepos  *HubRepos
+	Workspaces *Workspaces
+	Volumes    *Volumes
 
 	baseURL string
 	hubURL  string
@@ -59,7 +61,27 @@ func NewWithHub(baseURL, hubURL, token string) *Client {
 	c.CodeRepos = &CodeRepos{c}
 	c.ModelRepos = &HubRepos{c: c, kind: "model", plural: "models"}
 	c.DataRepos = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
+	c.Workspaces = &Workspaces{c}
+	c.Volumes = &Volumes{c}
 	return c
+}
+
+// Regions lists what an admin has registered — a workspace is created into one of them.
+func (c *Client) Regions() ([]map[string]any, error) {
+	var out []map[string]any
+	err := c.Request("GET", "/v1/regions", nil, nil, &out)
+	return out, err
+}
+
+// Quota answers the ceiling and what is against it; an empty owner means the caller's own.
+func (c *Client) Quota(owner string) (map[string]any, error) {
+	q := url.Values{}
+	if owner != "" {
+		q.Set("owner", owner)
+	}
+	var out map[string]any
+	err := c.Request("GET", "/v1/quota", q, nil, &out)
+	return out, err
 }
 
 // Request makes one HTTP round trip. body (sent as JSON) and out (decoded from
@@ -546,6 +568,174 @@ func (h *HubRepos) ImportStatus(repo string) (map[string]any, error) {
 	var out map[string]any
 	err = h.c.HubRequest("GET", p, nil, nil, &out)
 	return out, err
+}
+
+// Workspaces is btrfs-backed dev workspaces, over /v1/workspaces. A workspace
+// is named by its id (the Name given at create); pushes cut snapshots, kept on
+// the workspace's VOLUME — see Volumes for history, restore targets and
+// deletion.
+type Workspaces struct{ c *Client }
+
+// NewWorkspace carries what a create takes. Repo seeds from a PLATFORM repo
+// ("owner/name", with Branch); Packages are nixpkgs attributes, optionally
+// pinned ("attr@version"). An empty Image means the platform default.
+type NewWorkspace struct {
+	Name    string `json:"name"`
+	Region  string `json:"region"`
+	QuotaGb int64  `json:"quota_gb"`
+	// Empty means personal.
+	Team     string   `json:"team,omitempty"`
+	Image    string   `json:"image,omitempty"`
+	Repo     string   `json:"repo,omitempty"`
+	Branch   string   `json:"branch,omitempty"`
+	Packages []string `json:"packages"`
+}
+
+// RestoreWorkspace grafts a new workspace onto a PUSHED snapshot — also one
+// whose workspace is long gone. Absent overrides mean "whatever the snapshot
+// froze".
+type RestoreWorkspace struct {
+	Name       string   `json:"name"`
+	SnapshotID string   `json:"snapshot_id"`
+	Image      string   `json:"image,omitempty"`
+	Packages   []string `json:"packages,omitempty"`
+	QuotaGb    int64    `json:"quota_gb,omitempty"`
+}
+
+func (w *Workspaces) Create(body NewWorkspace) (map[string]any, error) {
+	if body.Packages == nil {
+		body.Packages = []string{}
+	}
+	var out map[string]any
+	err := w.c.Request("POST", "/v1/workspaces", nil, body, &out)
+	return out, err
+}
+
+// List answers the caller's workspaces; team scopes to their workspaces in
+// that team.
+func (w *Workspaces) List(team string) ([]map[string]any, error) {
+	q := url.Values{}
+	if team != "" {
+		q.Set("team", team)
+	}
+	var out []map[string]any
+	err := w.c.Request("GET", "/v1/workspaces", q, nil, &out)
+	return out, err
+}
+
+func (w *Workspaces) Get(id string) (map[string]any, error) {
+	var out map[string]any
+	err := w.c.Request("GET", "/v1/workspaces/"+seg(id), nil, nil, &out)
+	return out, err
+}
+
+// Delete runs the worktree finalizer: the volume survives while a pushed
+// snapshot references it.
+func (w *Workspaces) Delete(id string) error {
+	return w.c.Request("DELETE", "/v1/workspaces/"+seg(id), nil, nil, nil)
+}
+
+func (w *Workspaces) Start(id string) error {
+	return w.c.Request("POST", "/v1/workspaces/"+seg(id)+"/start", nil, nil, nil)
+}
+
+// Stop cuts a sync point and tears the pod down — seconds, never waiting on a
+// replica.
+func (w *Workspaces) Stop(id string) error {
+	return w.c.Request("POST", "/v1/workspaces/"+seg(id)+"/stop", nil, nil, nil)
+}
+
+// Push cuts a SNAPSHOT of the working copy — the one durable, restorable state.
+func (w *Workspaces) Push(id, message string) (map[string]any, error) {
+	var body any
+	if message != "" {
+		body = map[string]string{"message": message}
+	}
+	var out map[string]any
+	err := w.c.Request("POST", "/v1/workspaces/"+seg(id)+"/push", nil, body, &out)
+	return out, err
+}
+
+// Clone makes a new workspace from this one's state, cut at the moment of the
+// request; the answer's based_on names exactly what it grafted onto.
+func (w *Workspaces) Clone(id, name, task string) (map[string]any, error) {
+	body := map[string]string{"name": name}
+	if task != "" {
+		body["task"] = task
+	}
+	var out map[string]any
+	err := w.c.Request("POST", "/v1/workspaces/"+seg(id)+"/clone", nil, body, &out)
+	return out, err
+}
+
+func (w *Workspaces) Restore(body RestoreWorkspace) (map[string]any, error) {
+	var out map[string]any
+	err := w.c.Request("POST", "/v1/workspaces/restore", nil, body, &out)
+	return out, err
+}
+
+// SetPackages replaces the package list; pinned entries are locked before
+// anything is written.
+func (w *Workspaces) SetPackages(id string, packages []string) error {
+	return w.c.Request("PATCH", "/v1/workspaces/"+seg(id), nil, map[string]any{"packages": packages}, nil)
+}
+
+// UpdatePackages re-resolves every pinned package — the only call that moves
+// existing locks.
+func (w *Workspaces) UpdatePackages(id string) error {
+	return w.c.Request("POST", "/v1/workspaces/"+seg(id)+"/packages/update", nil, nil, nil)
+}
+
+// Tools answers the workspace's tool-server address — to the owner alone.
+func (w *Workspaces) Tools(id string) (map[string]any, error) {
+	var out map[string]any
+	err := w.c.Request("GET", "/v1/workspaces/"+seg(id)+"/tools", nil, nil, &out)
+	return out, err
+}
+
+// Volumes is the btrfs volumes behind workspaces and environments: snapshot
+// history, restore targets, and the two deletes — over /v1/volumes.
+type Volumes struct{ c *Client }
+
+// List filters by kind ("workspace" or "environment") and owner (a handle or
+// a team slug); empty strings mean no filter.
+func (v *Volumes) List(kind, owner string) ([]map[string]any, error) {
+	q := url.Values{}
+	if kind != "" {
+		q.Set("kind", kind)
+	}
+	if owner != "" {
+		q.Set("owner", owner)
+	}
+	var out []map[string]any
+	err := v.c.Request("GET", "/v1/volumes", q, nil, &out)
+	return out, err
+}
+
+// History answers the chain of PUSHED snapshots, newest first — each row a
+// restore target.
+func (v *Volumes) History(name string) (map[string]any, error) {
+	var out map[string]any
+	err := v.c.Request("GET", "/v1/volumes/"+seg(name)+"/history", nil, nil, &out)
+	return out, err
+}
+
+func (v *Volumes) Refs(name string) (map[string]any, error) {
+	var out map[string]any
+	err := v.c.Request("GET", "/v1/volumes/"+seg(name)+"/refs", nil, nil, &out)
+	return out, err
+}
+
+// DeleteSnapshot is refused (409) for a sync point or a running worktree's
+// base; deleting a detached volume's last snapshot deletes the volume.
+func (v *Volumes) DeleteSnapshot(name, snapshotID string) error {
+	return v.c.Request("DELETE", "/v1/volumes/"+seg(name)+"/snapshots/"+seg(snapshotID), nil, nil, nil)
+}
+
+// Delete takes a DETACHED volume with all its snapshots; refused while a
+// working copy remains.
+func (v *Volumes) Delete(name string) error {
+	return v.c.Request("DELETE", "/v1/volumes/"+seg(name), nil, nil, nil)
 }
 
 // The server answers errors as {"error": …} or plain text; take either.

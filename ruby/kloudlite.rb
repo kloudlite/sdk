@@ -28,7 +28,7 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :code_repos, :model_repos, :data_repos
+    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :volumes
 
     def initialize(base_url, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
@@ -38,6 +38,18 @@ module Kloudlite
       @code_repos = CodeRepos.new(self)
       @model_repos = HubRepos.new(self, "model")
       @data_repos = HubRepos.new(self, "dataset")
+      @workspaces = Workspaces.new(self)
+      @volumes = Volumes.new(self)
+    end
+
+    # The regions an admin has registered — a workspace is created into one of them.
+    def regions
+      request("GET", "/v1/regions")
+    end
+
+    # The ceiling and what is against it; +owner+ defaults to the caller's own.
+    def quota(owner: nil)
+      request("GET", "/v1/quota", query: { owner: owner })
     end
 
     # One HTTP round trip. Returns parsed JSON (or nil on an empty body);
@@ -222,6 +234,127 @@ module Kloudlite
       end
       [owner, name]
     end
+
+    def seg(s)
+      URI.encode_uri_component(s.to_s)
+    end
+  end
+
+  # Btrfs-backed dev workspaces, over /v1/workspaces. A workspace is named by its id (the +name+
+  # given at create); pushes cut snapshots, kept on the workspace's VOLUME — see Volumes for
+  # history, restore targets and deletion.
+  class Workspaces
+    def initialize(client)
+      @c = client
+    end
+
+    # +repo+ seeds from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs
+    # attributes, optionally pinned ("attr@version").
+    def create(name:, region:, quota_gb:, team: nil, image: nil, repo: nil, branch: nil, packages: [])
+      body = { name: name, region: region, quota_gb: quota_gb,
+               team: team, repo: repo, branch: branch, packages: packages }
+      body[:image] = image unless image.nil?
+      @c.request("POST", "/v1/workspaces", body: body)
+    end
+
+    # The caller's workspaces; +team+ scopes to their workspaces in that team.
+    def list(team: nil)
+      @c.request("GET", "/v1/workspaces", query: { team: team })
+    end
+
+    def get(id)
+      @c.request("GET", "/v1/workspaces/#{seg(id)}")
+    end
+
+    # Runs the worktree finalizer: the volume survives while a pushed snapshot references it.
+    def delete(id)
+      @c.request("DELETE", "/v1/workspaces/#{seg(id)}")
+    end
+
+    def start(id)
+      @c.request("POST", "/v1/workspaces/#{seg(id)}/start")
+    end
+
+    # A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica.
+    def stop(id)
+      @c.request("POST", "/v1/workspaces/#{seg(id)}/stop")
+    end
+
+    # Cut a SNAPSHOT of the working copy — the one durable, restorable state.
+    def push(id, message: nil)
+      @c.request("POST", "/v1/workspaces/#{seg(id)}/push",
+                 body: message.nil? ? nil : { message: message })
+    end
+
+    # A new workspace from this one's state, cut at the moment of the request; the answer's
+    # +based_on+ names exactly what it grafted onto.
+    def clone(id, name, task: nil)
+      @c.request("POST", "/v1/workspaces/#{seg(id)}/clone", body: { name: name, task: task })
+    end
+
+    # A new workspace grafted onto a PUSHED snapshot — also one whose workspace is long gone.
+    # Absent overrides mean "whatever the snapshot froze".
+    def restore(name:, snapshot_id:, image: nil, packages: nil, quota_gb: nil)
+      @c.request("POST", "/v1/workspaces/restore",
+                 body: { name: name, snapshot_id: snapshot_id,
+                         image: image, packages: packages, quota_gb: quota_gb })
+    end
+
+    # Replace the package list; pinned entries are locked before anything is written.
+    def set_packages(id, packages)
+      @c.request("PATCH", "/v1/workspaces/#{seg(id)}", body: { packages: packages })
+    end
+
+    # Re-resolve every pinned package — the only call that moves existing locks.
+    def update_packages(id)
+      @c.request("POST", "/v1/workspaces/#{seg(id)}/packages/update")
+    end
+
+    # The workspace's tool-server address — answered to the owner alone.
+    def tools(id)
+      @c.request("GET", "/v1/workspaces/#{seg(id)}/tools")
+    end
+
+    private
+
+    def seg(s)
+      URI.encode_uri_component(s.to_s)
+    end
+  end
+
+  # The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
+  # the two deletes — over /v1/volumes.
+  class Volumes
+    def initialize(client)
+      @c = client
+    end
+
+    # +kind+ is "workspace" or "environment"; +owner+ a handle or team slug.
+    def list(kind: nil, owner: nil)
+      @c.request("GET", "/v1/volumes", query: { kind: kind, owner: owner })
+    end
+
+    # The chain of PUSHED snapshots, newest first — each row a restore target.
+    def history(name)
+      @c.request("GET", "/v1/volumes/#{seg(name)}/history")
+    end
+
+    def refs(name)
+      @c.request("GET", "/v1/volumes/#{seg(name)}/refs")
+    end
+
+    # Refused (409) for a sync point or a running worktree's base; deleting a detached volume's
+    # last snapshot deletes the volume.
+    def delete_snapshot(name, snapshot_id)
+      @c.request("DELETE", "/v1/volumes/#{seg(name)}/snapshots/#{seg(snapshot_id)}")
+    end
+
+    # Takes a DETACHED volume with all its snapshots; refused while a working copy remains.
+    def delete(name)
+      @c.request("DELETE", "/v1/volumes/#{seg(name)}")
+    end
+
+    private
 
     def seg(s)
       URI.encode_uri_component(s.to_s)
