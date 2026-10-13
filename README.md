@@ -63,6 +63,24 @@ kl.repos.signature("acme/payments", "<commit sha>")
 A cross-repo pull's diff is read with the mirror spelling:
 `kl.repos.compare("acme/payments", base="main", head="pull/7/head")`.
 
+## The `models` and `datasets` modules
+
+Model and dataset repositories live on the HUB listener (the Hugging Face Hub
+API, `hub.<domain>`), so the client takes its URL separately. Management level
+only — files move with git or `huggingface_hub` against the same hub URL:
+
+```python
+kl = Kloudlite("https://api.example.com", token="…", hub_url="https://hub.example.com")
+
+kl.models.create("acme/bert-finetune")             # private by default
+kl.models.get("acme/bert-finetune")
+kl.models.refs("acme/bert-finetune")               # branches and tags
+kl.models.set_private("acme/bert-finetune", False)
+kl.models.delete("acme/bert-finetune")
+
+kl.datasets.create("acme/support-tickets")         # same five verbs, dataset kind
+```
+
 Each SDK directory carries a runnable `example` file walking the whole fork
 workflow: fork, commit onto a new branch of the fork, open the change back
 upstream with `head_repo`, review the mirror diff, merge.

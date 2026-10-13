@@ -28,19 +28,32 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :repos
+    attr_reader :repos, :models, :datasets
 
-    def initialize(base_url, token: nil, timeout: 30)
+    def initialize(base_url, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
+      @hub_url = hub_url&.sub(%r{/+\z}, "")
       @token = token
       @timeout = timeout
       @repos = Repos.new(self)
+      @models = HubRepos.new(self, "model")
+      @datasets = HubRepos.new(self, "dataset")
     end
 
     # One HTTP round trip. Returns parsed JSON (or nil on an empty body);
     # raises ApiError on any non-2xx status.
     def request(method, path, body: nil, query: nil)
-      uri = URI.parse(@base_url + path)
+      send_to(@base_url, method, path, body: body, query: query)
+    end
+
+    # The same round trip against the hub listener (models and datasets).
+    def hub_request(method, path, body: nil, query: nil)
+      raise ArgumentError, "this client has no hub_url; pass one to reach models and datasets" unless @hub_url
+      send_to(@hub_url, method, path, body: body, query: query)
+    end
+
+    def send_to(base, method, path, body: nil, query: nil)
+      uri = URI.parse(base + path)
       if query
         q = query.compact
         uri.query = URI.encode_www_form(q) unless q.empty?
@@ -202,6 +215,64 @@ module Kloudlite
     end
 
     # "owner/name" → its two halves, refused client-side when malformed.
+    def split(repo)
+      owner, name = repo.to_s.split("/", 2)
+      if owner.nil? || owner.empty? || name.nil? || name.empty? || name.include?("/")
+        raise ArgumentError, "a repository is named owner/name, got #{repo.inspect}"
+      end
+      [owner, name]
+    end
+
+    def seg(s)
+      URI.encode_uri_component(s.to_s)
+    end
+  end
+
+  # Model and dataset repositories, on the hub listener (Hugging Face Hub API).
+  # Management level: create, read, refs, visibility, delete — files move with
+  # git/huggingface_hub against the same hub URL. Every +repo+ is one
+  # "owner/name" string, exactly as in Repos.
+  class HubRepos
+    def initialize(client, kind)
+      @c = client
+      @kind = kind
+      @plural = { "model" => "models", "dataset" => "datasets" }.fetch(kind)
+    end
+
+    # +private+ is sent explicitly rather than trusting a server default.
+    def create(repo, private: true)
+      @c.hub_request("POST", "/api/repos/create", body: body_of(repo, private: private))
+    end
+
+    def get(repo)
+      @c.hub_request("GET", path(repo))
+    end
+
+    # Branches and tags, as the hub spells them.
+    def refs(repo)
+      @c.hub_request("GET", path(repo, "/refs"))
+    end
+
+    def set_private(repo, private)
+      @c.hub_request("PUT", path(repo, "/settings"), body: { private: private })
+    end
+
+    def delete(repo)
+      @c.hub_request("DELETE", "/api/repos/delete", body: body_of(repo))
+    end
+
+    private
+
+    def body_of(repo, extra = {})
+      owner, name = split(repo)
+      { name: name, organization: owner, type: @kind }.merge(extra)
+    end
+
+    def path(repo, tail = "")
+      owner, name = split(repo)
+      "/api/#{@plural}/#{seg(owner)}/#{seg(name)}#{tail}"
+    end
+
     def split(repo)
       owner, name = repo.to_s.split("/", 2)
       if owner.nil? || owner.empty? || name.nil? || name.empty? || name.include?("/")

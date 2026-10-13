@@ -34,13 +34,22 @@ public class Kloudlite {
     }
 
     private final String baseUrl;
+    private final String hubUrl; // null = no hub listener configured
     private final String token; // null = anonymous
     private final HttpClient http;
     private final Repos repos = new Repos();
+    private final HubRepos models = new HubRepos("model", "models");
+    private final HubRepos datasets = new HubRepos("dataset", "datasets");
 
     /** token may be null for anonymous access to public data. */
     public Kloudlite(String baseUrl, String token) {
+        this(baseUrl, null, token);
+    }
+
+    /** The two-listener form: {@code hubUrl} is where models and datasets live. */
+    public Kloudlite(String baseUrl, String hubUrl, String token) {
         this.baseUrl = baseUrl.replaceAll("/+$", "");
+        this.hubUrl = hubUrl == null ? null : hubUrl.replaceAll("/+$", "");
         this.token = token;
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
     }
@@ -50,13 +59,36 @@ public class Kloudlite {
         return repos;
     }
 
+    /** Model repositories, on the hub listener. */
+    public HubRepos models() {
+        return models;
+    }
+
+    /** Dataset repositories, on the hub listener. */
+    public HubRepos datasets() {
+        return datasets;
+    }
+
     /**
      * One HTTP round trip. {@code jsonBody} may be null; returns the answer's raw
      * JSON body, and throws {@link ApiException} on any non-2xx status.
      */
     public String request(String method, String path, String jsonBody) throws IOException, InterruptedException {
+        return send(baseUrl, method, path, jsonBody);
+    }
+
+    /** The same round trip against the hub listener (models and datasets). */
+    public String hubRequest(String method, String path, String jsonBody) throws IOException, InterruptedException {
+        if (hubUrl == null) {
+            throw new IllegalStateException("this client has no hub URL; pass one to reach models and datasets");
+        }
+        return send(hubUrl, method, path, jsonBody);
+    }
+
+    private String send(String base, String method, String path, String jsonBody)
+            throws IOException, InterruptedException {
         HttpRequest.Builder b = HttpRequest.newBuilder()
-            .uri(URI.create(baseUrl + path))
+            .uri(URI.create(base + path))
             .timeout(Duration.ofSeconds(30))
             .header("User-Agent", "kloudlite-sdk-java/" + VERSION)
             .header("Accept", "application/json")
@@ -220,6 +252,54 @@ public class Kloudlite {
         private String path(String repo, String tail) {
             String[] on = split(repo);
             return "/v1/repos/" + seg(on[0]) + "/" + seg(on[1]) + tail;
+        }
+    }
+
+    /**
+     * Model and dataset repositories, on the hub listener (Hugging Face Hub API).
+     * Management level: create, read, refs, visibility, delete — files move with
+     * git/huggingface_hub against the same hub URL. Every {@code repo} is one
+     * "owner/name" string, exactly as in {@link Repos}.
+     */
+    public class HubRepos {
+        private final String kind;
+        private final String plural;
+
+        HubRepos(String kind, String plural) {
+            this.kind = kind;
+            this.plural = plural;
+        }
+
+        /** {@code privateRepo} is sent explicitly rather than trusting a server default. */
+        public String create(String repo, boolean privateRepo) throws IOException, InterruptedException {
+            String[] on = split(repo);
+            return hubRequest("POST", "/api/repos/create",
+                "{\"name\":" + quote(on[1]) + ",\"organization\":" + quote(on[0])
+                    + ",\"type\":" + quote(kind) + ",\"private\":" + privateRepo + "}");
+        }
+
+        public String get(String repo) throws IOException, InterruptedException {
+            return hubRequest("GET", path(repo, ""), null);
+        }
+
+        /** Branches and tags, as the hub spells them. */
+        public String refs(String repo) throws IOException, InterruptedException {
+            return hubRequest("GET", path(repo, "/refs"), null);
+        }
+
+        public String setPrivate(String repo, boolean privateRepo) throws IOException, InterruptedException {
+            return hubRequest("PUT", path(repo, "/settings"), "{\"private\":" + privateRepo + "}");
+        }
+
+        public String delete(String repo) throws IOException, InterruptedException {
+            String[] on = split(repo);
+            return hubRequest("DELETE", "/api/repos/delete",
+                obj("name", on[1], "organization", on[0], "type", kind));
+        }
+
+        private String path(String repo, String tail) {
+            String[] on = split(repo);
+            return "/api/" + plural + "/" + seg(on[0]) + "/" + seg(on[1]) + tail;
         }
     }
 
