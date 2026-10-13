@@ -110,20 +110,26 @@ and creates or removes the flag before the command body runs. While on, the same
 context line: "kl mode is on: work only through the kl tools; nothing runs on this laptop."
 
 **Gate**: a `PreToolUse` hook with matcher `.*` (all tools, main session and subagents). While the
-flag exists, it allows:
-
-- `mcp__plugin_kloudlite_kl__*`
-- `Agent`, `Skill`, `ToolSearch`, `AskUserQuestion`, `SendMessage`
-- the task and todo tools (`TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `TodoWrite`)
-
-It denies everything else (`Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`,
-`WebSearch`, `NotebookEdit`, other MCP servers) with
+flag exists, it denies the tools that run, read or write on this laptop (`Bash`, `BashOutput`,
+`KillShell`, `Monitor`, `PowerShell`, `Read`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`,
+`NotebookRead`, `Glob`, `Grep`, `LS`, `LSP`, `mcp__serena__*`) with
 `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"kl mode: use the kl tools; nothing runs on this laptop"}}`.
+Everything else passes: the kl tools, `Agent`, `Skill`, `SendMessage`, the task tools, `Artifact`,
+`WebFetch`, `WebSearch`, other MCP servers. (2026-10-13: this was an allow list first; it also
+refused `Artifact`, and the person wanted only the laptop fenced.)
+
+One `Bash` command passes: `kl-connect ws follow <ws> <id> [--team <t>]` with
+`run_in_background: true`, every word in `[A-Za-z0-9._-]`. It polls `process_output` through the
+bench door (`bench::serve`) about once a second, prints the output of a detached workspace process
+and exits with its code, so the process shows as a Claude Code background shell. It reconnects after
+laptop sleep and carries the stdout/stderr cursors, so no output is lost or repeated. Main starts a
+follow for each `process <id>` in a workspace agent's report, and for each running process at
+`/kloudlite:on`.
 While the flag is absent it outputs nothing and the call proceeds as usual. The bench's own
 `web_fetch` and `web_search` tools stay available through kl.
 
 **Code**: both hooks call one Rust subcommand, `kl-connect mode gate` and
-`kl-connect mode prompt`, reading the hook JSON on stdin. The allow list lives in
+`kl-connect mode prompt`, reading the hook JSON on stdin. The deny list lives in
 `bins/kl-connect/src/mode.rs`. A broken or missing `kl-connect` fails closed for the gate: the
 hook command is `kl-connect mode gate || echo '<deny json>'`.
 
@@ -133,8 +139,8 @@ working folder (`cwd` from the hook input, hashed), which subagents share with m
 
 ## Tests
 
-- `kl-connect mode`: unit tests for gate decisions (allowed name, denied name, other MCP server,
-  flag absent) and for the toggle (`/kloudlite:on`, `/kloudlite:off`, unrelated prompt).
+- `kl-connect mode`: unit tests for gate decisions (local tool denied, other tools and MCP servers
+  pass, backgrounded follow only, flag absent) and for the toggle (`/kloudlite:on`, `/kloudlite:off`, unrelated prompt).
 - Plugin consistency test (bun, in `harness/packages/backend`): every tool name that an agent file
   or skill names exists in `mcpTools`; the agent `tools:` lines name no local tool.
 - Live check, by hand, once: install the plugin, `/kloudlite:on`, ask main to read a local file
@@ -144,7 +150,7 @@ working folder (`cwd` from the hook input, hashed), which subagents share with m
 ## Risks
 
 - **Subagent session id**: covered by the probe and the `cwd` fallback.
-- **Matcher drift**: a new local Claude Code tool is denied by default, because the gate is an
-  allow list.
+- **Matcher drift**: a new local Claude Code tool passes until it is named in `LOCAL`, because
+  the gate is a deny list.
 - **Long merges** in `kl-workspace` go through `exec` in the pod, with the same limits as on the
   bench.

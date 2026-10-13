@@ -10,6 +10,7 @@ mod bench;
 mod builder;
 mod config;
 mod env;
+mod follow;
 mod login;
 mod mcp;
 mod mode;
@@ -126,6 +127,14 @@ enum WsCmd {
         #[arg(long, default_value_t = 7788)]
         port: u16,
     },
+    /// Print a detached workspace process's output until it ends, and exit with its code;
+    /// reconnects after laptop sleep without losing or repeating output
+    Follow {
+        ws: String,
+        id: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -154,6 +163,7 @@ async fn run(cmd: &Cmd, team: Option<&str>) -> Result<(), String> {
             WsCmd::Proxy { id } => proxy::proxy(id).await,
             WsCmd::SshConfig => ws::ssh_config().await,
             WsCmd::Ide { target, port } => ws::ide(target, *port).await,
+            WsCmd::Follow { ws, id, team } => follow::follow(team.as_deref(), ws, id).await,
         },
         Cmd::Builder { cmd } => match cmd {
             BuilderCmd::Status { team } => builder::status(team.as_deref()).await,
