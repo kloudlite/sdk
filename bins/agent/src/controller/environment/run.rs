@@ -82,7 +82,15 @@ pub(crate) async fn run_environment(
     // status writes echoed back as watch events and hid this; once those stopped, a stopped
     // intercepting workspace left the environment intercepted forever (env.intercept.fallback).
     let holding = plan.values().any(|d| matches!(d, Intercepting::Keep { .. } | Intercepting::Force { .. }));
-    Ok(if all_ready && !holding { Action::await_change() } else { Action::requeue(TICK) })
+    // A ready env still needs the idle verdict, which only runs on a pass.
+    let idle_secs = ctx.settings.load().env_idle_secs;
+    Ok(if !(all_ready && !holding) {
+        Action::requeue(TICK)
+    } else if super::idle::eligible(e, idle_secs) {
+        Action::requeue(super::super::workspace::idle::recheck(idle_secs))
+    } else {
+        Action::await_change()
+    })
 }
 
 /// Phase 1: the worktree — migration, head, checkout, quota — and the first graft's head write.

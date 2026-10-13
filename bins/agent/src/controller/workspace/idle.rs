@@ -17,6 +17,12 @@ pub(crate) fn eligible(w: &crd::Workspace, idle_secs: u64) -> bool {
     idle_secs > 0 && !crd::is_bench(w) && w.spec.desired_state == crd::DesiredState::Running
 }
 
+/// The verdict runs only on a reconcile pass and a Ready object otherwise waits for an event, so
+/// an idle one is stopped at most 60 s late; each pass reads one mtime.
+pub(crate) fn recheck(idle_secs: u64) -> Duration {
+    Duration::from_secs(idle_secs.clamp(15, 60))
+}
+
 /// The newest of activity, pod start and wake: a freshly started or woken workspace has had no
 /// time to touch the file yet, and the file on a volume that sat stopped for a day is a day old.
 pub(crate) fn idle_verdict(
@@ -49,6 +55,13 @@ pub(crate) fn idle_condition(gen: i64) -> crd::Condition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recheck_is_clamped() {
+        assert_eq!(recheck(300), Duration::from_secs(60));
+        assert_eq!(recheck(20), Duration::from_secs(20));
+        assert_eq!(recheck(1), Duration::from_secs(15));
+    }
     const T: u64 = 1800;
     fn at(s: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + s)

@@ -40,7 +40,7 @@ mod replicas;
 
 mod seed;
 mod bench;
-mod idle;
+pub(crate) mod idle;
 mod trees;
 pub use trees::{tree_actions, TreeAction};
 use bench::{bench_verdict_action, park_bench};
@@ -596,5 +596,7 @@ pub async fn apply_workspace(w: &crd::Workspace, ctx: &Arc<Ctx>) -> Result<Actio
         ..prev
     };
     write_ws_status(w, st, ctx).await?;
-    Ok(Action::await_change())
+    // The idle verdict only runs on a pass; a Ready workspace would wait for an unrelated event.
+    let idle_secs = ctx.settings.load().ws_idle_secs;
+    Ok(if idle::eligible(w, idle_secs) { Action::requeue(idle::recheck(idle_secs)) } else { Action::await_change() })
 }

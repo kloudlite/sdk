@@ -462,7 +462,7 @@ async fn a_portless_service_gets_a_statefulset_but_no_clusterip() {
     ];
 
     let action = kloudlite_agent::controller::apply_environment(&e, &ctx).await.unwrap();
-    assert_eq!(action, kube::runtime::controller::Action::await_change(), "both services ready: fully converged");
+    assert_eq!(action, kube::runtime::controller::Action::requeue(std::time::Duration::from_secs(60)), "both services ready: converged, only the idle recheck remains");
 
     assert!(rec.calls().iter().any(|c| c == "PATCH /apis/apps/v1/namespaces/env-1/statefulsets/web"));
     assert!(rec.calls().iter().any(|c| c == "PATCH /apis/apps/v1/namespaces/env-1/statefulsets/worker"));
