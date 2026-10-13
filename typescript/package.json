@@ -1,0 +1,9 @@
+{
+  "name": "@kloudlite/sdk",
+  "version": "0.1.0",
+  "description": "Kloudlite SDK for TypeScript",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "license": "Apache-2.0"
+}

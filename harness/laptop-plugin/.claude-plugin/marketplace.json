@@ -1,7 +1,0 @@
-{
-  "name": "kloudlite",
-  "owner": { "name": "Kloudlite" },
-  "plugins": [
-    { "name": "kloudlite", "source": "./plugin", "description": "Work on Kloudlite workspaces from Claude Code, through the bench's tools only" }
-  ]
-}
