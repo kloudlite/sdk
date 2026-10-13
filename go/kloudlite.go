@@ -522,6 +522,30 @@ func (h *HubRepos) Delete(repo string) error {
 	return h.c.HubRequest("DELETE", "/api/repos/delete", nil, body, nil)
 }
 
+// ImportHf makes a new repo whose contents — large files included — are fetched
+// from a PUBLIC Hugging Face repo of the same kind; hf is its "owner/name" pair,
+// never a URL. The server answers 202; poll ImportStatus.
+func (h *HubRepos) ImportHf(repo, hf string, private bool) (map[string]any, error) {
+	p, err := h.path(repo, "/import")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = h.c.HubRequest("POST", p, nil, map[string]any{"from": hf, "private": private}, &out)
+	return out, err
+}
+
+// ImportStatus answers {from, state: queued|running|done|failed, detail?}.
+func (h *HubRepos) ImportStatus(repo string) (map[string]any, error) {
+	p, err := h.path(repo, "/import")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = h.c.HubRequest("GET", p, nil, nil, &out)
+	return out, err
+}
+
 // The server answers errors as {"error": …} or plain text; take either.
 func errorText(raw []byte) string {
 	var e struct {

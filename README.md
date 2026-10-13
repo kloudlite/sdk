@@ -79,6 +79,10 @@ kl.models.set_private("acme/bert-finetune", False)
 kl.models.delete("acme/bert-finetune")
 
 kl.datasets.create("acme/support-tickets")         # same five verbs, dataset kind
+
+kl.models.import_hf("acme/bert", "google-bert/bert-base-uncased")  # 202 — a job,
+kl.models.import_status("acme/bert")               # large files included (git-lfs);
+kl.datasets.import_hf("acme/squad", "rajpurkar/squad")             # PUBLIC sources only
 ```
 
 Each SDK directory carries a runnable `example` file walking the whole fork
