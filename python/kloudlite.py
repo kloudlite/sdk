@@ -1,20 +1,16 @@
 """Kloudlite SDK for Python — stdlib only.
 
-The client speaks to the browse API with HTTP Basic auth: the username names the
-owner the token belongs to (git's ``x`` placeholder also works), the token is the
-secret. No credentials is still a valid client — public repositories admit
-anonymous reads.
-
-Usage::
+Auth is a Bearer token (a session or CLI token). Every module hangs off the one
+client::
 
     from kloudlite import Kloudlite
 
-    kl = Kloudlite("https://git.example.com", username="acme", token="…")
+    kl = Kloudlite("https://api.example.com", token="…")
+    repo = kl.repos.create(owner="acme", name="payments")
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import urllib.error
 import urllib.parse
@@ -36,13 +32,11 @@ class ApiError(Exception):
 
 
 class Kloudlite:
-    def __init__(self, base_url: str, username: str = "x", token: str | None = None, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str | None = None, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
+        self._token = token
         self._timeout = timeout
-        self._auth = None
-        if token:
-            raw = f"{username}:{token}".encode()
-            self._auth = "Basic " + base64.b64encode(raw).decode()
+        self.repos = Repos(self)
 
     # ── request core ──────────────────────────────────────────────────────
 
@@ -56,8 +50,8 @@ class Kloudlite:
                 url += "?" + urllib.parse.urlencode(q)
         data = None
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
-        if self._auth:
-            headers["Authorization"] = self._auth
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
@@ -71,9 +65,99 @@ class Kloudlite:
             return None
         return json.loads(raw)
 
-    @staticmethod
-    def _segment(s: str) -> str:
-        return urllib.parse.quote(s, safe="")
+
+def _seg(s: str) -> str:
+    return urllib.parse.quote(str(s), safe="")
+
+
+class Repos:
+    """Code repositories: ``/v1/repos``."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    # repos
+    def create(self, owner: str, name: str, visibility: str = "private", description: str = ""):
+        return self._c.request("POST", "/v1/repos", {
+            "owner": owner, "name": name, "visibility": visibility, "description": description,
+        })
+
+    def list(self, owner: str):
+        return self._c.request("GET", "/v1/repos", query={"owner": owner})
+
+    def get(self, owner: str, name: str):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}")
+
+    def update(self, owner: str, name: str, description: str | None = None, visibility: str | None = None):
+        return self._c.request("PATCH", f"/v1/repos/{_seg(owner)}/{_seg(name)}", {
+            "description": description, "visibility": visibility,
+        })
+
+    def delete(self, owner: str, name: str):
+        return self._c.request("DELETE", f"/v1/repos/{_seg(owner)}/{_seg(name)}")
+
+    # branches
+    def branches(self, owner: str, name: str):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/branches")
+
+    def delete_branch(self, owner: str, name: str, branch: str, oid: str):
+        """`oid` is the head the caller saw; the delete is refused if the branch moved."""
+        return self._c.request(
+            "DELETE", f"/v1/repos/{_seg(owner)}/{_seg(name)}/branches/{_seg(branch)}",
+            query={"oid": oid},
+        )
+
+    # protection
+    def protection(self, owner: str, name: str):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/protection")
+
+    def protect(self, owner: str, name: str, pattern: str, remove: bool = False,
+                no_force: bool = True, no_delete: bool = True):
+        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/protection", {
+            "pattern": pattern, "remove": remove, "no_force": no_force, "no_delete": no_delete,
+        })
+
+    # pull requests
+    def pulls(self, owner: str, name: str, state: str | None = None, limit: int | None = None):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls",
+                               query={"state": state, "limit": limit})
+
+    def pull(self, owner: str, name: str, number: int):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}")
+
+    def open_pull(self, owner: str, name: str, title: str, head: str, base: str, description: str = ""):
+        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls", {
+            "title": title, "head": head, "base": base, "description": description,
+        })
+
+    def comment(self, owner: str, name: str, number: int, body: str):
+        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}/comments",
+                               {"body": body})
+
+    def merge(self, owner: str, name: str, number: int, strategy: str = "fast-forward"):
+        """strategy: fast-forward, squash, merge or rebase. Answers 202 — the merge is a job."""
+        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}/merge",
+                               query={"strategy": strategy})
+
+    def close(self, owner: str, name: str, number: int):
+        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}/close")
+
+    # commits
+    def compare(self, owner: str, name: str, base: str, head: str):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/compare",
+                               query={"base": base, "head": head})
+
+    def commit(self, owner: str, name: str, branch: str, message: str, changes: list,
+               expect: str | None = None, new_branch: str | None = None):
+        """One commit of file changes; each change is
+        ``{"path", "contentBase64"?, "executable"?, "delete"?}``."""
+        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/commits", {
+            "branch": branch, "message": message, "changes": changes,
+            "expect": expect, "newBranch": new_branch,
+        })
+
+    def signature(self, owner: str, name: str, sha: str):
+        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/commits/{_seg(sha)}/signature")
 
 
 def _error_text(raw: bytes) -> str:
