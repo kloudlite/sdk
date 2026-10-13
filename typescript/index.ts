@@ -59,11 +59,6 @@ export class Kloudlite {
     this.volumes = new Volumes(this);
   }
 
-  /** The regions an admin has registered — a workspace is created into one of them. */
-  regions() {
-    return this.request("GET", "/v1/regions");
-  }
-
   /** The ceiling and what is against it; `owner` defaults to the caller's own. */
   quota(owner?: string) {
     return this.request("GET", "/v1/quota", undefined, { owner });
@@ -304,12 +299,13 @@ export class Workspaces {
 
   /**
    * `repo` seeds from a PLATFORM repo ("owner/name", with `branch`); `packages` are nixpkgs
-   * attributes, optionally pinned (`attr@version`).
+   * attributes, optionally pinned (`attr@version`). `region` matters only on a multi-region
+   * fleet — absent, the deployment's one region is used.
    */
   create(opts: {
     name: string;
-    region: string;
     quota_gb: number;
+    region?: string;
     team?: string;
     image?: string;
     repo?: string;

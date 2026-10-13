@@ -45,10 +45,6 @@ class Kloudlite:
         self.workspaces = Workspaces(self)
         self.volumes = Volumes(self)
 
-    def regions(self):
-        """The regions an admin has registered — a workspace is created into one of them."""
-        return self.request("GET", "/v1/regions")
-
     def quota(self, owner: str | None = None):
         """The ceiling and what is against it; ``owner`` defaults to the caller's own."""
         return self.request("GET", "/v1/quota", query={"owner": owner})
@@ -233,11 +229,12 @@ class Workspaces:
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def create(self, name: str, region: str, quota_gb: int, team: str | None = None,
+    def create(self, name: str, quota_gb: int, team: str | None = None,
                image: str | None = None, repo: str | None = None, branch: str | None = None,
-               packages: list | None = None):
+               packages: list | None = None, region: str | None = None):
         """``repo`` seeds from a PLATFORM repo ("owner/name", with ``branch``); ``packages`` are
-        nixpkgs attributes, optionally pinned (``attr@version``)."""
+        nixpkgs attributes, optionally pinned (``attr@version``). ``region`` matters only on a
+        multi-region fleet — absent, the deployment's one region is used."""
         body = {"name": name, "region": region, "quota_gb": quota_gb,
                 "team": team, "repo": repo, "branch": branch,
                 "packages": packages or []}

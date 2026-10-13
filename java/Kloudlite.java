@@ -81,11 +81,6 @@ public class Kloudlite {
         return volumes;
     }
 
-    /** The regions an admin has registered — a workspace is created into one of them. */
-    public String regions() throws IOException, InterruptedException {
-        return request("GET", "/v1/regions", null);
-    }
-
     /** The ceiling and what is against it; a null owner means the caller's own. */
     public String quota(String owner) throws IOException, InterruptedException {
         return request("GET", owner == null ? "/v1/quota" : "/v1/quota?owner=" + seg(owner), null);
@@ -348,7 +343,8 @@ public class Kloudlite {
      * are raw JSON, like every other structured body in this client.
      */
     public class Workspaces {
-        /** {@code createJson}: name, region, quota_gb, team?, image?, repo?, branch?, packages. */
+        /** {@code createJson}: name, quota_gb, team?, image?, repo?, branch?, packages, region?
+         * (region matters only on a multi-region fleet — absent, the deployment's one is used). */
         public String create(String createJson) throws IOException, InterruptedException {
             return request("POST", "/v1/workspaces", createJson);
         }

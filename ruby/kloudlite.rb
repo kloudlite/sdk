@@ -42,11 +42,6 @@ module Kloudlite
       @volumes = Volumes.new(self)
     end
 
-    # The regions an admin has registered — a workspace is created into one of them.
-    def regions
-      request("GET", "/v1/regions")
-    end
-
     # The ceiling and what is against it; +owner+ defaults to the caller's own.
     def quota(owner: nil)
       request("GET", "/v1/quota", query: { owner: owner })
@@ -249,8 +244,9 @@ module Kloudlite
     end
 
     # +repo+ seeds from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs
-    # attributes, optionally pinned ("attr@version").
-    def create(name:, region:, quota_gb:, team: nil, image: nil, repo: nil, branch: nil, packages: [])
+    # attributes, optionally pinned ("attr@version"). +region+ matters only on a multi-region
+    # fleet — absent, the deployment's one region is used.
+    def create(name:, quota_gb:, team: nil, image: nil, repo: nil, branch: nil, packages: [], region: nil)
       body = { name: name, region: region, quota_gb: quota_gb,
                team: team, repo: repo, branch: branch, packages: packages }
       body[:image] = image unless image.nil?
