@@ -33,6 +33,8 @@ kl = Kloudlite("https://api.example.com", token="…")
 
 kl.repos.create("acme/payments", visibility="private", description="…")
 kl.repos.fork("acme/payments", "me/payments")   # objects + refs, private by default
+kl.repos.import_github("acme/rails", "rails/rails")   # 202 — a job; a PUBLIC GitHub repo
+kl.repos.import_status("acme/rails")                  # queued | running | done | failed
 kl.repos.list("acme")
 kl.repos.get("acme/payments")
 kl.repos.update("acme/payments", visibility="public")

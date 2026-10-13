@@ -169,6 +169,28 @@ export class Repos {
     });
   }
 
+  /**
+   * A new repo whose contents are fetched from a PUBLIC GitHub repository — `github` is its
+   * `"owner/name"` pair, never a URL. Answers 202: the repo exists but the fetch runs in the
+   * background; poll {@link importStatus}.
+   */
+  importGithub(repo: string, github: string, opts?: { visibility?: "public" | "private"; description?: string }) {
+    const [owner, name] = split(repo);
+    return this.c.request<Repo>("POST", "/v1/repos/import", {
+      owner,
+      name,
+      github,
+      visibility: "private",
+      description: "",
+      ...opts,
+    });
+  }
+
+  /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */
+  importStatus(repo: string) {
+    return this.c.request("GET", this.path(repo, "/import"));
+  }
+
   // branches
   branches(repo: string) {
     return this.c.request<Branch[]>("GET", this.path(repo, "/branches"));
