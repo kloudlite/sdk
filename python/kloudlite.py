@@ -96,6 +96,14 @@ class Repos:
     def delete(self, owner: str, name: str):
         return self._c.request("DELETE", f"/v1/repos/{_seg(owner)}/{_seg(name)}")
 
+    def fork(self, src_owner: str, src_name: str, owner: str, name: str,
+             visibility: str = "private", description: str = ""):
+        """A new repo copied from another: objects and refs, never its pull requests or settings.
+        Private by default, whatever the source was."""
+        return self._c.request("POST", f"/v1/repos/{_seg(src_owner)}/{_seg(src_name)}/fork", {
+            "owner": owner, "name": name, "visibility": visibility, "description": description,
+        })
+
     # branches
     def branches(self, owner: str, name: str):
         return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/branches")
@@ -125,9 +133,13 @@ class Repos:
     def pull(self, owner: str, name: str, number: int):
         return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}")
 
-    def open_pull(self, owner: str, name: str, title: str, head: str, base: str, description: str = ""):
+    def open_pull(self, owner: str, name: str, title: str, head: str, base: str,
+                  description: str = "", head_repo: str | None = None):
+        """``head_repo`` ("owner/name") makes it a cross-repo pull: ``head`` then names a branch
+        of that fork, proposed onto this repo's ``base``."""
         return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls", {
             "title": title, "head": head, "base": base, "description": description,
+            "head_repo": head_repo,
         })
 
     def comment(self, owner: str, name: str, number: int, body: str):

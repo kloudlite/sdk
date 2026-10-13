@@ -101,6 +101,13 @@ module Kloudlite
       @c.request("DELETE", "/v1/repos/#{seg(owner)}/#{seg(name)}")
     end
 
+    # A new repo copied from another: objects and refs, never its pull requests or settings.
+    # Private by default, whatever the source was.
+    def fork(src_owner, src_name, owner:, name:, visibility: "private", description: "")
+      @c.request("POST", "/v1/repos/#{seg(src_owner)}/#{seg(src_name)}/fork",
+                 body: { owner: owner, name: name, visibility: visibility, description: description })
+    end
+
     # branches
     def branches(owner, name)
       @c.request("GET", "/v1/repos/#{seg(owner)}/#{seg(name)}/branches")
@@ -132,9 +139,11 @@ module Kloudlite
       @c.request("GET", "/v1/repos/#{seg(owner)}/#{seg(name)}/pulls/#{number.to_i}")
     end
 
-    def open_pull(owner, name, title:, head:, base:, description: "")
+    # +head_repo+ ("owner/name") makes it a cross-repo pull: +head+ then names that fork's branch.
+    def open_pull(owner, name, title:, head:, base:, description: "", head_repo: nil)
       @c.request("POST", "/v1/repos/#{seg(owner)}/#{seg(name)}/pulls",
-                 body: { title: title, head: head, base: base, description: description })
+                 body: { title: title, head: head, base: base, description: description,
+                         head_repo: head_repo })
     end
 
     def comment(owner, name, number, body)

@@ -99,6 +99,18 @@ public class Kloudlite {
             return request("DELETE", repo(owner, name, ""), null);
         }
 
+        /**
+         * A new repo copied from another: objects and refs, never its pull requests or settings.
+         * A null visibility means private, whatever the source was.
+         */
+        public String fork(String srcOwner, String srcName, String owner, String name,
+                           String visibility, String description) throws IOException, InterruptedException {
+            return request("POST", repo(srcOwner, srcName, "/fork"), obj(
+                "owner", owner, "name", name,
+                "visibility", visibility == null ? "private" : visibility,
+                "description", description == null ? "" : description));
+        }
+
         // branches
         public String branches(String owner, String name) throws IOException, InterruptedException {
             return request("GET", repo(owner, name, "/branches"), null);
@@ -132,9 +144,16 @@ public class Kloudlite {
 
         public String openPull(String owner, String name, String title, String head, String base, String description)
                 throws IOException, InterruptedException {
+            return openPull(owner, name, title, head, base, description, null);
+        }
+
+        /** {@code headRepo} ("owner/name") makes it a cross-repo pull: {@code head} then names that fork's branch. */
+        public String openPull(String owner, String name, String title, String head, String base,
+                               String description, String headRepo) throws IOException, InterruptedException {
             return request("POST", repo(owner, name, "/pulls"), obj(
                 "title", title, "head", head, "base", base,
-                "description", description == null ? "" : description));
+                "description", description == null ? "" : description,
+                "head_repo", headRepo));
         }
 
         public String comment(String owner, String name, long number, String body)

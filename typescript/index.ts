@@ -127,6 +127,22 @@ export class Repos {
     return this.c.request("DELETE", `/v1/repos/${seg(owner)}/${seg(name)}`);
   }
 
+  /**
+   * A new repo copied from another: objects and refs, never its pull requests or settings.
+   * Private by default, whatever the source was.
+   */
+  fork(
+    srcOwner: string,
+    srcName: string,
+    opts: { owner: string; name: string; visibility?: "public" | "private"; description?: string },
+  ) {
+    return this.c.request<Repo>("POST", `/v1/repos/${seg(srcOwner)}/${seg(srcName)}/fork`, {
+      visibility: "private",
+      description: "",
+      ...opts,
+    });
+  }
+
   // branches
   branches(owner: string, name: string) {
     return this.c.request<Branch[]>("GET", `/v1/repos/${seg(owner)}/${seg(name)}/branches`);
@@ -155,7 +171,12 @@ export class Repos {
     return this.c.request("GET", `/v1/repos/${seg(owner)}/${seg(name)}/pulls/${number}`);
   }
 
-  openPull(owner: string, name: string, opts: { title: string; head: string; base: string; description?: string }) {
+  /** `head_repo` ("owner/name") makes it a cross-repo pull: `head` then names that fork's branch. */
+  openPull(
+    owner: string,
+    name: string,
+    opts: { title: string; head: string; base: string; description?: string; head_repo?: string },
+  ) {
     return this.c.request("POST", `/v1/repos/${seg(owner)}/${seg(name)}/pulls`, { description: "", ...opts });
   }
 

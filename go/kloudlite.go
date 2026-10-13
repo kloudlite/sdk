@@ -132,9 +132,20 @@ type Protection struct {
 }
 
 type NewPull struct {
-	Title       string `json:"title"`
-	Head        string `json:"head"`
-	Base        string `json:"base"`
+	Title string `json:"title"`
+	Head  string `json:"head"`
+	Base  string `json:"base"`
+	// HeadRepo ("owner/name") makes it a cross-repo pull: Head then names that fork's branch.
+	HeadRepo    string `json:"head_repo,omitempty"`
+	Description string `json:"description"`
+}
+
+// ForkRepo names a fork's destination; the source goes in Fork's arguments.
+type ForkRepo struct {
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+	// Empty means private, whatever the source was.
+	Visibility  string `json:"visibility,omitempty"`
 	Description string `json:"description"`
 }
 
@@ -191,6 +202,15 @@ func (r *Repos) Update(owner, name string, change RepoUpdate) error {
 
 func (r *Repos) Delete(owner, name string) error {
 	return r.c.Request("DELETE", repoPath(owner, name, ""), nil, nil, nil)
+}
+
+// Fork makes a new repo copied from src: objects and refs, never its pull requests or settings.
+func (r *Repos) Fork(srcOwner, srcName string, dst ForkRepo) (*Repo, error) {
+	var out Repo
+	if err := r.c.Request("POST", repoPath(srcOwner, srcName, "/fork"), nil, dst, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (r *Repos) Branches(owner, name string) ([]Branch, error) {
