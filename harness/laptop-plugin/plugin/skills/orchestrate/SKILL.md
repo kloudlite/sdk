@@ -126,6 +126,8 @@ Do not give file paths, languages, libraries, layout or steps. The workspace dec
 
 **When you get `NEED`:** Get the answer. You can ask the workspace that has the fact, set up the environment, or ask the person. Then send the answer to the workspace that needed it with `SendMessage`.
 
+**When you get `BLOCKED`:** Tell the person the reason in the report, in its words. Do not start a second agent for the same workspace: an agent that exists keeps its name. When the cause is fixed, give the next ask to the same agent with `SendMessage`.
+
 ## Show running processes
 
 The person sees the output of a process that runs in a workspace as a background shell of this session. You do not run anything on the laptop: the shell only prints the output of the process.
