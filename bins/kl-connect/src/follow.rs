@@ -88,9 +88,10 @@ fn step(out: &Value, cur: &mut (u64, u64)) -> Step {
     // a process that ended with output still unread prints it first: exit only on a drained reply
     let exit = (!running && quiet).then(|| match out.get("exit_code").and_then(Value::as_i64) {
         Some(c) if c >= 0 => c as i32,
-        // no code, or -1 (which a shell shows as 255): the process was ended, so say so
+        // no code, or -1 (which a shell shows as 255): a signal ended it. The state cannot say so,
+        // it is only `running` or `exited`, so the line is fixed.
         _ => {
-            stderr.push_str(&format!("kl-connect: follow: process {}\n", out.get("state").and_then(Value::as_str).unwrap_or("ended without an exit code")));
+            stderr.push_str("kl-connect: follow: process was killed (no exit code)\n");
             1
         }
     });
@@ -145,10 +146,10 @@ mod tests {
         let s = step(&json!({ "stdout": "", "next": 7, "next_err": 0, "state": "exited", "exit_code": 2 }), &mut cur);
         assert_eq!(s.exit, Some(2));
         // killed: no exit code is a failure
-        let s = step(&json!({ "next": 7, "next_err": 0, "state": "killed", "exit_code": null }), &mut cur);
-        assert_eq!((s.exit, s.stderr.as_str()), (Some(1), "kl-connect: follow: process killed\n"));
-        let s = step(&json!({ "next": 7, "next_err": 0, "state": "killed", "exit_code": -1 }), &mut cur);
-        assert_eq!((s.exit, s.stderr.as_str()), (Some(1), "kl-connect: follow: process killed\n"));
+        let s = step(&json!({ "next": 7, "next_err": 0, "state": "exited", "exit_code": null }), &mut cur);
+        assert_eq!((s.exit, s.stderr.as_str()), (Some(1), "kl-connect: follow: process was killed (no exit code)\n"));
+        let s = step(&json!({ "next": 7, "next_err": 0, "state": "exited", "exit_code": -1 }), &mut cur);
+        assert_eq!((s.exit, s.stderr.as_str()), (Some(1), "kl-connect: follow: process was killed (no exit code)\n"));
     }
 
     #[test]
