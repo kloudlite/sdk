@@ -379,7 +379,7 @@ pub(super) async fn allocate_and_create(
     };
     guard_alloc(s, &owner_of, is_team, &cost).await?;
     let team = spec.team.clone();
-    let w = create_workspace(c, id, spec).await?;
+    let w = create_workspace(s, &owner.name, c, id, spec).await?;
     // Every owner builds images through their own hidden buildkit environment, and this is the
     // moment they are known to need one. Awaited, so a create's own test can see it, but best
     // effort: a builder that fails to appear costs the owner `kl build` until the next create,
@@ -410,14 +410,21 @@ pub(super) async fn allocate_and_create(
 
 
 /// The one place a `Workspace` is written. Labels are a VIEW of `spec.owner`/`spec.team`, stamped
-/// here so listings are indexed label selectors rather than scans.
-pub(super) async fn create_workspace(c: &kube::Client, id: &str, spec: crd::WorkspaceSpec) -> Result<crd::Workspace, Response> {
+/// here so listings are indexed label selectors rather than scans. A new workspace runs at once,
+/// so it wakes its idle-stopped environment exactly as `start_ws` does: create, clone and restore
+/// all come through here, and the follower check never restarts an idle-stopped environment.
+/// A bench follows nothing (`idle::live` in the agent), so it wakes nothing.
+pub(super) async fn create_workspace(s: &ApiState, caller: &str, c: &kube::Client, id: &str, spec: crd::WorkspaceSpec) -> Result<crd::Workspace, Response> {
     let mut l = labels(&spec.owner, "workspace");
     l.insert(TEAM_LABEL.to_string(), spec.team.clone());
     let mut w = crd::Workspace::new(id, spec);
     w.metadata.labels = Some(l);
     let api: Api<crd::Workspace> = Api::all(c.clone());
-    api.create(&PostParams::default(), &w).await.map_err(kube_err)
+    let w = api.create(&PostParams::default(), &w).await.map_err(kube_err)?;
+    if !crd::is_bench(&w) {
+        wake_followers(s, caller, &w, id, k8s_openapi::jiff::Timestamp::now()).await;
+    }
+    Ok(w)
 }
 
 

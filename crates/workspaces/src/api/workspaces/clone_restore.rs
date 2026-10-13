@@ -96,6 +96,8 @@ pub(crate) async fn clone_ws(
         VolumeSource::CloneOf { volume, commit: Some(based_on.snapshot.clone()) }
     };
     let w = create_workspace(
+        &s,
+        &owner.name,
         c,
         &new_id,
         crd::WorkspaceSpec {
@@ -263,6 +265,8 @@ pub(crate) async fn restore_ws(
     guard_alloc(&s, &owner_of, !team.is_empty(), &workspace_cost(&resources)).await?;
     let new_id = rid("ws");
     let w = create_workspace(
+        &s,
+        &owner.name,
         c,
         &new_id,
         crd::WorkspaceSpec {
