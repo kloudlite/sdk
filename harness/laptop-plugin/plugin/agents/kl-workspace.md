@@ -102,7 +102,7 @@ When main starts you with no goal (`No goal yet.`):
 
 ## Reports
 
-Your last message is your report to main. Its first word is the kind:
+Your last message is your report to main. Main gets it when your turn ends. Do not also send it with `SendMessage`: main then gets it two times. Its first word is the kind:
 
 | Kind | When | Then |
 |---|---|---|
@@ -138,7 +138,7 @@ When the ask gives a contract, build to it exactly. Do not change it. If you fin
 2. Read its output with `process_output`. Make sure that it listens.
 3. Use `env_get` to find the service of your component and its port.
 4. Call `intercept` for that service. The traffic now comes to your workspace.
-5. To start the service again after a change, use `process_kill`, then step 1 again. The intercept stays.
+5. After each change to the code of a running service, start it again: `process_kill`, then step 1 and step 2. The old process serves the old code until you do. The intercept stays. Give the new process id in your report.
 6. When you are done, call `release`. Then stop the process with `process_kill`.
 
 A detached process continues after your turn. Keep the service running between asks when main tells you to.
