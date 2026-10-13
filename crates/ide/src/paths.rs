@@ -41,7 +41,14 @@ pub fn lexical(tree: &TreeCtx, given: &str) -> PathBuf {
 }
 
 pub fn confine(tree: &TreeCtx, given: &str) -> Result<PathBuf, ToolError> {
-    let p = Path::new(given);
+    // `~` is the HOME an exec in this tree sees, the way a shell spells it: a model reads
+    // `~/workspace/AGENTS.md` in its own exec output and hands it back, and it used to land at
+    // `{root}/~/workspace/AGENTS.md` (2026-10-13). Expanded, it is an absolute path like any other.
+    let home = match given {
+        "~" => Some(tree.home.clone()),
+        g => g.strip_prefix("~/").map(|r| tree.home.join(r)),
+    };
+    let p = home.as_deref().unwrap_or(Path::new(given));
     let rel = if p.is_absolute() {
         p.strip_prefix(&tree.root).map_err(|_| ToolError::Invalid(RELATIVE_ONLY.into()))?
     } else {
@@ -148,6 +155,20 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), main.root.join("out")).unwrap();
         assert!(confine(&main, "out/secret").is_err());
+    }
+
+    /// `~` is the tree's HOME: under the root it is the relative path, outside it the 400.
+    #[test]
+    fn a_tilde_is_the_trees_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap();
+        let root = home.join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let main = Trees::under(home, root, None).resolve(None).unwrap();
+        assert_eq!(confine(&main, "~/workspace/src/main.rs").unwrap(), main.root.join("src/main.rs"));
+        assert!(matches!(confine(&main, "~/.bashrc"), Err(ToolError::Invalid(_))));
+        assert!(matches!(confine(&main, "~"), Err(ToolError::Invalid(_))));
+        assert!(confine(&main, "~notes").is_ok(), "only `~/` and `~` are the home");
     }
 
     /// The main tree's one exception, by spelling and by symlink alike.
