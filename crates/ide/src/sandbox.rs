@@ -54,7 +54,8 @@ const BINDS: [&str; 3] = ["/nix", "/etc/passwd", "/etc/resolv.conf"];
 /// The owner's SSH key is bound alone too, so a session can `git push` its clone's work to its
 /// workspace with plain git through exec (owner, 2026-10-09: "push wont become tool. it will be
 /// available via exec and git"); the tokens beside it (`workspace-token`, `registry-token`) never are.
-const OPTIONAL_BINDS: [&str; 9] = [
+/// The git identity file is bound alone for the same reason (`GIT_CONFIG_FILE`).
+const OPTIONAL_BINDS: [&str; 10] = [
     "/etc/ssl",
     "/etc/ca-certificates",
     "/etc/pki",
@@ -64,6 +65,7 @@ const OPTIONAL_BINDS: [&str; 9] = [
     "/etc/localtime",
     GIT_IGNORE,
     SSH_KEY,
+    GIT_CONFIG_FILE,
 ];
 
 /// `deploy/workspace-image/gitignore-global`, as the image places it.
@@ -71,6 +73,35 @@ const GIT_IGNORE: &str = "/etc/kloudlite/gitignore-global";
 
 /// The key file alone, never `/etc/kloudlite/ssh/`: the tokens live in that directory.
 const SSH_KEY: &str = "/etc/kloudlite/ssh/id_ed25519";
+
+/// The pod's `[user]` name and email, which `GIT_CONFIG_SYSTEM` names (`k8s::secrets::gitconfig`).
+/// No token in it; without it every commit in an exec was "Author identity unknown" (2026-10-13).
+const GIT_CONFIG_FILE: &str = "/etc/kloudlite/ssh/gitconfig";
+
+/// The pod's own `GIT_CONFIG_*` entries — the `kl:` remote alias rides there — with the platform
+/// ignore APPENDED. This used to set slot 0 and a count of 1, which wrote over the alias, and every
+/// push in an exec died on "Could not resolve hostname kl" (2026-10-13).
+fn git_config_env(ignore: bool, env: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    let n: usize = env("GIT_CONFIG_COUNT").and_then(|c| c.parse().ok()).unwrap_or(0);
+    let mut out = Vec::new();
+    for i in 0..n {
+        for k in [format!("GIT_CONFIG_KEY_{i}"), format!("GIT_CONFIG_VALUE_{i}")] {
+            let v = env(&k).unwrap_or_default();
+            out.push((k, v));
+        }
+    }
+    let n = if ignore {
+        out.push((format!("GIT_CONFIG_KEY_{n}"), "core.excludesFile".into()));
+        out.push((format!("GIT_CONFIG_VALUE_{n}"), GIT_IGNORE.into()));
+        n + 1
+    } else {
+        n
+    };
+    if n > 0 {
+        out.push(("GIT_CONFIG_COUNT".into(), n.to_string()));
+    }
+    out
+}
 
 /// The cert-bundle variables a userland reads, passed through when the image sets them. Nix images
 /// point these at a store path rather than at `/etc/ssl`, and a store path is already bound with
@@ -150,10 +181,8 @@ pub fn bwrap_argv_with_cwd(tree: &TreeCtx, cmd: &[String], env: &[(String, Strin
     // is promised depends on what bwrap chooses to pass through.
     // `GIT_CONFIG_*`, not a gitconfig in the home: the tree's own config stays the agent's, and
     // this cannot be edited away from inside.
-    if std::path::Path::new(GIT_IGNORE).exists() {
-        for (k, v) in [("GIT_CONFIG_COUNT", "1"), ("GIT_CONFIG_KEY_0", "core.excludesFile"), ("GIT_CONFIG_VALUE_0", GIT_IGNORE)] {
-            a.extend(["--setenv".to_string(), k.into(), v.into()]);
-        }
+    for (k, v) in git_config_env(std::path::Path::new(GIT_IGNORE).exists(), |k| std::env::var(k).ok()) {
+        a.extend(["--setenv".to_string(), k, v]);
     }
     for k in CERT_VARS {
         if let Ok(v) = std::env::var(k) {
@@ -503,7 +532,7 @@ mod tests {
         // The token dir is the one path under /etc that must NEVER be bound: reading it is
         // exactly what the wrapper exists to prevent. The git ignore file alone is the exception.
         assert!(
-            !sources.iter().any(|s| s.starts_with("/etc/kloudlite") && *s != GIT_IGNORE && *s != SSH_KEY),
+            !sources.iter().any(|s| s.starts_with("/etc/kloudlite") && ![GIT_IGNORE, SSH_KEY, GIT_CONFIG_FILE].contains(&s.as_str())),
             "the workspace token is inside the sandbox: {sources:?}"
         );
         assert!(
@@ -520,8 +549,25 @@ mod tests {
         assert!(OPTIONAL_BINDS.contains(&"/etc/ssl"));
         assert!(!OPTIONAL_BINDS.contains(&"/etc/kloudlite"));
         // Git is pointed at the ignore exactly when it is bound.
-        let pointed = argv.windows(3).any(|w| w[0] == "--setenv" && w[1] == "GIT_CONFIG_VALUE_0" && w[2] == GIT_IGNORE);
+        let pointed = argv.windows(3).any(|w| w[0] == "--setenv" && w[1].starts_with("GIT_CONFIG_VALUE_") && w[2] == GIT_IGNORE);
         assert_eq!(pointed, std::path::Path::new(GIT_IGNORE).exists());
+    }
+
+    /// The pod's `kl:` alias is slot 0; the ignore goes after it, never over it.
+    #[test]
+    fn the_ignore_is_appended_to_the_pods_git_config() {
+        let pod = |k: &str| match k {
+            "GIT_CONFIG_COUNT" => Some("1".to_string()),
+            "GIT_CONFIG_KEY_0" => Some("url.ssh://git@hub/.insteadOf".to_string()),
+            "GIT_CONFIG_VALUE_0" => Some("kl:".to_string()),
+            _ => None,
+        };
+        let got = git_config_env(true, pod);
+        let get = |k: &str| got.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("GIT_CONFIG_COUNT"), Some("2"));
+        assert_eq!(get("GIT_CONFIG_VALUE_0"), Some("kl:"));
+        assert_eq!((get("GIT_CONFIG_KEY_1"), get("GIT_CONFIG_VALUE_1")), (Some("core.excludesFile"), Some(GIT_IGNORE)));
+        assert!(git_config_env(false, |_| None).is_empty());
     }
 
     /// The preflight asks about the trust store from INSIDE, and the paths it asks about are ones
