@@ -425,7 +425,7 @@ public class Kloudlite {
      * A workspace's tool server ({@code kl ide serve}): the full tool set over plain HTTP —
      * {@link #list} answers every tool with its JSON schema (the authority on arguments) and
      * {@link #call} runs one with a raw JSON args object; the helpers cover the everyday files
-     * and exec calls, and watch_*, graft_* and container_* go through {@code call} with the
+     * and exec calls, and watch_* and container_* go through {@code call} with the
      * arguments the listing names.
      */
     public static class Ide {
