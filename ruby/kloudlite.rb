@@ -261,6 +261,18 @@ module Kloudlite
       @c.hub_request("DELETE", "/api/repos/delete", body: body_of(repo))
     end
 
+    # A new repo whose contents — large files included — are fetched from a PUBLIC Hugging Face
+    # repo of the same kind; +hf+ is its "owner/name" pair, never a URL. Answers 202; poll
+    # +import_status+.
+    def import_hf(repo, hf, private: true)
+      @c.hub_request("POST", path(repo, "/import"), body: { from: hf, private: private })
+    end
+
+    # {"from", "state" (queued|running|done|failed), "detail"?} for an imported repo.
+    def import_status(repo)
+      @c.hub_request("GET", path(repo, "/import"))
+    end
+
     private
 
     def body_of(repo, extra = {})

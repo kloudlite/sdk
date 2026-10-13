@@ -327,6 +327,20 @@ export class HubRepos {
   delete(repo: string) {
     return this.c.hubRequest("DELETE", "/api/repos/delete", this.body(repo));
   }
+
+  /**
+   * A new repo whose contents — large files included — are fetched from a PUBLIC Hugging Face
+   * repo of the same kind; `hf` is its `"owner/name"` pair, never a URL. Answers 202; poll
+   * {@link importStatus}.
+   */
+  importHf(repo: string, hf: string, opts?: { private?: boolean }) {
+    return this.c.hubRequest("POST", this.path(repo, "/import"), { from: hf, private: opts?.private ?? true });
+  }
+
+  /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */
+  importStatus(repo: string) {
+    return this.c.hubRequest("GET", this.path(repo, "/import"));
+  }
 }
 
 /** The server answers errors as `{"error": …}` or plain text; take either. */

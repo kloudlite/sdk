@@ -297,6 +297,22 @@ public class Kloudlite {
                 obj("name", on[1], "organization", on[0], "type", kind));
         }
 
+        /**
+         * A new repo whose contents — large files included — are fetched from a PUBLIC Hugging
+         * Face repo of the same kind; {@code hf} is its "owner/name" pair, never a URL. Answers
+         * 202; poll {@link #importStatus}.
+         */
+        public String importHf(String repo, String hf, boolean privateRepo)
+                throws IOException, InterruptedException {
+            return hubRequest("POST", path(repo, "/import"),
+                "{\"from\":" + quote(hf) + ",\"private\":" + privateRepo + "}");
+        }
+
+        /** {from, state: queued|running|done|failed, detail?} for an imported repo. */
+        public String importStatus(String repo) throws IOException, InterruptedException {
+            return hubRequest("GET", path(repo, "/import"), null);
+        }
+
         private String path(String repo, String tail) {
             String[] on = split(repo);
             return "/api/" + plural + "/" + seg(on[0]) + "/" + seg(on[1]) + tail;

@@ -254,6 +254,16 @@ class HubRepos:
     def delete(self, repo: str):
         return self._c.hub_request("DELETE", "/api/repos/delete", self._body(repo))
 
+    def import_hf(self, repo: str, hf: str, private: bool = True):
+        """A new repo whose contents — large files included — are fetched from a PUBLIC
+        Hugging Face repo of the same kind; ``hf`` is its ``"owner/name"`` pair, never a URL.
+        Answers 202; poll :meth:`import_status`."""
+        return self._c.hub_request("POST", self._path(repo, "/import"), {"from": hf, "private": private})
+
+    def import_status(self, repo: str):
+        """``{"from", "state": queued|running|done|failed, "detail"?}`` for an imported repo."""
+        return self._c.hub_request("GET", self._path(repo, "/import"))
+
 
 def _error_text(raw: bytes) -> str:
     """The server answers errors as ``{"error": …}`` or plain text; take either."""
