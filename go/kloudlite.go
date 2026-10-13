@@ -5,7 +5,7 @@
 // owner half being a person's handle or a team slug:
 //
 //	kl := kloudlite.New("https://api.example.com", "…")
-//	repo, err := kl.Repos.Create("acme/payments", kloudlite.RepoOpts{})
+//	repo, err := kl.CodeRepos.Create("acme/payments", kloudlite.RepoOpts{})
 package kloudlite
 
 import (
@@ -30,11 +30,11 @@ type ApiError struct {
 func (e *ApiError) Error() string { return fmt.Sprintf("%d: %s", e.Status, e.Message) }
 
 type Client struct {
-	Repos *Repos
-	// Models and Datasets live on the hub listener; their calls fail with a
+	CodeRepos *CodeRepos
+	// ModelRepos and DataRepos live on the hub listener; their calls fail with a
 	// plain error until a hub URL is given (New's hubURL, or NewWithHub).
-	Models   *HubRepos
-	Datasets *HubRepos
+	ModelRepos *HubRepos
+	DataRepos  *HubRepos
 
 	baseURL string
 	hubURL  string
@@ -56,9 +56,9 @@ func NewWithHub(baseURL, hubURL, token string) *Client {
 		token:   token,
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
-	c.Repos = &Repos{c}
-	c.Models = &HubRepos{c: c, kind: "model", plural: "models"}
-	c.Datasets = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
+	c.CodeRepos = &CodeRepos{c}
+	c.ModelRepos = &HubRepos{c: c, kind: "model", plural: "models"}
+	c.DataRepos = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
 	return c
 }
 
@@ -119,9 +119,9 @@ func (c *Client) send(base, method, path string, query url.Values, body, out any
 	return nil
 }
 
-// Repos is the code-repository module: /v1/repos. Every repo argument is one
+// CodeRepos is the code-repository module: /v1/repos. Every repo argument is one
 // "owner/name" string; only owner-scoped calls (List) take a bare handle.
-type Repos struct{ c *Client }
+type CodeRepos struct{ c *Client }
 
 type Repo struct {
 	ID          string `json:"_id"`
@@ -224,7 +224,7 @@ func newRepoBody(repo string, opts RepoOpts) (map[string]string, error) {
 	}, nil
 }
 
-func (r *Repos) Create(repo string, opts RepoOpts) (*Repo, error) {
+func (r *CodeRepos) Create(repo string, opts RepoOpts) (*Repo, error) {
 	body, err := newRepoBody(repo, opts)
 	if err != nil {
 		return nil, err
@@ -236,13 +236,13 @@ func (r *Repos) Create(repo string, opts RepoOpts) (*Repo, error) {
 	return &out, nil
 }
 
-func (r *Repos) List(owner string) ([]Repo, error) {
+func (r *CodeRepos) List(owner string) ([]Repo, error) {
 	var out []Repo
 	err := r.c.Request("GET", "/v1/repos", url.Values{"owner": {owner}}, nil, &out)
 	return out, err
 }
 
-func (r *Repos) Get(repo string) (*Repo, error) {
+func (r *CodeRepos) Get(repo string) (*Repo, error) {
 	p, err := repoPath(repo, "")
 	if err != nil {
 		return nil, err
@@ -254,7 +254,7 @@ func (r *Repos) Get(repo string) (*Repo, error) {
 	return &out, nil
 }
 
-func (r *Repos) Update(repo string, change RepoUpdate) error {
+func (r *CodeRepos) Update(repo string, change RepoUpdate) error {
 	p, err := repoPath(repo, "")
 	if err != nil {
 		return err
@@ -262,7 +262,7 @@ func (r *Repos) Update(repo string, change RepoUpdate) error {
 	return r.c.Request("PATCH", p, nil, change, nil)
 }
 
-func (r *Repos) Delete(repo string) error {
+func (r *CodeRepos) Delete(repo string) error {
 	p, err := repoPath(repo, "")
 	if err != nil {
 		return err
@@ -272,7 +272,7 @@ func (r *Repos) Delete(repo string) error {
 
 // Fork makes a new repo dst copied from src: objects and refs, never its pull
 // requests or settings. Private by default, whatever the source was.
-func (r *Repos) Fork(src, dst string, opts RepoOpts) (*Repo, error) {
+func (r *CodeRepos) Fork(src, dst string, opts RepoOpts) (*Repo, error) {
 	p, err := repoPath(src, "/fork")
 	if err != nil {
 		return nil, err
@@ -291,7 +291,7 @@ func (r *Repos) Fork(src, dst string, opts RepoOpts) (*Repo, error) {
 // ImportGithub makes a new repo whose contents are fetched from a PUBLIC GitHub
 // repository — github is its "owner/name" pair, never a URL. The server answers
 // 202: the repo exists but the fetch runs in the background; poll ImportStatus.
-func (r *Repos) ImportGithub(repo, github string, opts RepoOpts) (*Repo, error) {
+func (r *CodeRepos) ImportGithub(repo, github string, opts RepoOpts) (*Repo, error) {
 	body, err := newRepoBody(repo, opts)
 	if err != nil {
 		return nil, err
@@ -305,7 +305,7 @@ func (r *Repos) ImportGithub(repo, github string, opts RepoOpts) (*Repo, error) 
 }
 
 // ImportStatus answers {from, state: queued|running|done|failed, detail?}.
-func (r *Repos) ImportStatus(repo string) (map[string]any, error) {
+func (r *CodeRepos) ImportStatus(repo string) (map[string]any, error) {
 	p, err := repoPath(repo, "/import")
 	if err != nil {
 		return nil, err
@@ -315,7 +315,7 @@ func (r *Repos) ImportStatus(repo string) (map[string]any, error) {
 	return out, err
 }
 
-func (r *Repos) Branches(repo string) ([]Branch, error) {
+func (r *CodeRepos) Branches(repo string) ([]Branch, error) {
 	p, err := repoPath(repo, "/branches")
 	if err != nil {
 		return nil, err
@@ -327,7 +327,7 @@ func (r *Repos) Branches(repo string) ([]Branch, error) {
 
 // DeleteBranch takes the head oid the caller saw; the delete is refused if the
 // branch moved.
-func (r *Repos) DeleteBranch(repo, branch, oid string) error {
+func (r *CodeRepos) DeleteBranch(repo, branch, oid string) error {
 	p, err := repoPath(repo, "/branches/"+seg(branch))
 	if err != nil {
 		return err
@@ -335,7 +335,7 @@ func (r *Repos) DeleteBranch(repo, branch, oid string) error {
 	return r.c.Request("DELETE", p, url.Values{"oid": {oid}}, nil, nil)
 }
 
-func (r *Repos) Protection(repo string) (any, error) {
+func (r *CodeRepos) Protection(repo string) (any, error) {
 	p, err := repoPath(repo, "/protection")
 	if err != nil {
 		return nil, err
@@ -345,7 +345,7 @@ func (r *Repos) Protection(repo string) (any, error) {
 	return out, err
 }
 
-func (r *Repos) Protect(repo string, rule Protection) error {
+func (r *CodeRepos) Protect(repo string, rule Protection) error {
 	p, err := repoPath(repo, "/protection")
 	if err != nil {
 		return err
@@ -353,7 +353,7 @@ func (r *Repos) Protect(repo string, rule Protection) error {
 	return r.c.Request("POST", p, nil, rule, nil)
 }
 
-func (r *Repos) Pulls(repo string) ([]map[string]any, error) {
+func (r *CodeRepos) Pulls(repo string) ([]map[string]any, error) {
 	p, err := repoPath(repo, "/pulls")
 	if err != nil {
 		return nil, err
@@ -363,7 +363,7 @@ func (r *Repos) Pulls(repo string) ([]map[string]any, error) {
 	return out, err
 }
 
-func (r *Repos) Pull(repo string, number int64) (map[string]any, error) {
+func (r *CodeRepos) Pull(repo string, number int64) (map[string]any, error) {
 	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d", number))
 	if err != nil {
 		return nil, err
@@ -373,7 +373,7 @@ func (r *Repos) Pull(repo string, number int64) (map[string]any, error) {
 	return out, err
 }
 
-func (r *Repos) OpenPull(repo string, body NewPull) (map[string]any, error) {
+func (r *CodeRepos) OpenPull(repo string, body NewPull) (map[string]any, error) {
 	p, err := repoPath(repo, "/pulls")
 	if err != nil {
 		return nil, err
@@ -388,7 +388,7 @@ func (r *Repos) OpenPull(repo string, body NewPull) (map[string]any, error) {
 	return out, err
 }
 
-func (r *Repos) Comment(repo string, number int64, text string) error {
+func (r *CodeRepos) Comment(repo string, number int64, text string) error {
 	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d/comments", number))
 	if err != nil {
 		return err
@@ -398,7 +398,7 @@ func (r *Repos) Comment(repo string, number int64, text string) error {
 
 // Merge asks for the merge as a job (the server answers 202); strategy is
 // fast-forward, squash, merge or rebase.
-func (r *Repos) Merge(repo string, number int64, strategy string) error {
+func (r *CodeRepos) Merge(repo string, number int64, strategy string) error {
 	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d/merge", number))
 	if err != nil {
 		return err
@@ -406,7 +406,7 @@ func (r *Repos) Merge(repo string, number int64, strategy string) error {
 	return r.c.Request("POST", p, url.Values{"strategy": {strategy}}, nil, nil)
 }
 
-func (r *Repos) Close(repo string, number int64) error {
+func (r *CodeRepos) Close(repo string, number int64) error {
 	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d/close", number))
 	if err != nil {
 		return err
@@ -414,7 +414,7 @@ func (r *Repos) Close(repo string, number int64) error {
 	return r.c.Request("POST", p, nil, nil, nil)
 }
 
-func (r *Repos) Compare(repo, base, head string) (map[string]any, error) {
+func (r *CodeRepos) Compare(repo, base, head string) (map[string]any, error) {
 	p, err := repoPath(repo, "/compare")
 	if err != nil {
 		return nil, err
@@ -424,7 +424,7 @@ func (r *Repos) Compare(repo, base, head string) (map[string]any, error) {
 	return out, err
 }
 
-func (r *Repos) Commit(repo string, body NewCommit) (map[string]any, error) {
+func (r *CodeRepos) Commit(repo string, body NewCommit) (map[string]any, error) {
 	p, err := repoPath(repo, "/commits")
 	if err != nil {
 		return nil, err
@@ -434,7 +434,7 @@ func (r *Repos) Commit(repo string, body NewCommit) (map[string]any, error) {
 	return out, err
 }
 
-func (r *Repos) Signature(repo, sha string) (map[string]any, error) {
+func (r *CodeRepos) Signature(repo, sha string) (map[string]any, error) {
 	p, err := repoPath(repo, "/commits/"+seg(sha)+"/signature")
 	if err != nil {
 		return nil, err
@@ -447,7 +447,7 @@ func (r *Repos) Signature(repo, sha string) (map[string]any, error) {
 // HubRepos is model and dataset repositories, on the hub listener (Hugging
 // Face Hub API). Management level: create, read, refs, visibility, delete —
 // files move with git/huggingface_hub against the same hub URL. Every repo
-// argument is one "owner/name" string, exactly as in Repos.
+// argument is one "owner/name" string, exactly as in CodeRepos.
 type HubRepos struct {
 	c      *Client
 	kind   string

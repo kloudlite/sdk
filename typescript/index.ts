@@ -7,7 +7,7 @@
  *
  *     import { Kloudlite } from "@kloudlite/sdk";
  *     const kl = new Kloudlite({ baseUrl: "https://api.example.com", token: "…" });
- *     const repo = await kl.repos.create("acme/payments");
+ *     const repo = await kl.codeRepos.create("acme/payments");
  */
 
 export const VERSION = "0.1.0";
@@ -37,9 +37,9 @@ export class ApiError extends Error {
 type Query = Record<string, string | number | boolean | undefined>;
 
 export class Kloudlite {
-  readonly repos: Repos;
-  readonly models: HubRepos;
-  readonly datasets: HubRepos;
+  readonly codeRepos: CodeRepos;
+  readonly modelRepos: HubRepos;
+  readonly dataRepos: HubRepos;
   private readonly baseUrl: string;
   private readonly hubUrl?: string;
   private readonly token?: string;
@@ -50,9 +50,9 @@ export class Kloudlite {
     this.hubUrl = opts.hubUrl?.replace(/\/+$/, "");
     this.token = opts.token;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
-    this.repos = new Repos(this);
-    this.models = new HubRepos(this, "model");
-    this.datasets = new HubRepos(this, "dataset");
+    this.codeRepos = new CodeRepos(this);
+    this.modelRepos = new HubRepos(this, "model");
+    this.dataRepos = new HubRepos(this, "dataset");
   }
 
   /**
@@ -136,7 +136,7 @@ function split(repo: string): [string, string] {
  * Code repositories: `/v1/repos`. Every `repo` argument is one `"owner/name"`
  * string; only owner-scoped calls (`list`) take a bare handle.
  */
-export class Repos {
+export class CodeRepos {
   constructor(private readonly c: Kloudlite) {}
 
   private path(repo: string, tail = ""): string {
@@ -284,7 +284,7 @@ export class Repos {
  * Model and dataset repositories, on the hub listener (Hugging Face Hub API).
  * Management level: create, read, refs, visibility, delete — files move with
  * git/`huggingface_hub` against the same hub URL. Every `repo` is one
- * `"owner/name"` string, exactly as in {@link Repos}.
+ * `"owner/name"` string, exactly as in {@link CodeRepos}.
  */
 export class HubRepos {
   private readonly plural: string;

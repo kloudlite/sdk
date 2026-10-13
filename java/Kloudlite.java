@@ -5,7 +5,7 @@
 // owner half being a person's handle or a team slug:
 //
 //   Kloudlite kl = new Kloudlite("https://api.example.com", "…");
-//   String repo = kl.repos().create("acme/payments", null, null);
+//   String repo = kl.codeRepos().create("acme/payments", null, null);
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper.
 
@@ -37,9 +37,9 @@ public class Kloudlite {
     private final String hubUrl; // null = no hub listener configured
     private final String token; // null = anonymous
     private final HttpClient http;
-    private final Repos repos = new Repos();
-    private final HubRepos models = new HubRepos("model", "models");
-    private final HubRepos datasets = new HubRepos("dataset", "datasets");
+    private final CodeRepos codeRepos = new CodeRepos();
+    private final HubRepos modelRepos = new HubRepos("model", "models");
+    private final HubRepos dataRepos = new HubRepos("dataset", "datasets");
 
     /** token may be null for anonymous access to public data. */
     public Kloudlite(String baseUrl, String token) {
@@ -55,18 +55,18 @@ public class Kloudlite {
     }
 
     /** Code repositories: {@code /v1/repos}. */
-    public Repos repos() {
-        return repos;
+    public CodeRepos codeRepos() {
+        return codeRepos;
     }
 
     /** Model repositories, on the hub listener. */
-    public HubRepos models() {
-        return models;
+    public HubRepos modelRepos() {
+        return modelRepos;
     }
 
     /** Dataset repositories, on the hub listener. */
-    public HubRepos datasets() {
-        return datasets;
+    public HubRepos dataRepos() {
+        return dataRepos;
     }
 
     /**
@@ -108,7 +108,7 @@ public class Kloudlite {
      * Every {@code repo} argument is one "owner/name" string; only owner-scoped
      * calls ({@link #list}) take a bare handle.
      */
-    public class Repos {
+    public class CodeRepos {
         // repos
         public String create(String repo, String visibility, String description)
                 throws IOException, InterruptedException {
@@ -259,7 +259,7 @@ public class Kloudlite {
      * Model and dataset repositories, on the hub listener (Hugging Face Hub API).
      * Management level: create, read, refs, visibility, delete — files move with
      * git/huggingface_hub against the same hub URL. Every {@code repo} is one
-     * "owner/name" string, exactly as in {@link Repos}.
+     * "owner/name" string, exactly as in {@link CodeRepos}.
      */
     public class HubRepos {
         private final String kind;
