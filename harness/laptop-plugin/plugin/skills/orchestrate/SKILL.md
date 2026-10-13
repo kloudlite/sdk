@@ -22,6 +22,7 @@ You do not have a workspace. You do not read code. The `kloudlite` skill gives t
 3. Use the id of a workspace or environment in a tool call. Do not use its name.
 4. Do not wait, sleep or poll for an agent. Agents run in the background. Their reports come to you when they end.
 5. Do not repair a failure yourself. Tell the person about it.
+6. Before you give any work on code, load the `kloudlite:develop` skill and do its steps: brainstorm, spec, plan, run, review.
 
 Example: the person writes "stop the backend". `workspace_list` shows the name `backend` with the id `ws-23d55aca095079c4`. List the target by name. Then call `workspace_stop` with `workspace: "ws-23d55aca095079c4"`.
 
@@ -35,7 +36,7 @@ Example: the person writes "stop the backend". `workspace_list` shows the name `
 | `SendMessage` (`to: <ws name>`) | Give the next ask to the agent of a workspace that already exists. |
 | `Agent` (`subagent_type: kloudlite:kl-subagent`, `name: <ws name>/<part>`, `run_in_background: true`) | Start a subagent for a `SUBAGENT` request of a workspace. |
 | `SendMessage` (`to: <ws name>/<part>`) | Give a subagent the rebase message. |
-| `scratch_read`, `scratch_write` | Keep your contract files. |
+| `scratch_read`, `scratch_write` | Keep your contract files and your progress ledgers. |
 
 **Workspaces**
 
@@ -81,7 +82,7 @@ Intercepts are not your work. The workspace that runs the service starts and end
 | The work | What to do |
 |---|---|
 | Platform work: create, list, start, stop, delete, clone, restore, environments, standard services, quota, requests | Use the platform tool yourself. |
-| Work on code, on the packages in a workspace, or on a service or intercept that a workspace runs | Give an ask to the agent of that workspace. Do not do this work yourself. |
+| Work on code, on the packages in a workspace, or on a service or intercept that a workspace runs | Give an ask to the agent of that workspace. Do not do this work yourself. For work on code, do the steps of the `kloudlite:develop` skill. |
 | A database, a queue or a different server that the code needs | Add it to the environment yourself with `service_add` and a mount. Then tell the workspace its name and port. Do not let a workspace install or run it as a package. |
 | Work in more than one workspace | Give each workspace its part. Refer to "Work in more than one workspace". |
 | A new component that does not have a workspace | Use `workspace_create`. Poll `workspace_get` until the state is `ready`. Then start its agent. |

@@ -83,6 +83,18 @@ Main gives you the asks. The person can also talk to you. If the person tells yo
 5. **Commit and push.** Commit on your working branch. Push it to origin.
 6. **Report.** End your turn with a report (refer to "Reports").
 
+When main sends a document to commit (a spec or a plan):
+
+1. Write the text without a change to the path that main gives.
+2. Commit only that file on your working branch and push. Do not run the tests.
+3. Report `DONE` with the branch and the commit.
+
+When main sends review findings for a plan task:
+
+1. Fix each finding, or give the reason that it is not a problem.
+2. Run the tests, commit and push.
+3. Report `DONE` with the same base commit and the new head commit, and one line for each finding.
+
 When main starts you with no goal (`No goal yet.`):
 
 1. Read your workspace: the branch, `git status`, the layout of `~/workspace`, and `AGENTS.md`.
@@ -102,7 +114,7 @@ Your last message is your report to main. Its first word is the kind:
 Each report gives these items:
 
 - The status, in one line.
-- The branch and the commit.
+- The branch and the commit. If the ask gives a plan task, give the base commit (the head before your first change) and the head commit.
 - The contract version that you built to, if the ask gave a contract.
 - The facts that other workspaces need: the service name, the port, the environment, the intercept.
 - The decisions that the person must make.

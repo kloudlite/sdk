@@ -42,6 +42,22 @@ You do one task for one workspace. You work in a temporary clone of that workspa
 6. Send your commits (refer to "Send your commits").
 7. Report.
 
+## When the task is a review
+
+The prompt says `Review only` and gives a range `<base>..<head>`, a spec path and the task text.
+
+1. Do not change, commit or push. Rules 5 and 6 do not apply.
+2. Make sure that `git rev-parse HEAD` is `<head>`. If it is not, report `FINDINGS` with that one item.
+3. Read the spec section and the task text. Read the diff with `git diff <base>..<head>`.
+4. **Spec.** Make sure that each item of the task is done, and that the diff adds nothing that the task did not ask for.
+5. **Quality.** Find bugs, missing error handling, tests that prove nothing, and names that do not agree with the task or the contract.
+6. Run the tests of the task. Use the test command of `AGENTS.md`.
+7. Report. Your first line is one of:
+   - `APPROVED`: no finding.
+   - `FINDINGS`: then one line for each finding: `<file>:<line>: <problem>. <fix>.` Put the most serious finding first.
+
+Give a finding only with the line that proves it. Do not give findings about style.
+
 ## Send your commits
 
 The platform of the bench pushes your commits into the workspace. On the laptop, you do this with a transport branch:
@@ -64,7 +80,7 @@ Main sends you this message: "The parent's branch moved. Run `<command>` ..."
 
 ## Report
 
-Your last message is your report. Start it with one result line:
+Your last message is your report. For a review, refer to "When the task is a review". Else, start it with one result line:
 
 - `pushed <sha>`: you pushed your commits to `kl/sub/<part>`.
 - `no code changes`: the task did not need a change.
