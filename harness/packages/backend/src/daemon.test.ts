@@ -189,7 +189,7 @@ function holdDeps(o: { busy?: number; touched?: [string, number][]; inflight?: [
       touched: new Map(o.touched ?? []),
       inflight: new Map(o.inflight ?? []),
       podHold: async (w: string) => { held.push(`ws:${w}`); if (o.fail) throw new Error("x"); },
-      envHold: async (e: string) => { held.push(`env:${e}`); if (o.fail) throw new Error("x"); },
+      envKeep: async (e: string) => { held.push(`env:${e}`); if (o.fail) throw new Error("x"); },
       listEnvs: async () => { if (o.fail) throw new Error("x"); return ["e1"]; },
     },
   };
@@ -205,10 +205,10 @@ test("holdBeat holds an in-flight workspace with busy 0", async () => {
   await holdBeat(h.deps);
   expect(h.held).toEqual(["ws:w9", "env:e1"]);
 });
-test("holdBeat holds nothing when idle", async () => {
+test("holdBeat holds no workspace when idle but keeps followed envs", async () => {
   const h = holdDeps({ touched: [["w1", 100]] });
   await holdBeat(h.deps);
-  expect(h.held).toEqual([]);
+  expect(h.held).toEqual(["env:e1"]);
 });
 test("holdBeat swallows errors", async () => {
   await holdBeat(holdDeps({ busy: 1, oldest: 0, touched: [["w1", 1]], fail: true }).deps);
