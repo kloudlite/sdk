@@ -151,15 +151,15 @@ public class Kloudlite {
         }
 
         /**
-         * A new repo whose contents are fetched from a PUBLIC GitHub repository — {@code github}
-         * is its "owner/name" pair, never a URL. Answers 202: the repo exists but the fetch runs
-         * in the background; poll {@link #importStatus}.
+         * A new repo whose contents are fetched from a PUBLIC git remote — {@code git} is a
+         * strict "https://" URL (GitHub is one host among any). Answers 202: the repo exists but
+         * the fetch runs in the background; poll {@link #importStatus}.
          */
-        public String importGithub(String repo, String github, String visibility, String description)
+        public String importGit(String repo, String git, String visibility, String description)
                 throws IOException, InterruptedException {
             String[] on = split(repo);
             return request("POST", "/v1/repos/import", obj(
-                "owner", on[0], "name", on[1], "github", github,
+                "owner", on[0], "name", on[1], "git", git,
                 "visibility", visibility == null ? "private" : visibility,
                 "description", description == null ? "" : description));
         }
@@ -298,14 +298,14 @@ public class Kloudlite {
         }
 
         /**
-         * A new repo whose contents — large files included — are fetched from a PUBLIC Hugging
-         * Face repo of the same kind; {@code hf} is its "owner/name" pair, never a URL. Answers
-         * 202; poll {@link #importStatus}.
+         * A new repo whose contents — large files included, through git-lfs — are fetched from a
+         * PUBLIC git remote; {@code git} is a strict "https://" URL (the Hugging Face Hub is one
+         * host among any). Answers 202; poll {@link #importStatus}.
          */
-        public String importHf(String repo, String hf, boolean privateRepo)
+        public String importGit(String repo, String git, boolean privateRepo)
                 throws IOException, InterruptedException {
             return hubRequest("POST", path(repo, "/import"),
-                "{\"from\":" + quote(hf) + ",\"private\":" + privateRepo + "}");
+                "{\"from\":" + quote(git) + ",\"private\":" + privateRepo + "}");
         }
 
         /** {from, state: queued|running|done|failed, detail?} for an imported repo. */
