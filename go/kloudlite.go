@@ -1,10 +1,11 @@
 // Package kloudlite is the Kloudlite SDK for Go — stdlib only.
 //
 // Auth is a Bearer token (a session or CLI token). Every module hangs off the
-// one client:
+// one client, and every repository is named by ONE "owner/name" string — the
+// owner half being a person's handle or a team slug:
 //
 //	kl := kloudlite.New("https://api.example.com", "…")
-//	repo, err := kl.Repos.Create(kloudlite.NewRepo{Owner: "acme", Name: "payments"})
+//	repo, err := kl.Repos.Create("acme/payments", kloudlite.RepoOpts{})
 package kloudlite
 
 import (
@@ -92,7 +93,8 @@ func (c *Client) Request(method, path string, query url.Values, body, out any) e
 	return nil
 }
 
-// Repos is the code-repository module: /v1/repos.
+// Repos is the code-repository module: /v1/repos. Every repo argument is one
+// "owner/name" string; only owner-scoped calls (List) take a bare handle.
 type Repos struct{ c *Client }
 
 type Repo struct {
@@ -105,12 +107,11 @@ type Repo struct {
 	CreatedAt   int64  `json:"created_at"`
 }
 
-type NewRepo struct {
-	Owner string `json:"owner"`
-	Name  string `json:"name"`
-	// Empty means private.
-	Visibility  string `json:"visibility,omitempty"`
-	Description string `json:"description"`
+// RepoOpts carries what a new repo may choose: Create and Fork take them beside
+// the "owner/name" strings. An empty Visibility means private.
+type RepoOpts struct {
+	Visibility  string
+	Description string
 }
 
 type RepoUpdate struct {
@@ -135,17 +136,9 @@ type NewPull struct {
 	Title string `json:"title"`
 	Head  string `json:"head"`
 	Base  string `json:"base"`
-	// HeadRepo ("owner/name") makes it a cross-repo pull: Head then names that fork's branch.
+	// HeadRepo (another "owner/name") makes it a cross-repo pull: Head then
+	// names a branch of that fork, proposed onto this repo's Base.
 	HeadRepo    string `json:"head_repo,omitempty"`
-	Description string `json:"description"`
-}
-
-// ForkRepo names a fork's destination; the source goes in Fork's arguments.
-type ForkRepo struct {
-	Owner string `json:"owner"`
-	Name  string `json:"name"`
-	// Empty means private, whatever the source was.
-	Visibility  string `json:"visibility,omitempty"`
 	Description string `json:"description"`
 }
 
@@ -170,11 +163,46 @@ type NewCommit struct {
 
 func seg(s string) string { return url.PathEscape(s) }
 
-func repoPath(owner, name, tail string) string {
-	return "/v1/repos/" + seg(owner) + "/" + seg(name) + tail
+// splitRepo turns "owner/name" into its two halves, refused client-side when
+// malformed — a shape the server would only ever 404.
+func splitRepo(repo string) (string, string, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("a repository is named owner/name, got %q", repo)
+	}
+	return owner, name, nil
 }
 
-func (r *Repos) Create(body NewRepo) (*Repo, error) {
+func repoPath(repo, tail string) (string, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	return "/v1/repos/" + seg(owner) + "/" + seg(name) + tail, nil
+}
+
+// newRepoBody is the create/fork wire shape: the destination split back into
+// the two fields the server reads.
+func newRepoBody(repo string, opts RepoOpts) (map[string]string, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	visibility := opts.Visibility
+	if visibility == "" {
+		visibility = "private"
+	}
+	return map[string]string{
+		"owner": owner, "name": name,
+		"visibility": visibility, "description": opts.Description,
+	}, nil
+}
+
+func (r *Repos) Create(repo string, opts RepoOpts) (*Repo, error) {
+	body, err := newRepoBody(repo, opts)
+	if err != nil {
+		return nil, err
+	}
 	var out Repo
 	if err := r.c.Request("POST", "/v1/repos", nil, body, &out); err != nil {
 		return nil, err
@@ -188,104 +216,178 @@ func (r *Repos) List(owner string) ([]Repo, error) {
 	return out, err
 }
 
-func (r *Repos) Get(owner, name string) (*Repo, error) {
+func (r *Repos) Get(repo string) (*Repo, error) {
+	p, err := repoPath(repo, "")
+	if err != nil {
+		return nil, err
+	}
 	var out Repo
-	if err := r.c.Request("GET", repoPath(owner, name, ""), nil, nil, &out); err != nil {
+	if err := r.c.Request("GET", p, nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (r *Repos) Update(owner, name string, change RepoUpdate) error {
-	return r.c.Request("PATCH", repoPath(owner, name, ""), nil, change, nil)
+func (r *Repos) Update(repo string, change RepoUpdate) error {
+	p, err := repoPath(repo, "")
+	if err != nil {
+		return err
+	}
+	return r.c.Request("PATCH", p, nil, change, nil)
 }
 
-func (r *Repos) Delete(owner, name string) error {
-	return r.c.Request("DELETE", repoPath(owner, name, ""), nil, nil, nil)
+func (r *Repos) Delete(repo string) error {
+	p, err := repoPath(repo, "")
+	if err != nil {
+		return err
+	}
+	return r.c.Request("DELETE", p, nil, nil, nil)
 }
 
-// Fork makes a new repo copied from src: objects and refs, never its pull requests or settings.
-func (r *Repos) Fork(srcOwner, srcName string, dst ForkRepo) (*Repo, error) {
+// Fork makes a new repo dst copied from src: objects and refs, never its pull
+// requests or settings. Private by default, whatever the source was.
+func (r *Repos) Fork(src, dst string, opts RepoOpts) (*Repo, error) {
+	p, err := repoPath(src, "/fork")
+	if err != nil {
+		return nil, err
+	}
+	body, err := newRepoBody(dst, opts)
+	if err != nil {
+		return nil, err
+	}
 	var out Repo
-	if err := r.c.Request("POST", repoPath(srcOwner, srcName, "/fork"), nil, dst, &out); err != nil {
+	if err := r.c.Request("POST", p, nil, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (r *Repos) Branches(owner, name string) ([]Branch, error) {
+func (r *Repos) Branches(repo string) ([]Branch, error) {
+	p, err := repoPath(repo, "/branches")
+	if err != nil {
+		return nil, err
+	}
 	var out []Branch
-	err := r.c.Request("GET", repoPath(owner, name, "/branches"), nil, nil, &out)
+	err = r.c.Request("GET", p, nil, nil, &out)
 	return out, err
 }
 
 // DeleteBranch takes the head oid the caller saw; the delete is refused if the
 // branch moved.
-func (r *Repos) DeleteBranch(owner, name, branch, oid string) error {
-	return r.c.Request("DELETE", repoPath(owner, name, "/branches/"+seg(branch)),
-		url.Values{"oid": {oid}}, nil, nil)
+func (r *Repos) DeleteBranch(repo, branch, oid string) error {
+	p, err := repoPath(repo, "/branches/"+seg(branch))
+	if err != nil {
+		return err
+	}
+	return r.c.Request("DELETE", p, url.Values{"oid": {oid}}, nil, nil)
 }
 
-func (r *Repos) Protection(owner, name string) (any, error) {
+func (r *Repos) Protection(repo string) (any, error) {
+	p, err := repoPath(repo, "/protection")
+	if err != nil {
+		return nil, err
+	}
 	var out any
-	err := r.c.Request("GET", repoPath(owner, name, "/protection"), nil, nil, &out)
+	err = r.c.Request("GET", p, nil, nil, &out)
 	return out, err
 }
 
-func (r *Repos) Protect(owner, name string, rule Protection) error {
-	return r.c.Request("POST", repoPath(owner, name, "/protection"), nil, rule, nil)
+func (r *Repos) Protect(repo string, rule Protection) error {
+	p, err := repoPath(repo, "/protection")
+	if err != nil {
+		return err
+	}
+	return r.c.Request("POST", p, nil, rule, nil)
 }
 
-func (r *Repos) Pulls(owner, name string) ([]map[string]any, error) {
+func (r *Repos) Pulls(repo string) ([]map[string]any, error) {
+	p, err := repoPath(repo, "/pulls")
+	if err != nil {
+		return nil, err
+	}
 	var out []map[string]any
-	err := r.c.Request("GET", repoPath(owner, name, "/pulls"), nil, nil, &out)
+	err = r.c.Request("GET", p, nil, nil, &out)
 	return out, err
 }
 
-func (r *Repos) Pull(owner, name string, number int64) (map[string]any, error) {
+func (r *Repos) Pull(repo string, number int64) (map[string]any, error) {
+	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d", number))
+	if err != nil {
+		return nil, err
+	}
 	var out map[string]any
-	err := r.c.Request("GET", repoPath(owner, name, fmt.Sprintf("/pulls/%d", number)), nil, nil, &out)
+	err = r.c.Request("GET", p, nil, nil, &out)
 	return out, err
 }
 
-func (r *Repos) OpenPull(owner, name string, body NewPull) (map[string]any, error) {
+func (r *Repos) OpenPull(repo string, body NewPull) (map[string]any, error) {
+	p, err := repoPath(repo, "/pulls")
+	if err != nil {
+		return nil, err
+	}
+	if body.HeadRepo != "" {
+		if _, _, err := splitRepo(body.HeadRepo); err != nil {
+			return nil, err
+		}
+	}
 	var out map[string]any
-	err := r.c.Request("POST", repoPath(owner, name, "/pulls"), nil, body, &out)
+	err = r.c.Request("POST", p, nil, body, &out)
 	return out, err
 }
 
-func (r *Repos) Comment(owner, name string, number int64, text string) error {
-	return r.c.Request("POST", repoPath(owner, name, fmt.Sprintf("/pulls/%d/comments", number)),
-		nil, map[string]string{"body": text}, nil)
+func (r *Repos) Comment(repo string, number int64, text string) error {
+	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d/comments", number))
+	if err != nil {
+		return err
+	}
+	return r.c.Request("POST", p, nil, map[string]string{"body": text}, nil)
 }
 
 // Merge asks for the merge as a job (the server answers 202); strategy is
 // fast-forward, squash, merge or rebase.
-func (r *Repos) Merge(owner, name string, number int64, strategy string) error {
-	return r.c.Request("POST", repoPath(owner, name, fmt.Sprintf("/pulls/%d/merge", number)),
-		url.Values{"strategy": {strategy}}, nil, nil)
+func (r *Repos) Merge(repo string, number int64, strategy string) error {
+	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d/merge", number))
+	if err != nil {
+		return err
+	}
+	return r.c.Request("POST", p, url.Values{"strategy": {strategy}}, nil, nil)
 }
 
-func (r *Repos) Close(owner, name string, number int64) error {
-	return r.c.Request("POST", repoPath(owner, name, fmt.Sprintf("/pulls/%d/close", number)), nil, nil, nil)
+func (r *Repos) Close(repo string, number int64) error {
+	p, err := repoPath(repo, fmt.Sprintf("/pulls/%d/close", number))
+	if err != nil {
+		return err
+	}
+	return r.c.Request("POST", p, nil, nil, nil)
 }
 
-func (r *Repos) Compare(owner, name, base, head string) (map[string]any, error) {
+func (r *Repos) Compare(repo, base, head string) (map[string]any, error) {
+	p, err := repoPath(repo, "/compare")
+	if err != nil {
+		return nil, err
+	}
 	var out map[string]any
-	err := r.c.Request("GET", repoPath(owner, name, "/compare"),
-		url.Values{"base": {base}, "head": {head}}, nil, &out)
+	err = r.c.Request("GET", p, url.Values{"base": {base}, "head": {head}}, nil, &out)
 	return out, err
 }
 
-func (r *Repos) Commit(owner, name string, body NewCommit) (map[string]any, error) {
+func (r *Repos) Commit(repo string, body NewCommit) (map[string]any, error) {
+	p, err := repoPath(repo, "/commits")
+	if err != nil {
+		return nil, err
+	}
 	var out map[string]any
-	err := r.c.Request("POST", repoPath(owner, name, "/commits"), nil, body, &out)
+	err = r.c.Request("POST", p, nil, body, &out)
 	return out, err
 }
 
-func (r *Repos) Signature(owner, name, sha string) (map[string]any, error) {
+func (r *Repos) Signature(repo, sha string) (map[string]any, error) {
+	p, err := repoPath(repo, "/commits/"+seg(sha)+"/signature")
+	if err != nil {
+		return nil, err
+	}
 	var out map[string]any
-	err := r.c.Request("GET", repoPath(owner, name, "/commits/"+seg(sha)+"/signature"), nil, nil, &out)
+	err = r.c.Request("GET", p, nil, nil, &out)
 	return out, err
 }
 

@@ -1,12 +1,13 @@
 """Kloudlite SDK for Python — stdlib only.
 
 Auth is a Bearer token (a session or CLI token). Every module hangs off the one
-client::
+client, and every repository is named by ONE ``"owner/name"`` string — the owner
+half being a person's handle or a team slug::
 
     from kloudlite import Kloudlite
 
     kl = Kloudlite("https://api.example.com", token="…")
-    repo = kl.repos.create(owner="acme", name="payments")
+    repo = kl.repos.create("acme/payments")
 """
 
 from __future__ import annotations
@@ -70,14 +71,29 @@ def _seg(s: str) -> str:
     return urllib.parse.quote(str(s), safe="")
 
 
+def _split(repo: str) -> tuple[str, str]:
+    """``"owner/name"`` → its two halves, refused client-side when malformed —
+    a shape the server would only ever 404."""
+    owner, sep, name = repo.partition("/")
+    if not sep or not owner or not name or "/" in name:
+        raise ValueError(f"a repository is named owner/name, got {repo!r}")
+    return owner, name
+
+
 class Repos:
-    """Code repositories: ``/v1/repos``."""
+    """Code repositories: ``/v1/repos``. Every ``repo`` argument is one
+    ``"owner/name"`` string; only owner-scoped calls (``list``) take a bare handle."""
 
     def __init__(self, client: Kloudlite):
         self._c = client
 
+    def _path(self, repo: str, tail: str = "") -> str:
+        owner, name = _split(repo)
+        return f"/v1/repos/{_seg(owner)}/{_seg(name)}{tail}"
+
     # repos
-    def create(self, owner: str, name: str, visibility: str = "private", description: str = ""):
+    def create(self, repo: str, visibility: str = "private", description: str = ""):
+        owner, name = _split(repo)
         return self._c.request("POST", "/v1/repos", {
             "owner": owner, "name": name, "visibility": visibility, "description": description,
         })
@@ -85,91 +101,91 @@ class Repos:
     def list(self, owner: str):
         return self._c.request("GET", "/v1/repos", query={"owner": owner})
 
-    def get(self, owner: str, name: str):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}")
+    def get(self, repo: str):
+        return self._c.request("GET", self._path(repo))
 
-    def update(self, owner: str, name: str, description: str | None = None, visibility: str | None = None):
-        return self._c.request("PATCH", f"/v1/repos/{_seg(owner)}/{_seg(name)}", {
+    def update(self, repo: str, description: str | None = None, visibility: str | None = None):
+        return self._c.request("PATCH", self._path(repo), {
             "description": description, "visibility": visibility,
         })
 
-    def delete(self, owner: str, name: str):
-        return self._c.request("DELETE", f"/v1/repos/{_seg(owner)}/{_seg(name)}")
+    def delete(self, repo: str):
+        return self._c.request("DELETE", self._path(repo))
 
-    def fork(self, src_owner: str, src_name: str, owner: str, name: str,
-             visibility: str = "private", description: str = ""):
-        """A new repo copied from another: objects and refs, never its pull requests or settings.
-        Private by default, whatever the source was."""
-        return self._c.request("POST", f"/v1/repos/{_seg(src_owner)}/{_seg(src_name)}/fork", {
+    def fork(self, src: str, dst: str, visibility: str = "private", description: str = ""):
+        """A new repo ``dst`` copied from ``src``: objects and refs, never its pull
+        requests or settings. Private by default, whatever the source was."""
+        owner, name = _split(dst)
+        return self._c.request("POST", self._path(src, "/fork"), {
             "owner": owner, "name": name, "visibility": visibility, "description": description,
         })
 
     # branches
-    def branches(self, owner: str, name: str):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/branches")
+    def branches(self, repo: str):
+        return self._c.request("GET", self._path(repo, "/branches"))
 
-    def delete_branch(self, owner: str, name: str, branch: str, oid: str):
+    def delete_branch(self, repo: str, branch: str, oid: str):
         """`oid` is the head the caller saw; the delete is refused if the branch moved."""
-        return self._c.request(
-            "DELETE", f"/v1/repos/{_seg(owner)}/{_seg(name)}/branches/{_seg(branch)}",
-            query={"oid": oid},
-        )
+        return self._c.request("DELETE", self._path(repo, f"/branches/{_seg(branch)}"),
+                               query={"oid": oid})
 
     # protection
-    def protection(self, owner: str, name: str):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/protection")
+    def protection(self, repo: str):
+        return self._c.request("GET", self._path(repo, "/protection"))
 
-    def protect(self, owner: str, name: str, pattern: str, remove: bool = False,
+    def protect(self, repo: str, pattern: str, remove: bool = False,
                 no_force: bool = True, no_delete: bool = True):
-        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/protection", {
+        return self._c.request("POST", self._path(repo, "/protection"), {
             "pattern": pattern, "remove": remove, "no_force": no_force, "no_delete": no_delete,
         })
 
     # pull requests
-    def pulls(self, owner: str, name: str, state: str | None = None, limit: int | None = None):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls",
+    def pulls(self, repo: str, state: str | None = None, limit: int | None = None):
+        return self._c.request("GET", self._path(repo, "/pulls"),
                                query={"state": state, "limit": limit})
 
-    def pull(self, owner: str, name: str, number: int):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}")
+    def pull(self, repo: str, number: int):
+        return self._c.request("GET", self._path(repo, f"/pulls/{int(number)}"))
 
-    def open_pull(self, owner: str, name: str, title: str, head: str, base: str,
+    def open_pull(self, repo: str, title: str, head: str, base: str,
                   description: str = "", head_repo: str | None = None):
-        """``head_repo`` ("owner/name") makes it a cross-repo pull: ``head`` then names a branch
-        of that fork, proposed onto this repo's ``base``."""
-        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls", {
+        """``head_repo`` (another ``"owner/name"``) makes it a cross-repo pull:
+        ``head`` then names a branch of that fork, proposed onto this repo's ``base``."""
+        if head_repo is not None:
+            _split(head_repo)  # same shape rule as every other repo reference
+        return self._c.request("POST", self._path(repo, "/pulls"), {
             "title": title, "head": head, "base": base, "description": description,
             "head_repo": head_repo,
         })
 
-    def comment(self, owner: str, name: str, number: int, body: str):
-        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}/comments",
+    def comment(self, repo: str, number: int, body: str):
+        return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/comments"),
                                {"body": body})
 
-    def merge(self, owner: str, name: str, number: int, strategy: str = "fast-forward"):
+    def merge(self, repo: str, number: int, strategy: str = "fast-forward"):
         """strategy: fast-forward, squash, merge or rebase. Answers 202 — the merge is a job."""
-        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}/merge",
+        return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/merge"),
                                query={"strategy": strategy})
 
-    def close(self, owner: str, name: str, number: int):
-        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/pulls/{number}/close")
+    def close(self, repo: str, number: int):
+        return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/close"))
 
     # commits
-    def compare(self, owner: str, name: str, base: str, head: str):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/compare",
+    def compare(self, repo: str, base: str, head: str):
+        return self._c.request("GET", self._path(repo, "/compare"),
                                query={"base": base, "head": head})
 
-    def commit(self, owner: str, name: str, branch: str, message: str, changes: list,
+    def commit(self, repo: str, branch: str, message: str, changes: list,
                expect: str | None = None, new_branch: str | None = None):
         """One commit of file changes; each change is
         ``{"path", "contentBase64"?, "executable"?, "delete"?}``."""
-        return self._c.request("POST", f"/v1/repos/{_seg(owner)}/{_seg(name)}/commits", {
+        return self._c.request("POST", self._path(repo, "/commits"), {
             "branch": branch, "message": message, "changes": changes,
             "expect": expect, "newBranch": new_branch,
         })
 
-    def signature(self, owner: str, name: str, sha: str):
-        return self._c.request("GET", f"/v1/repos/{_seg(owner)}/{_seg(name)}/commits/{_seg(sha)}/signature")
+    def signature(self, repo: str, sha: str):
+        return self._c.request("GET", self._path(repo, f"/commits/{_seg(sha)}/signature"))
 
 
 def _error_text(raw: bytes) -> str:
