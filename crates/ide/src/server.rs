@@ -179,8 +179,14 @@ mod tests {
         app.procs.kill("main", &id, "TERM").await.unwrap();
         assert!(!crate::procfile::load(&f).iter().any(|e| e.id == id), "gone on kill");
         let id2 = spawn_detached(&app, "true").await;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        assert!(!crate::procfile::load(&f).iter().any(|e| e.id == id2), "gone on exit");
+        // Polled, not a fixed sleep: the reaper rewrites the file after `true` exits, and a busy
+        // CI runner took longer than 500 ms.
+        let mut gone = false;
+        for _ in 0..100 {
+            if !crate::procfile::load(&f).iter().any(|e| e.id == id2) { gone = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(gone, "gone on exit");
     }
 
     #[tokio::test(flavor = "multi_thread")]
