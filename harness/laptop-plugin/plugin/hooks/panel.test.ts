@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { activity, envCurrent, environments, GRACE_MS, mark, snapName, workspaces } from './panel'
+import { activity, envCurrent, environments, GRACE_MS, mark, snapName, tree, workspaces } from './panel'
 
 test('lists parse and errors surface', () => {
   const ws = workspaces(JSON.stringify([{ id: 'w1', name: 'chat', state: 'ready' }]))
@@ -60,4 +60,24 @@ test('the snapshot an environment is based on follows restores', () => {
   expect(envCurrent(h, 'zz', null)).toBeUndefined()
   expect(snapName(h[2])).toBe('seed data')
   expect(snapName({ id: 'x', createdAt: null })).toBe('x')
+})
+
+test('a clone sits under the workspace it was cloned from', () => {
+  const ws = workspaces(
+    JSON.stringify([
+      { id: 'w1', name: 'sync', state: 'ready' },
+      { id: 'w2', name: 'web', state: 'ready' },
+      { id: 'c1', name: 'sync-review-1', state: 'ready', clone_of: 'w1' },
+      { id: 'c2', name: 'sync-review-1-a', state: 'ready', clone_of: 'c1' },
+      { id: 'c3', name: 'orphan', state: 'ready', clone_of: 'gone' },
+    ]),
+  )
+  expect(ws[2].cloneOf).toBe('w1')
+  expect(tree(ws).map(t => `${t.depth}${t.last ? 'L' : '-'}${t.row.name}`)).toEqual([
+    '0-sync',
+    '1Lsync-review-1',
+    '2Lsync-review-1-a',
+    '0-web',
+    '0Lorphan',
+  ])
 })

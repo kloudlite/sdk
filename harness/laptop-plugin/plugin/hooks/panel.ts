@@ -4,11 +4,12 @@
 // calls here, so a test reads it without a session.
 //
 // No agents section: Claude Code already lists agents, and there are only the two kinds
-// (one kl-workspace per workspace, one kl-subagent per part).
+// (one kl-workspace per workspace, one kl-subagent per part). A subagent's clone sits under its
+// workspace instead: `clone_of` (`model::Workspace`) is the tree.
 
 export type Mark = { glyph: string; color: string }
 export type Service = { name: string; ports: string; state: string; mark: Mark; interceptedBy?: string }
-export type Row = { id: string; name: string; state: string }
+export type Row = { id: string; name: string; state: string; cloneOf?: string }
 export type Env = Row & { services: Service[]; volume: boolean }
 
 // theme keys, so the pane follows the person's Claude Code theme
@@ -53,10 +54,27 @@ const row = (d: any): Row => ({
   id: String(d?.id ?? ''),
   name: String(d?.name ?? d?.id ?? '?'),
   state: String(d?.state ?? '?'),
+  ...(typeof d?.clone_of === 'string' && { cloneOf: d.clone_of }),
 })
 
 export function workspaces(text: string): Row[] {
   return list(text).map(row)
+}
+
+/** Workspaces in tree order: each clone right under the workspace it was cloned from, `depth` deep.
+ * A clone whose source is not listed (deleted) is a root. */
+export function tree(rows: Row[]): { row: Row; depth: number; last: boolean }[] {
+  const ids = new Set(rows.map(r => r.id))
+  const out: { row: Row; depth: number; last: boolean }[] = []
+  const walk = (parent: string | undefined, depth: number) => {
+    const kids = rows.filter(r => (parent === undefined ? !r.cloneOf || !ids.has(r.cloneOf) : r.cloneOf === parent))
+    kids.forEach((r, i) => {
+      out.push({ row: r, depth, last: i === kids.length - 1 })
+      walk(r.id, depth + 1)
+    })
+  }
+  walk(undefined, 0)
+  return out
 }
 
 // ponytail: an agent's tool calls arrive with thinking gaps between them, so "working" holds this long
