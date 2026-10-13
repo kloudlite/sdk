@@ -415,11 +415,15 @@ pub(crate) async fn start_env(
     // Same as `start_ws`: a start resumes filling and is checked; a stop never is.
     guard_fill(&s, &e.spec.owner, e.spec.owner != caller_id.name).await?;
     let idle = e.status.as_ref().and_then(|st| st.idle_since.as_deref());
-    let patch = super::workspaces::wake_patch(&super::workspaces::wake_at(k8s_openapi::jiff::Timestamp::now(), idle));
+    let now = k8s_openapi::jiff::Timestamp::now();
+    let patch = super::workspaces::wake_patch(&super::workspaces::wake_at(now, idle));
     Api::<crd::Environment>::all(kube(&s)?.clone()).patch(&id, &PatchParams::default(), &Patch::Merge(&patch)).await.map_err(kube_err)?;
     if idle.is_some() && e.spec.desired_state == DesiredState::Running && !crd::wants_running(&e) {
         tracing::info!(kind = "environment", id, by = "start", "idle.wake");
     }
+    // A running environment with an idle-stopped interceptor serves that service from its own
+    // StatefulSet; the start (the bench keeping it active, ruling 2026-10-13) brings the workspace back.
+    super::workspaces::wake_interceptors(&s, &e, now).await;
     let pushed = pushed_volumes(&s, kube(&s)?, &e.spec.owner).await?;
     Ok((StatusCode::ACCEPTED, Json(env_doc(&e, &pushed))).into_response())
 }

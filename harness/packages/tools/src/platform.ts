@@ -60,13 +60,6 @@ export async function apiJson<T>(method: string, path: string, body?: unknown): 
 
 export const seg = encodeURIComponent;
 
-/** Keeps a followed environment from idling while a turn runs. Best effort: never wakes, errors dropped. */
-export async function envHold(id: string): Promise<void> {
-  try {
-    await apiJson("POST", `/v1/environments/${seg(id)}/hold`);
-  } catch {}
-}
-
 /** Every environment the person's spaces follow, deduped. */
 export async function followedEnvs(): Promise<string[]> {
   const m = await apiJson<{ environment?: string }[]>("GET", "/v1/me/environments");

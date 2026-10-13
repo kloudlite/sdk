@@ -164,7 +164,15 @@ checkpoint/restore project; nothing here blocks it.
 
 ## Environments
 
-An environment's users are workspaces and laptops, never sessions directly.
+An environment's users are workspaces, laptops and the bench. Owner rulings 2026-10-13:
+"environment don't need any call it should come active the moment it is connected to a session",
+then "when bench is active it should keep the environment active and related workspaces should come
+active when there are intercepts." While the bench daemon runs, its hold beat (once at start, then
+every 60 s, with or without a session or tool call) keeps each environment the person's spaces
+follow (`envKeep`): an idle-stopped one is started, a running one is held, and each workspace its
+`spec.intercepts` name is started if idle-stopped, else held. A person's stop has no `idle_since`
+and stays stopped. `start_env` also wakes the idle-stopped workspaces its `spec.intercepts` name
+(`wake_interceptors`), so the intercepted services come back to them.
 
 **Followers** of environment E, computed by the agent that owns E from the reflector caches
 (`Ctx::workspaces()`; `None` means UNKNOWN, so the verdict is `Keep`):

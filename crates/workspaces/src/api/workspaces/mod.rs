@@ -752,6 +752,40 @@ pub(crate) async fn wake_env(s: &ApiState, caller: &str, env: &crd::Environment,
     }
 }
 
+/// Wakes the idle-stopped workspaces an environment's intercepts name, so a woken environment
+/// serves those services from the workspaces again, not from its own StatefulSets (owner ruling
+/// 2026-10-13). A person's stop stays stopped (R2). Same quota gate as `start_ws`; over quota or a
+/// failed read or patch is logged and skipped: the environment's own start must not fail on it.
+pub(crate) async fn wake_interceptors(s: &ApiState, env: &crd::Environment, now: k8s_openapi::jiff::Timestamp) {
+    let eid = kube::ResourceExt::name_any(env);
+    let Ok(c) = kube(s) else { return };
+    let api = Api::<crd::Workspace>::all(c.clone());
+    let names: std::collections::BTreeSet<&str> = env.spec.intercepts.iter().map(|i| i.workspace.as_str()).collect();
+    for ws in names {
+        let w = match api.get_opt(ws).await {
+            Ok(Some(w)) => w,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(id = ws, env = eid, error = %e, "idle.wake read failed");
+                continue;
+            }
+        };
+        if w.spec.desired_state != DesiredState::Running || crd::wants_pod(&w) || crd::is_bench(&w) {
+            continue;
+        }
+        let owner_of = if w.spec.team.is_empty() { w.spec.owner.clone() } else { w.spec.team.clone() };
+        if super::guard_fill(s, &owner_of, !w.spec.team.is_empty()).await.is_err() {
+            tracing::warn!(id = ws, env = eid, "idle.wake skipped: over quota");
+            continue;
+        }
+        let idle = w.status.as_ref().and_then(|st| st.idle_since.as_deref());
+        match api.patch(ws, &PatchParams::default(), &Patch::Merge(&wake_patch(&wake_at(now, idle)))).await {
+            Ok(_) => tracing::info!(kind = "workspace", id = ws, by = "env-start", "idle.wake"),
+            Err(e) => tracing::warn!(id = ws, env = eid, error = %e, "idle.wake patch failed"),
+        }
+    }
+}
+
 /// Environments an idle-stopped follower's start must bring back: asked to run but idle-stopped,
 /// and either the workspace's space environment or intercepted through it.
 pub(crate) fn envs_to_wake(ws: &str, space_env: Option<&str>, envs: &[crd::Environment]) -> Vec<String> {

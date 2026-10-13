@@ -14,7 +14,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import type { Backend } from "./index.ts";
 import { serve } from "./serve.ts";
 import { Peer } from "./wire.ts";
-import { envHold, followedEnvs, inflight, podHold, touched } from "@kloudlite-tui/tools";
+import { envKeep, followedEnvs, inflight, podHold, touched } from "@kloudlite-tui/tools";
 
 export const sockPath = () => process.env.KL_HOST_SOCK ?? join(homedir(), ".kl", "host.sock");
 
@@ -43,20 +43,20 @@ export type HoldDeps = {
   touched: Map<string, number>;
   inflight: Map<string, number>;
   podHold: (ws: string) => Promise<void>;
-  envHold: (env: string) => Promise<void>;
+  envKeep: (env: string) => Promise<void>;
   listEnvs: () => Promise<string[]>;
 };
 
 /** One hold pass: workspaces with a call in flight (Claude Code sessions run no backend turn) plus,
- * while a backend turn runs, those touched since it began; then every followed environment if any
- * workspace is held. Best effort, never throws. */
+ * while a backend turn runs, those touched since it began; then, always, every followed environment
+ * and its intercepting workspaces: the bench being up keeps them active (owner ruling 2026-10-13).
+ * Best effort, never throws. */
 export async function holdBeat(d: HoldDeps): Promise<void> {
   try {
     const held = new Set(d.inflight.keys());
     if (d.busy() > 0) for (const ws of holdTargets(d.touched, d.oldest())) held.add(ws);
-    if (!held.size) return;
     await Promise.all([...held].map((ws) => d.podHold(ws).catch(() => {})));
-    for (const e of await d.listEnvs()) await d.envHold(e).catch(() => {});
+    for (const e of await d.listEnvs()) await d.envKeep(e).catch(() => {});
   } catch {}
 }
 
@@ -116,12 +116,14 @@ if (import.meta.main) {
       console.error("host.busy", e);
     }
   };
+  const hold = () => void holdBeat({ busy: () => b.busyCount, oldest: () => b.oldestTurnStart(), touched, inflight, podHold, envKeep, listEnvs: followedEnvs });
   beat();
+  hold(); // the bench coming up wakes its environments now, not a minute later
   // ponytail: fixed 60 s hold beat (every 12th 5 s tick); the tool server idles out far slower
   let ticks = 0;
   setInterval(() => {
     beat();
-    if (++ticks % 12 === 0) void holdBeat({ busy: () => b.busyCount, oldest: () => b.oldestTurnStart(), touched, inflight, podHold, envHold, listEnvs: followedEnvs });
+    if (++ticks % 12 === 0) hold();
   }, 5000);
   await b.resumeAsks();
 }

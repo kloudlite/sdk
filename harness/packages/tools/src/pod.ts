@@ -3,7 +3,7 @@
 //! The names are a FIXED list so the tools exist even while the pod is not Ready; the pod's own
 //! description/schema replace the permissive fallback when it answers at construction.
 import type { ToolDef } from "./index.ts";
-import { api, apiJson } from "./platform.ts";
+import { api, apiJson, seg } from "./platform.ts";
 import { ensureRunning } from "./ensure.ts";
 
 export const POD_TOOLS = [
@@ -152,6 +152,25 @@ export async function podHold(ws: string): Promise<void> {
   try {
     const a = await lookup(ws);
     await fetch(`http://${a.address}/hold`, { method: "POST", headers: headers(a), signal: AbortSignal.timeout(5_000) });
+  } catch {}
+}
+
+/** The bench is up (owner ruling 2026-10-13: "when bench is active it should keep the environment
+ * active and related workspaces should come active when there are intercepts"): keeps environment
+ * `id` and the workspaces its intercepts name active. Wakes what idled out (a person's stop has no
+ * idle_since and stays stopped), holds what runs. Starts only an idle-stopped one: a start rewrites
+ * spec.wakeAt. The api's start_env also wakes the interceptors. Best effort, errors dropped. */
+export async function envKeep(id: string): Promise<void> {
+  try {
+    const d = await apiJson<any>("GET", `/v1/environments/${seg(id)}`);
+    if (d?.idle_since) await apiJson("POST", `/v1/environments/${seg(id)}/start`);
+    else if (d?.state !== "running") return;
+    else await apiJson("POST", `/v1/environments/${seg(id)}/hold`);
+    for (const ws of new Set<string>((d.intercepts ?? []).map((i: any) => i.workspace))) {
+      const w = await apiJson<any>("GET", `/v1/workspaces/${seg(ws)}`).catch(() => undefined);
+      if (w?.idle_since) await apiJson("POST", `/v1/workspaces/${seg(ws)}/start`).catch(() => {});
+      else await podHold(ws);
+    }
   } catch {}
 }
 
