@@ -33,18 +33,31 @@ class ApiError(Exception):
 
 
 class Kloudlite:
-    def __init__(self, base_url: str, token: str | None = None, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str | None = None,
+                 hub_url: str | None = None, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
+        self.hub_url = hub_url.rstrip("/") if hub_url else None
         self._token = token
         self._timeout = timeout
         self.repos = Repos(self)
+        self.models = HubRepos(self, "model")
+        self.datasets = HubRepos(self, "dataset")
 
     # ── request core ──────────────────────────────────────────────────────
 
     def request(self, method: str, path: str, body=None, query: dict | None = None):
         """One HTTP round trip. Returns parsed JSON (or None on an empty body);
         raises :class:`ApiError` on any non-2xx status."""
-        url = self.base_url + path
+        return self._request(self.base_url, method, path, body, query)
+
+    def hub_request(self, method: str, path: str, body=None, query: dict | None = None):
+        """The same round trip against the hub listener (models and datasets)."""
+        if not self.hub_url:
+            raise ValueError("this client has no hub_url; pass one to reach models and datasets")
+        return self._request(self.hub_url, method, path, body, query)
+
+    def _request(self, base: str, method: str, path: str, body=None, query: dict | None = None):
+        url = base + path
         if query:
             q = {k: v for k, v in query.items() if v is not None}
             if q:
@@ -200,6 +213,46 @@ class Repos:
 
     def signature(self, repo: str, sha: str):
         return self._c.request("GET", self._path(repo, f"/commits/{_seg(sha)}/signature"))
+
+
+class HubRepos:
+    """Model and dataset repositories, on the hub listener (Hugging Face Hub API).
+    Management level: create, read, refs, visibility, delete — files move with
+    git/`huggingface_hub` against the same hub URL. Every ``repo`` is one
+    ``"owner/name"`` string, exactly as in :class:`Repos`."""
+
+    def __init__(self, client: Kloudlite, kind: str):
+        self._c = client
+        self._kind = kind
+        self._plural = {"model": "models", "dataset": "datasets"}[kind]
+
+    def _body(self, repo: str, extra: dict | None = None) -> dict:
+        owner, name = _split(repo)
+        out = {"name": name, "organization": owner, "type": self._kind}
+        out.update(extra or {})
+        return out
+
+    def _path(self, repo: str, tail: str = "") -> str:
+        owner, name = _split(repo)
+        return f"/api/{self._plural}/{_seg(owner)}/{_seg(name)}{tail}"
+
+    def create(self, repo: str, private: bool = True):
+        """Sent explicitly rather than trusting a server default: a model that was meant to be
+        private must not hinge on one."""
+        return self._c.hub_request("POST", "/api/repos/create", self._body(repo, {"private": private}))
+
+    def get(self, repo: str):
+        return self._c.hub_request("GET", self._path(repo))
+
+    def refs(self, repo: str):
+        """Branches and tags, as the hub spells them."""
+        return self._c.hub_request("GET", self._path(repo, "/refs"))
+
+    def set_private(self, repo: str, private: bool):
+        return self._c.hub_request("PUT", self._path(repo, "/settings"), {"private": private})
+
+    def delete(self, repo: str):
+        return self._c.hub_request("DELETE", "/api/repos/delete", self._body(repo))
 
 
 def _error_text(raw: bytes) -> str:

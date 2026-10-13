@@ -31,27 +31,53 @@ func (e *ApiError) Error() string { return fmt.Sprintf("%d: %s", e.Status, e.Mes
 
 type Client struct {
 	Repos *Repos
+	// Models and Datasets live on the hub listener; their calls fail with a
+	// plain error until a hub URL is given (New's hubURL, or NewWithHub).
+	Models   *HubRepos
+	Datasets *HubRepos
 
 	baseURL string
+	hubURL  string
 	token   string
 	http    *http.Client
 }
 
 // New makes a client. token may be empty for anonymous access to public data.
 func New(baseURL, token string) *Client {
+	return NewWithHub(baseURL, "", token)
+}
+
+// NewWithHub is New plus the hub listener's URL (models and datasets), e.g.
+// https://hub.example.com.
+func NewWithHub(baseURL, hubURL, token string) *Client {
 	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
+		hubURL:  strings.TrimRight(hubURL, "/"),
 		token:   token,
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
 	c.Repos = &Repos{c}
+	c.Models = &HubRepos{c: c, kind: "model", plural: "models"}
+	c.Datasets = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
 	return c
 }
 
 // Request makes one HTTP round trip. body (sent as JSON) and out (decoded from
 // the answer) may each be nil; any non-2xx status is an *ApiError.
 func (c *Client) Request(method, path string, query url.Values, body, out any) error {
-	u := c.baseURL + path
+	return c.send(c.baseURL, method, path, query, body, out)
+}
+
+// HubRequest is the same round trip against the hub listener.
+func (c *Client) HubRequest(method, path string, query url.Values, body, out any) error {
+	if c.hubURL == "" {
+		return fmt.Errorf("this client has no hub URL; use NewWithHub to reach models and datasets")
+	}
+	return c.send(c.hubURL, method, path, query, body, out)
+}
+
+func (c *Client) send(base, method, path string, query url.Values, body, out any) error {
+	u := base + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -416,6 +442,84 @@ func (r *Repos) Signature(repo, sha string) (map[string]any, error) {
 	var out map[string]any
 	err = r.c.Request("GET", p, nil, nil, &out)
 	return out, err
+}
+
+// HubRepos is model and dataset repositories, on the hub listener (Hugging
+// Face Hub API). Management level: create, read, refs, visibility, delete —
+// files move with git/huggingface_hub against the same hub URL. Every repo
+// argument is one "owner/name" string, exactly as in Repos.
+type HubRepos struct {
+	c      *Client
+	kind   string
+	plural string
+}
+
+func (h *HubRepos) body(repo string, extra map[string]any) (map[string]any, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"name": name, "organization": owner, "type": h.kind}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (h *HubRepos) path(repo, tail string) (string, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	return "/api/" + h.plural + "/" + seg(owner) + "/" + seg(name) + tail, nil
+}
+
+// Create sends private explicitly rather than trusting a server default.
+func (h *HubRepos) Create(repo string, private bool) (map[string]any, error) {
+	body, err := h.body(repo, map[string]any{"private": private})
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = h.c.HubRequest("POST", "/api/repos/create", nil, body, &out)
+	return out, err
+}
+
+func (h *HubRepos) Get(repo string) (map[string]any, error) {
+	p, err := h.path(repo, "")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = h.c.HubRequest("GET", p, nil, nil, &out)
+	return out, err
+}
+
+// Refs answers branches and tags, as the hub spells them.
+func (h *HubRepos) Refs(repo string) (map[string]any, error) {
+	p, err := h.path(repo, "/refs")
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = h.c.HubRequest("GET", p, nil, nil, &out)
+	return out, err
+}
+
+func (h *HubRepos) SetPrivate(repo string, private bool) error {
+	p, err := h.path(repo, "/settings")
+	if err != nil {
+		return err
+	}
+	return h.c.HubRequest("PUT", p, nil, map[string]any{"private": private}, nil)
+}
+
+func (h *HubRepos) Delete(repo string) error {
+	body, err := h.body(repo, nil)
+	if err != nil {
+		return err
+	}
+	return h.c.HubRequest("DELETE", "/api/repos/delete", nil, body, nil)
 }
 
 // The server answers errors as {"error": …} or plain text; take either.

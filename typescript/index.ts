@@ -15,6 +15,8 @@ const USER_AGENT = `kloudlite-sdk-typescript/${VERSION}`;
 
 export interface KloudliteOptions {
   baseUrl: string;
+  /** The hub listener (models and datasets), e.g. `https://hub.example.com`. */
+  hubUrl?: string;
   /** Omit for anonymous access to public data. */
   token?: string;
   /** Per-request timeout in milliseconds. Default 30 000. */
@@ -36,23 +38,39 @@ type Query = Record<string, string | number | boolean | undefined>;
 
 export class Kloudlite {
   readonly repos: Repos;
+  readonly models: HubRepos;
+  readonly datasets: HubRepos;
   private readonly baseUrl: string;
+  private readonly hubUrl?: string;
   private readonly token?: string;
   private readonly timeoutMs: number;
 
   constructor(opts: KloudliteOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this.hubUrl = opts.hubUrl?.replace(/\/+$/, "");
     this.token = opts.token;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.repos = new Repos(this);
+    this.models = new HubRepos(this, "model");
+    this.datasets = new HubRepos(this, "dataset");
   }
 
   /**
    * One HTTP round trip. Resolves to parsed JSON (or `null` on an empty body);
    * rejects with {@link ApiError} on any non-2xx status.
    */
-  async request<T = unknown>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
-    let url = this.baseUrl + path;
+  request<T = unknown>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+    return this.send(this.baseUrl, method, path, body, query);
+  }
+
+  /** The same round trip against the hub listener (models and datasets). */
+  hubRequest<T = unknown>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+    if (!this.hubUrl) throw new Error("this client has no hubUrl; pass one to reach models and datasets");
+    return this.send(this.hubUrl, method, path, body, query);
+  }
+
+  private async send<T>(base: string, method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+    let url = base + path;
     if (query) {
       const q = new URLSearchParams();
       for (const [k, v] of Object.entries(query)) {
@@ -259,6 +277,55 @@ export class Repos {
 
   signature(repo: string, sha: string) {
     return this.c.request("GET", this.path(repo, `/commits/${seg(sha)}/signature`));
+  }
+}
+
+/**
+ * Model and dataset repositories, on the hub listener (Hugging Face Hub API).
+ * Management level: create, read, refs, visibility, delete — files move with
+ * git/`huggingface_hub` against the same hub URL. Every `repo` is one
+ * `"owner/name"` string, exactly as in {@link Repos}.
+ */
+export class HubRepos {
+  private readonly plural: string;
+
+  constructor(
+    private readonly c: Kloudlite,
+    private readonly kind: "model" | "dataset",
+  ) {
+    this.plural = kind === "model" ? "models" : "datasets";
+  }
+
+  private body(repo: string, extra?: Record<string, unknown>) {
+    const [owner, name] = split(repo);
+    return { name, organization: owner, type: this.kind, ...extra };
+  }
+
+  private path(repo: string, tail = ""): string {
+    const [owner, name] = split(repo);
+    return `/api/${this.plural}/${seg(owner)}/${seg(name)}${tail}`;
+  }
+
+  /** `private` is sent explicitly rather than trusting a server default. */
+  create(repo: string, opts?: { private?: boolean }) {
+    return this.c.hubRequest("POST", "/api/repos/create", this.body(repo, { private: opts?.private ?? true }));
+  }
+
+  get(repo: string) {
+    return this.c.hubRequest("GET", this.path(repo));
+  }
+
+  /** Branches and tags, as the hub spells them. */
+  refs(repo: string) {
+    return this.c.hubRequest("GET", this.path(repo, "/refs"));
+  }
+
+  setPrivate(repo: string, isPrivate: boolean) {
+    return this.c.hubRequest("PUT", this.path(repo, "/settings"), { private: isPrivate });
+  }
+
+  delete(repo: string) {
+    return this.c.hubRequest("DELETE", "/api/repos/delete", this.body(repo));
   }
 }
 
