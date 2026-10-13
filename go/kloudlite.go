@@ -288,15 +288,16 @@ func (r *CodeRepos) Fork(src, dst string, opts RepoOpts) (*Repo, error) {
 	return &out, nil
 }
 
-// ImportGithub makes a new repo whose contents are fetched from a PUBLIC GitHub
-// repository — github is its "owner/name" pair, never a URL. The server answers
-// 202: the repo exists but the fetch runs in the background; poll ImportStatus.
-func (r *CodeRepos) ImportGithub(repo, github string, opts RepoOpts) (*Repo, error) {
+// ImportGit makes a new repo whose contents are fetched from a PUBLIC git
+// remote — git is a strict "https://" URL (GitHub is one host among any). The
+// server answers 202: the repo exists but the fetch runs in the background;
+// poll ImportStatus.
+func (r *CodeRepos) ImportGit(repo, git string, opts RepoOpts) (*Repo, error) {
 	body, err := newRepoBody(repo, opts)
 	if err != nil {
 		return nil, err
 	}
-	body["github"] = github
+	body["git"] = git
 	var out Repo
 	if err := r.c.Request("POST", "/v1/repos/import", nil, body, &out); err != nil {
 		return nil, err
@@ -522,16 +523,17 @@ func (h *HubRepos) Delete(repo string) error {
 	return h.c.HubRequest("DELETE", "/api/repos/delete", nil, body, nil)
 }
 
-// ImportHf makes a new repo whose contents — large files included — are fetched
-// from a PUBLIC Hugging Face repo of the same kind; hf is its "owner/name" pair,
-// never a URL. The server answers 202; poll ImportStatus.
-func (h *HubRepos) ImportHf(repo, hf string, private bool) (map[string]any, error) {
+// ImportGit makes a new repo whose contents — large files included, through
+// git-lfs — are fetched from a PUBLIC git remote; git is a strict "https://"
+// URL (the Hugging Face Hub is one host among any). The server answers 202;
+// poll ImportStatus.
+func (h *HubRepos) ImportGit(repo, git string, private bool) (map[string]any, error) {
 	p, err := h.path(repo, "/import")
 	if err != nil {
 		return nil, err
 	}
 	var out map[string]any
-	err = h.c.HubRequest("POST", p, nil, map[string]any{"from": hf, "private": private}, &out)
+	err = h.c.HubRequest("POST", p, nil, map[string]any{"from": git, "private": private}, &out)
 	return out, err
 }
 
