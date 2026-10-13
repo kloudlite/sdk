@@ -89,7 +89,7 @@ kl.workspaces.set_packages("dev", ["nodejs@22", "ripgrep", "jq"])
 
 # The IDE tools: every workspace runs a tool server, and ide() binds a client
 # to it — read/write/edit/patch/glob/grep, exec and detached processes, watches,
-# the graft code-graph tools and container builds. list() carries every schema.
+# and container builds. list() carries every schema.
 ide = kl.workspaces.ide("dev")      # inside the fleet (a bench); from a laptop:
                                     # `kl-connect ws ide dev` then Ide("http://127.0.0.1:7788", token)
 ide.write("notes.md", "# plan\n")
@@ -99,7 +99,6 @@ ide.grep("TODO", glob="**/*.rs")
 job = ide.exec(["cargo", "test"], timeout_ms=600_000, tail=40)
 proc = ide.exec("npm run dev", detach=True)          # → {"id"}; then:
 ide.process_output(proc["id"]); ide.process_kill(proc["id"])
-ide.graft_find_code("where are refs updated?")       # the repo context graph
 kl.workspaces.update_packages("dev")                       # re-resolve pins
 kl.workspaces.delete("dev")                                # snapshots survive on the volume
 kl.volumes.delete_snapshot("dev", snaps[0]["id"])

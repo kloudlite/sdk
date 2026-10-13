@@ -375,33 +375,6 @@ class Ide:
     def watch_stop(self, id: str):
         return self.call("watch_stop", id=id)
 
-    # ── graft (the repo context graph) ────────────────────────────────────
-    def graft_find_code(self, query: str, limit: int | None = None, full: bool | None = None,
-                        in_: str | None = None):
-        return self.call("graft_find_code", query=query, limit=limit, full=full, **{"in": in_})
-
-    def graft_find_all(self, pattern: str, in_: str | None = None,
-                       ignore_case: bool | None = None, fixed: bool | None = None):
-        return self.call("graft_find_all", pattern=pattern, ignore_case=ignore_case,
-                         fixed=fixed, **{"in": in_})
-
-    def graft_trace_calls(self, symbol: str, direction: str | None = None, depth=None,
-                          in_: str | None = None):
-        return self.call("graft_trace_calls", symbol=symbol, direction=direction, depth=depth,
-                         **{"in": in_})
-
-    def graft_file_api(self, file: str):
-        return self.call("graft_file_api", file=file)
-
-    def graft_repo_map(self, max_dirs: int | None = None):
-        return self.call("graft_repo_map", max_dirs=max_dirs)
-
-    def graft_build(self, deep: bool | None = None, no_reuse: bool | None = None):
-        return self.call("graft_build", deep=deep, no_reuse=no_reuse)
-
-    def graft_blast(self, base: str | None = None, depth=None):
-        return self.call("graft_blast", base=base, depth=depth)
-
     # ── containers (the hidden per-owner builder) ─────────────────────────
     def container_build(self, tags: list, context: str | None = None, file: str | None = None,
                         build_args: list | None = None, platform: str | None = None,
