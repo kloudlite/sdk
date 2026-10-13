@@ -118,6 +118,25 @@ public class Kloudlite {
                 "description", description == null ? "" : description));
         }
 
+        /**
+         * A new repo whose contents are fetched from a PUBLIC GitHub repository — {@code github}
+         * is its "owner/name" pair, never a URL. Answers 202: the repo exists but the fetch runs
+         * in the background; poll {@link #importStatus}.
+         */
+        public String importGithub(String repo, String github, String visibility, String description)
+                throws IOException, InterruptedException {
+            String[] on = split(repo);
+            return request("POST", "/v1/repos/import", obj(
+                "owner", on[0], "name", on[1], "github", github,
+                "visibility", visibility == null ? "private" : visibility,
+                "description", description == null ? "" : description));
+        }
+
+        /** {from, state: queued|running|done|failed, detail?} for an imported repo. */
+        public String importStatus(String repo) throws IOException, InterruptedException {
+            return request("GET", path(repo, "/import"), null);
+        }
+
         // branches
         public String branches(String repo) throws IOException, InterruptedException {
             return request("GET", path(repo, "/branches"), null);

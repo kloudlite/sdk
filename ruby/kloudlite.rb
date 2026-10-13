@@ -111,6 +111,21 @@ module Kloudlite
                  body: { owner: owner, name: name, visibility: visibility, description: description })
     end
 
+    # A new repo whose contents are fetched from a PUBLIC GitHub repository — +github+ is its
+    # "owner/name" pair, never a URL. Answers 202: the repo exists but the fetch runs in the
+    # background; poll +import_status+.
+    def import_github(repo, github, visibility: "private", description: "")
+      owner, name = split(repo)
+      @c.request("POST", "/v1/repos/import",
+                 body: { owner: owner, name: name, github: github,
+                         visibility: visibility, description: description })
+    end
+
+    # {"from", "state" (queued|running|done|failed), "detail"?} for an imported repo.
+    def import_status(repo)
+      @c.request("GET", path(repo, "/import"))
+    end
+
     # branches
     def branches(repo)
       @c.request("GET", path(repo, "/branches"))
