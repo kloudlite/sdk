@@ -38,12 +38,13 @@ test("every mcp__plugin_kloudlite_kl__ name in the plugin is one the bench serve
     for (const m of text.matchAll(/mcp__plugin_kloudlite_kl__([a-z_]+)/g)) expect(names.has(m[1]!) ? m[1] : `missing: ${m[1]}`).toBe(m[1]!);
 });
 
-test("the two agents have the kl tools only, and no lifecycle tool", () => {
+test("the two agents have the kl tools (and ToolSearch to load them) only, and no lifecycle tool", () => {
   const a = agents();
   expect(a.length).toBe(2);
   for (const text of a) {
     const tools = text.match(/^tools: (.*)$/m)![1]!.split(", ");
-    for (const t of tools) expect(t).toStartWith("mcp__plugin_kloudlite_kl__");
+    // ToolSearch loads the kl tools when they were deferred; it runs nothing
+    for (const t of tools) if (t !== "ToolSearch") expect(t).toStartWith("mcp__plugin_kloudlite_kl__");
     // kl-workspace may stop and push its own workspace; the subagent may not
     const own = text.includes("name: kl-workspace") ? "" : "|stop|push";
     for (const t of tools) expect(t).not.toMatch(new RegExp(`__(workspace_(list|create|clone|restore|start|delete${own})|env_(create|start|stop|delete|clone|push|restore.*))$`));

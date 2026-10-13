@@ -76,8 +76,8 @@ Do this for each `DONE` report of a task.
 
 1. Write `Task <N>: done ...` in the ledger.
 2. Use `workspace_clone` on the workspace. Give the clone the name `<ws>-review-<N>`. Poll `workspace_get` until it is `ready`.
-3. Start a `kl-subagent` agent with `name: "<ws>/review-<N>"`, `run_in_background: true` and this prompt: `Clone <clone name> (<clone id>) of workspace <ws>. Review only. Range <base>..<head>. Spec <spec path>. Task: <the task text, without a change>`.
-4. The reviewer report starts with `APPROVED` or `FINDINGS`. Delete the review clone with `workspace_delete`. A review clone has no commits, so this delete loses no work.
+3. Start a `kl-subagent` agent with `name: "<ws>_review-<N>"`. Agent names cannot have `/`, and the underscore keeps it different from the clone name. Use `run_in_background: true` and this prompt: `Clone <clone name> (<clone id>) of workspace <ws>. Review only. Range <base>..<head>. Spec <spec path>. Task: <the task text, without a change>`.
+4. The reviewer report starts with `APPROVED` or `FINDINGS`. Delete the review clone with `workspace_delete`. A review clone has no commits, so this delete loses no work. Stop the reviewer with `TaskStop` (`task_id: <ws>_review-<N>`).
 5. If the report is `APPROVED`, write `Task <N>: complete` in the ledger. Then send the tasks that this task let start.
 6. If the report is `FINDINGS`, send the findings to the workspace without a change: "Review findings for Task <N>: <findings>. Fix each one, or give the reason that it is not a problem. Run the tests, push, and report `DONE` with the base and head commits." Then do this review again with a new clone.
 7. Do a maximum of three review rounds for one task. If findings stay after round three, stop that task. Tell the person the findings and ask for a decision.

@@ -34,8 +34,9 @@ Example: the person writes "stop the backend". `workspace_list` shows the name `
 |---|---|
 | `Agent` (`subagent_type: kloudlite:kl-workspace`, `name: <ws name>`, `run_in_background: true`) | Start the agent of a workspace with its first ask. One agent for each workspace. |
 | `SendMessage` (`to: <ws name>`) | Give the next ask to the agent of a workspace that already exists. |
-| `Agent` (`subagent_type: kloudlite:kl-subagent`, `name: <ws name>/<part>`, `run_in_background: true`) | Start a subagent for a `SUBAGENT` request of a workspace. |
-| `SendMessage` (`to: <ws name>/<part>`) | Give a subagent the rebase message. |
+| `Agent` (`subagent_type: kloudlite:kl-subagent`, `name: <ws name>_<part>`, `run_in_background: true`) | Start a subagent for a `SUBAGENT` request of a workspace. |
+| `SendMessage` (`to: <ws name>_<part>`) | Give a subagent the rebase message. |
+| `TaskStop` (`task_id: <agent name>`) | Stop a subagent or a reviewer after you act on its last report. |
 | `scratch_read`, `scratch_write` | Keep your contract files and your progress ledgers. |
 
 **Workspaces**
@@ -96,7 +97,7 @@ A workspace agent can ask for subagents for parts of its own task (`SUBAGENT`). 
 
 Each workspace has one `kl-workspace` agent. Its name is the name of the workspace. `/kloudlite:on` starts one for each `ready` workspace with no goal.
 
-1. **Give work.** If the agent exists, use `SendMessage { to: "<ws name>", message: <ask> }`. If not, use `Agent` with `name: "<ws name>"`, `run_in_background: true` and this prompt: `Workspace <name> (<id>). <ask>`. Give one ask at a time to each workspace.
+1. **Give work.** If the agent exists, use `SendMessage { to: "<ws name>", message: <ask> }`. If not, use `Agent` with `name: "<ws name>"`, `run_in_background: true` and this prompt: `Workspace <name> (<id>). <ask>`. Give one ask at a time to each workspace. One message has one ask. Send the next ask only after the report of the last ask.
 2. **Reports.** An agent ends its turn with a report. The report comes to you as the result of the agent. Its first word is the kind: `DONE`, `BLOCKED`, `NEED` or `SUBAGENT`. Do the necessary action for each report.
 3. **Progress.** To answer "What is each workspace doing?", give the state of each agent: working, or its last report. Do not interrupt an agent that works.
 
@@ -129,6 +130,8 @@ Do not give file paths, languages, libraries, layout or steps. The workspace dec
 
 **When you get `BLOCKED`:** Tell the person the reason in the report, in its words. Do not start a second agent for the same workspace: an agent that exists keeps its name. When the cause is fixed, give the next ask to the same agent with `SendMessage`.
 
+Exception: the agent reports that its kl tools are not available. A message cannot give it tools. Tell the person to run `/mcp` and reconnect `plugin:kloudlite:kl`. When the person says that it is done, stop the old agent with `TaskStop` (`task_id: <ws name>`). Then start a new agent with the same name and the same ask.
+
 ## Show running processes
 
 The person sees the output of a process that runs in a workspace as a background shell of this session. You do not run anything on the laptop: the shell only prints the output of the process.
@@ -155,10 +158,10 @@ For each part, do these steps. Do all parts at the same time.
 
 1. Use `workspace_clone` on the workspace. Give the clone the name `<ws>-<part>`.
 2. Poll `workspace_get` until the clone is `ready`. If it becomes `error` or `deleted`, tell the workspace `subagent <part>: clone failed` with `SendMessage`.
-3. Start a `kl-subagent` agent with `name: "<ws>/<part>"`, `run_in_background: true` and this prompt: `Clone <clone name> (<clone id>) of workspace <ws>. Part <part>. Task: <the task, without a change>`.
+3. Start a `kl-subagent` agent with `name: "<ws>_<part>"`. Agent names cannot have `/`. The underscore keeps the agent name different from the clone name `<ws>-<part>`. Use `run_in_background: true` and this prompt: `Clone <clone name> (<clone id>) of workspace <ws>. Part <part>. Task: <the task, without a change>`.
 4. When the subagent ends, give its report to the workspace with `SendMessage`, without a change: `subagent <part> report:` then the report.
 5. The workspace takes the commits and answers with one of these lines:
-   - `TAKEN <part> pushed <sha>` or `TAKEN <part> no code changes`: Delete the clone with `workspace_delete`.
+   - `TAKEN <part> pushed <sha>` or `TAKEN <part> no code changes`: Delete the clone with `workspace_delete`. Stop the subagent with `TaskStop` (`task_id: <ws>_<part>`).
    - `REBASE <part> <command>`: Send the subagent this message: "The parent's branch moved. Run `<command>` with `exec`. Resolve each conflict, keep the two sides, run the tests, then `git rebase --continue` and reply done." When the subagent replies, give the reply to the workspace again. Do this a maximum of three times.
    - `BLOCKED <part> push failed ...`: Keep the clone. Tell the person.
 

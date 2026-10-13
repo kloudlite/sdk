@@ -1,5 +1,5 @@
-// The Kloudlite side pane: workspaces (working / idle / their api state), then environments with their
-// services (ports, state, the intercepting workspace) at the bottom, beside the transcript while kl
+// The Kloudlite side pane: workspaces (working / idle / their api state; a clone under the workspace it
+// was cloned from), then environments with their services (ports, state, the intercepting workspace) at the bottom, beside the transcript while kl
 // mode is on. kl mode is the flag file
 // `~/.claude/kl-mode/<session id>` that `kl-connect mode prompt` writes on /kloudlite:on, so the
 // pane follows the same switch as the tool gate: it opens with it and closes with it.
@@ -13,7 +13,7 @@
 // every kl tool call, the subagents' included; one that names a `workspace` marks it working until
 // the call ends plus `GRACE_MS`.
 import type { Register } from 'claude-code'
-import { activity, envCurrent, environments, mark, snapName, workspaces, type Env, type Row, type Service, type Snap } from './panel'
+import { activity, envCurrent, environments, mark, snapName, tree, workspaces, type Env, type Row, type Service, type Snap } from './panel'
 import { register as tools } from './tools'
 
 const PANE = 'kloudlite'
@@ -124,10 +124,11 @@ export const register: Register = on => {
       const c = loud(s)
       return c ? <Text color={c}>{s}</Text> : <Text dimColor>{s}</Text>
     }
-    const row = (r: Row, bold: boolean) => {
+    const row = (r: Row, bold: boolean, branch = '') => {
       const m = mark(r.state)
       return (
         <Box gap={1}>
+          {branch ? <Text dimColor>{branch}</Text> : null}
           <Text color={m.color}>{m.glyph}</Text>
           <Box flexGrow={1}>
             <Text bold={bold} wrap="truncate-end">{r.name}</Text>
@@ -136,7 +137,7 @@ export const register: Register = on => {
         </Box>
       )
     }
-    // services as a tree under their environment, names in one column so the ports line up
+    // services listed under their environment (no tree lines), names in one column so the ports line up
     const env = (x: Env) => {
       const w = Math.max(...x.services.map(s => s.name.length), 0) + 2
       return (
@@ -151,9 +152,8 @@ export const register: Register = on => {
               {x.state === 'running' ? <Text color="warning">+ live changes</Text> : null}
             </Box>
           ) : null}
-          {x.services.map((s: Service, i) => (
-            <Box gap={1}>
-              <Text dimColor>{i === x.services.length - 1 ? '└' : '├'}</Text>
+          {x.services.map((s: Service) => (
+            <Box gap={1} paddingLeft={2}>
               <Text color={s.mark.color}>{s.mark.glyph}</Text>
               <Box width={w}>
                 <Text wrap="truncate-end">{s.name}</Text>
@@ -191,7 +191,9 @@ export const register: Register = on => {
           'WORKSPACES',
           state.ws.length,
           state.ws.length ? (
-            <Box flexDirection="column">{state.ws.map(w => row(live(w), false))}</Box>
+            <Box flexDirection="column">
+              {tree(state.ws).map(t => row(live(t.row), false, t.depth ? `${'  '.repeat(t.depth - 1)}${t.last ? '└' : '├'}` : ''))}
+            </Box>
           ) : (
             <Text dimColor>No workspaces</Text>
           ),
