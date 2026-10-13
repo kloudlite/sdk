@@ -471,29 +471,6 @@ export class Ide {
     return this.call("watch_stop", { id });
   }
 
-  // graft (the repo context graph)
-  graftFindCode(query: string, opts?: { limit?: number; full?: boolean; in?: string }) {
-    return this.call("graft_find_code", { query, ...opts });
-  }
-  graftFindAll(pattern: string, opts?: { in?: string; ignore_case?: boolean; fixed?: boolean }) {
-    return this.call("graft_find_all", { pattern, ...opts });
-  }
-  graftTraceCalls(symbol: string, opts?: { direction?: "in" | "out"; depth?: number | "all"; in?: string }) {
-    return this.call("graft_trace_calls", { symbol, ...opts });
-  }
-  graftFileApi(file: string) {
-    return this.call("graft_file_api", { file });
-  }
-  graftRepoMap(maxDirs?: number) {
-    return this.call("graft_repo_map", { max_dirs: maxDirs });
-  }
-  graftBuild(opts?: { deep?: boolean; no_reuse?: boolean }) {
-    return this.call("graft_build", { ...opts });
-  }
-  graftBlast(opts?: { base?: string; depth?: number | "all" }) {
-    return this.call("graft_blast", { ...opts });
-  }
-
   // containers (the hidden per-owner builder)
   containerBuild(
     tags: string[],

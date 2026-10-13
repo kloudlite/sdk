@@ -710,7 +710,7 @@ func (w *Workspaces) Ide(id string) (*Ide, error) {
 // plain HTTP — List answers every tool with its JSON schema (the authority on
 // arguments) and Call runs one with an args map; nil-valued and absent keys
 // mean "the tool's own default". The typed helpers cover the everyday files
-// and exec calls; watch_*, graft_* and container_* go through Call with the
+// and exec calls; watch_* and container_* go through Call with the
 // arguments the listing names.
 type Ide struct {
 	url   string

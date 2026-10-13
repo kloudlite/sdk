@@ -329,7 +329,6 @@ module Kloudlite
   # A workspace's tool server (`kl ide serve`): the full tool set over plain HTTP — GET /tools
   # lists every tool with its schema, POST /tools/{name} runs one. +call+ takes anything the
   # listing names; nil arguments are dropped, so every optional means "the tool's own default".
-  # The +in+ argument of the graft tools is spelled +in_+ (a Ruby keyword otherwise).
   class Ide
     def initialize(url, token: nil, timeout: 630)
       @url = url.sub(%r{/+\z}, "")
@@ -343,7 +342,7 @@ module Kloudlite
     end
 
     def call(name, **args)
-      body = args.compact.transform_keys { |k| k == :in_ ? "in" : k.to_s }
+      body = args.compact.transform_keys(&:to_s)
       http("POST", "/tools/#{URI.encode_uri_component(name)}", body)
     end
 
@@ -408,35 +407,6 @@ module Kloudlite
 
     def watch_stop(id)
       call("watch_stop", id: id)
-    end
-
-    # graft (the repo context graph)
-    def graft_find_code(query, limit: nil, full: nil, in_: nil)
-      call("graft_find_code", query: query, limit: limit, full: full, in_: in_)
-    end
-
-    def graft_find_all(pattern, in_: nil, ignore_case: nil, fixed: nil)
-      call("graft_find_all", pattern: pattern, in_: in_, ignore_case: ignore_case, fixed: fixed)
-    end
-
-    def graft_trace_calls(symbol, direction: nil, depth: nil, in_: nil)
-      call("graft_trace_calls", symbol: symbol, direction: direction, depth: depth, in_: in_)
-    end
-
-    def graft_file_api(file)
-      call("graft_file_api", file: file)
-    end
-
-    def graft_repo_map(max_dirs: nil)
-      call("graft_repo_map", max_dirs: max_dirs)
-    end
-
-    def graft_build(deep: nil, no_reuse: nil)
-      call("graft_build", deep: deep, no_reuse: no_reuse)
-    end
-
-    def graft_blast(base: nil, depth: nil)
-      call("graft_blast", base: base, depth: depth)
     end
 
     # containers (the hidden per-owner builder)
