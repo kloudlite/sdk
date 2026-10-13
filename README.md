@@ -27,6 +27,7 @@ languages differ only in casing (`openPull` / `OpenPull`):
 kl = Kloudlite("https://api.example.com", token="…")
 
 kl.repos.create(owner="acme", name="payments", visibility="private", description="…")
+kl.repos.fork("acme", "payments", owner="me", name="payments")   # objects + refs, private by default
 kl.repos.list("acme")
 kl.repos.get("acme", "payments")
 kl.repos.update("acme", "payments", visibility="public")
@@ -38,6 +39,8 @@ kl.repos.protection("acme", "payments")
 kl.repos.protect("acme", "payments", pattern="main")
 
 pr = kl.repos.open_pull("acme", "payments", title="…", head="fix", base="main")
+# from a fork: head names the fork's branch, proposed onto this repo's base
+kl.repos.open_pull("acme", "payments", title="…", head="fix", base="main", head_repo="me/payments")
 kl.repos.pulls("acme", "payments", state="open")
 kl.repos.pull("acme", "payments", pr["number"])
 kl.repos.comment("acme", "payments", pr["number"], "LGTM")
@@ -50,5 +53,5 @@ kl.repos.commit("acme", "payments", branch="main", message="…",
 kl.repos.signature("acme", "payments", "<commit sha>")
 ```
 
-Not there yet: **fork** — the server has no user-facing fork endpoint; the
-module grows a `fork` method the day one exists.
+A cross-repo pull's diff is read with the mirror spelling:
+`kl.repos.compare("acme", "payments", base="main", head="pull/7/head")`.
