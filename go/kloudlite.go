@@ -66,13 +66,6 @@ func NewWithHub(baseURL, hubURL, token string) *Client {
 	return c
 }
 
-// Regions lists what an admin has registered — a workspace is created into one of them.
-func (c *Client) Regions() ([]map[string]any, error) {
-	var out []map[string]any
-	err := c.Request("GET", "/v1/regions", nil, nil, &out)
-	return out, err
-}
-
 // Quota answers the ceiling and what is against it; an empty owner means the caller's own.
 func (c *Client) Quota(owner string) (map[string]any, error) {
 	q := url.Values{}
@@ -580,8 +573,10 @@ type Workspaces struct{ c *Client }
 // ("owner/name", with Branch); Packages are nixpkgs attributes, optionally
 // pinned ("attr@version"). An empty Image means the platform default.
 type NewWorkspace struct {
-	Name    string `json:"name"`
-	Region  string `json:"region"`
+	Name string `json:"name"`
+	// Empty means the deployment's one active region; it matters only on a
+	// multi-region fleet.
+	Region  string `json:"region,omitempty"`
 	QuotaGb int64  `json:"quota_gb"`
 	// Empty means personal.
 	Team     string   `json:"team,omitempty"`
