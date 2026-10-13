@@ -8,37 +8,37 @@ require_relative "kloudlite"
 
 kl = Kloudlite::Client.new(ENV.fetch("KLOUDLITE_URL"), token: ENV.fetch("KLOUDLITE_TOKEN"))
 
-up = %w[acme payments] # the repo being contributed to
-me = "dev"             # the handle the fork lands under
+upstream = "acme/payments" # the repo being contributed to
+my_fork = "dev/payments"   # where the fork lands (a handle or a team slug)
 
 begin
   # 1. Fork: objects and refs, never the upstream's pull requests or settings.
-  fork = kl.repos.fork(*up, owner: me, name: "payments")
+  fork = kl.repos.fork(upstream, my_fork)
   puts "forked into #{fork['owner']}/#{fork['name']}"
 
   # 2. Commit a change onto a NEW branch of the fork (the fork's main stays put).
   content = Base64.strict_encode64("# Payments\n\nFixed rounding.\n")
-  out = kl.repos.commit(me, "payments",
+  out = kl.repos.commit(my_fork,
                         branch: "main", new_branch: "fix-rounding",
                         message: "Fix rounding in invoice totals",
                         changes: [{ path: "README.md", contentBase64: content }])
   puts "committed #{out['commit']} on #{out['branch']}"
 
   # 3. Propose it back: head names the FORK's branch, head_repo says where it lives.
-  pr = kl.repos.open_pull(*up,
+  pr = kl.repos.open_pull(upstream,
                           title: "Fix rounding in invoice totals",
                           head: "fix-rounding", base: "main",
-                          head_repo: "#{me}/payments")
+                          head_repo: my_fork)
   puts "opened #{pr['_id']}"
 
   # 4. The diff upstream reviews is the mirror: pull/{n}/head.
-  kl.repos.compare(*up, base: "main", head: "pull/#{pr['number']}/head")
-  kl.repos.comment(*up, pr["number"], "Ready for review")
+  kl.repos.compare(upstream, base: "main", head: "pull/#{pr['number']}/head")
+  kl.repos.comment(upstream, pr["number"], "Ready for review")
 
   # 5. Merge. 202 — a job; the pull reports where it got to.
-  kl.repos.merge(*up, pr["number"], strategy: "squash")
+  kl.repos.merge(upstream, pr["number"], strategy: "squash")
   30.times do
-    state = kl.repos.pull(*up, pr["number"])["state"]
+    state = kl.repos.pull(upstream, pr["number"])["state"]
     if state != "open"
       puts "pull is #{state}"
       break

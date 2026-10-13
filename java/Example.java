@@ -13,37 +13,37 @@ public class Example {
     public static void main(String[] args) throws Exception {
         Kloudlite kl = new Kloudlite(System.getenv("KLOUDLITE_URL"), System.getenv("KLOUDLITE_TOKEN"));
 
-        String upOwner = "acme", upName = "payments"; // the repo being contributed to
-        String me = "dev";                            // the handle the fork lands under
+        String upstream = "acme/payments"; // the repo being contributed to
+        String myFork = "dev/payments";    // where the fork lands (a handle or a team slug)
 
         try {
             // 1. Fork: objects and refs, never the upstream's pull requests or settings.
-            String fork = kl.repos().fork(upOwner, upName, me, "payments", null, null);
+            String fork = kl.repos().fork(upstream, myFork, null, null);
             System.out.println("forked: " + fork);
 
             // 2. Commit a change onto a NEW branch of the fork (the fork's main stays put).
             String content = Base64.getEncoder()
                 .encodeToString("# Payments\n\nFixed rounding.\n".getBytes());
-            String committed = kl.repos().commit(me, "payments", """
+            String committed = kl.repos().commit(myFork, """
                 {"branch":"main","newBranch":"fix-rounding",
                  "message":"Fix rounding in invoice totals",
                  "changes":[{"path":"README.md","contentBase64":"%s"}]}""".formatted(content));
             System.out.println("committed: " + committed);
 
             // 3. Propose it back: head names the FORK's branch, headRepo says where it lives.
-            String pr = kl.repos().openPull(upOwner, upName,
-                "Fix rounding in invoice totals", "fix-rounding", "main", "", me + "/payments");
+            String pr = kl.repos().openPull(upstream,
+                "Fix rounding in invoice totals", "fix-rounding", "main", "", myFork);
             long number = numberOf(pr);
             System.out.println("opened #" + number);
 
             // 4. The diff upstream reviews is the mirror: pull/{n}/head.
-            kl.repos().compare(upOwner, upName, "main", "pull/" + number + "/head");
-            kl.repos().comment(upOwner, upName, number, "Ready for review");
+            kl.repos().compare(upstream, "main", "pull/" + number + "/head");
+            kl.repos().comment(upstream, number, "Ready for review");
 
             // 5. Merge. 202 — a job; the pull reports where it got to.
-            kl.repos().merge(upOwner, upName, number, "squash");
+            kl.repos().merge(upstream, number, "squash");
             for (int i = 0; i < 30; i++) {
-                String got = kl.repos().pull(upOwner, upName, number);
+                String got = kl.repos().pull(upstream, number);
                 if (!got.contains("\"state\":\"open\"")) {
                     System.out.println("pull is no longer open");
                     break;

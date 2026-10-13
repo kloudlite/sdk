@@ -2,11 +2,12 @@
  * Kloudlite SDK for TypeScript — zero dependencies, built on `fetch`.
  *
  * Auth is a Bearer token (a session or CLI token). Every module hangs off the
- * one client:
+ * one client, and every repository is named by ONE `"owner/name"` string — the
+ * owner half being a person's handle or a team slug:
  *
  *     import { Kloudlite } from "@kloudlite/sdk";
  *     const kl = new Kloudlite({ baseUrl: "https://api.example.com", token: "…" });
- *     const repo = await kl.repos.create({ owner: "acme", name: "payments" });
+ *     const repo = await kl.repos.create("acme/payments");
  */
 
 export const VERSION = "0.1.0";
@@ -102,41 +103,66 @@ export interface FileChange {
 
 const seg = encodeURIComponent;
 
-/** Code repositories: `/v1/repos`. */
+/** `"owner/name"` → its two halves, refused client-side when malformed. */
+function split(repo: string): [string, string] {
+  const at = repo.indexOf("/");
+  const owner = repo.slice(0, at < 0 ? 0 : at);
+  const name = at < 0 ? "" : repo.slice(at + 1);
+  if (!owner || !name || name.includes("/")) {
+    throw new Error(`a repository is named owner/name, got ${JSON.stringify(repo)}`);
+  }
+  return [owner, name];
+}
+
+/**
+ * Code repositories: `/v1/repos`. Every `repo` argument is one `"owner/name"`
+ * string; only owner-scoped calls (`list`) take a bare handle.
+ */
 export class Repos {
   constructor(private readonly c: Kloudlite) {}
 
+  private path(repo: string, tail = ""): string {
+    const [owner, name] = split(repo);
+    return `/v1/repos/${seg(owner)}/${seg(name)}${tail}`;
+  }
+
   // repos
-  create(opts: { owner: string; name: string; visibility?: "public" | "private"; description?: string }) {
-    return this.c.request<Repo>("POST", "/v1/repos", { visibility: "private", description: "", ...opts });
+  create(repo: string, opts?: { visibility?: "public" | "private"; description?: string }) {
+    const [owner, name] = split(repo);
+    return this.c.request<Repo>("POST", "/v1/repos", {
+      owner,
+      name,
+      visibility: "private",
+      description: "",
+      ...opts,
+    });
   }
 
   list(owner: string) {
     return this.c.request<Repo[]>("GET", "/v1/repos", undefined, { owner });
   }
 
-  get(owner: string, name: string) {
-    return this.c.request<Repo>("GET", `/v1/repos/${seg(owner)}/${seg(name)}`);
+  get(repo: string) {
+    return this.c.request<Repo>("GET", this.path(repo));
   }
 
-  update(owner: string, name: string, change: { description?: string; visibility?: "public" | "private" }) {
-    return this.c.request("PATCH", `/v1/repos/${seg(owner)}/${seg(name)}`, change);
+  update(repo: string, change: { description?: string; visibility?: "public" | "private" }) {
+    return this.c.request("PATCH", this.path(repo), change);
   }
 
-  delete(owner: string, name: string) {
-    return this.c.request("DELETE", `/v1/repos/${seg(owner)}/${seg(name)}`);
+  delete(repo: string) {
+    return this.c.request("DELETE", this.path(repo));
   }
 
   /**
-   * A new repo copied from another: objects and refs, never its pull requests or settings.
-   * Private by default, whatever the source was.
+   * A new repo `dst` copied from `src`: objects and refs, never its pull requests
+   * or settings. Private by default, whatever the source was.
    */
-  fork(
-    srcOwner: string,
-    srcName: string,
-    opts: { owner: string; name: string; visibility?: "public" | "private"; description?: string },
-  ) {
-    return this.c.request<Repo>("POST", `/v1/repos/${seg(srcOwner)}/${seg(srcName)}/fork`, {
+  fork(src: string, dst: string, opts?: { visibility?: "public" | "private"; description?: string }) {
+    const [owner, name] = split(dst);
+    return this.c.request<Repo>("POST", this.path(src, "/fork"), {
+      owner,
+      name,
       visibility: "private",
       description: "",
       ...opts,
@@ -144,71 +170,73 @@ export class Repos {
   }
 
   // branches
-  branches(owner: string, name: string) {
-    return this.c.request<Branch[]>("GET", `/v1/repos/${seg(owner)}/${seg(name)}/branches`);
+  branches(repo: string) {
+    return this.c.request<Branch[]>("GET", this.path(repo, "/branches"));
   }
 
   /** `oid` is the head the caller saw; the delete is refused if the branch moved. */
-  deleteBranch(owner: string, name: string, branch: string, oid: string) {
-    return this.c.request("DELETE", `/v1/repos/${seg(owner)}/${seg(name)}/branches/${seg(branch)}`, undefined, { oid });
+  deleteBranch(repo: string, branch: string, oid: string) {
+    return this.c.request("DELETE", this.path(repo, `/branches/${seg(branch)}`), undefined, { oid });
   }
 
   // protection
-  protection(owner: string, name: string) {
-    return this.c.request("GET", `/v1/repos/${seg(owner)}/${seg(name)}/protection`);
+  protection(repo: string) {
+    return this.c.request("GET", this.path(repo, "/protection"));
   }
 
-  protect(owner: string, name: string, rule: { pattern: string; remove?: boolean; no_force?: boolean; no_delete?: boolean }) {
-    return this.c.request("POST", `/v1/repos/${seg(owner)}/${seg(name)}/protection`, rule);
+  protect(repo: string, rule: { pattern: string; remove?: boolean; no_force?: boolean; no_delete?: boolean }) {
+    return this.c.request("POST", this.path(repo, "/protection"), rule);
   }
 
   // pull requests
-  pulls(owner: string, name: string, query?: { state?: string; limit?: number }) {
-    return this.c.request<unknown[]>("GET", `/v1/repos/${seg(owner)}/${seg(name)}/pulls`, undefined, query);
+  pulls(repo: string, query?: { state?: string; limit?: number }) {
+    return this.c.request<unknown[]>("GET", this.path(repo, "/pulls"), undefined, query);
   }
 
-  pull(owner: string, name: string, number: number) {
-    return this.c.request("GET", `/v1/repos/${seg(owner)}/${seg(name)}/pulls/${number}`);
+  pull(repo: string, number: number) {
+    return this.c.request("GET", this.path(repo, `/pulls/${number}`));
   }
 
-  /** `head_repo` ("owner/name") makes it a cross-repo pull: `head` then names that fork's branch. */
+  /**
+   * `head_repo` (another `"owner/name"`) makes it a cross-repo pull: `head` then
+   * names a branch of that fork, proposed onto this repo's `base`.
+   */
   openPull(
-    owner: string,
-    name: string,
+    repo: string,
     opts: { title: string; head: string; base: string; description?: string; head_repo?: string },
   ) {
-    return this.c.request("POST", `/v1/repos/${seg(owner)}/${seg(name)}/pulls`, { description: "", ...opts });
+    if (opts.head_repo !== undefined) split(opts.head_repo);
+    return this.c.request("POST", this.path(repo, "/pulls"), { description: "", ...opts });
   }
 
-  comment(owner: string, name: string, number: number, body: string) {
-    return this.c.request("POST", `/v1/repos/${seg(owner)}/${seg(name)}/pulls/${number}/comments`, { body });
+  comment(repo: string, number: number, body: string) {
+    return this.c.request("POST", this.path(repo, `/pulls/${number}/comments`), { body });
   }
 
   /** The merge is a job: the server answers 202 and the pull reports where it got to. */
-  merge(owner: string, name: string, number: number, strategy: "fast-forward" | "squash" | "merge" | "rebase" = "fast-forward") {
-    return this.c.request("POST", `/v1/repos/${seg(owner)}/${seg(name)}/pulls/${number}/merge`, undefined, { strategy });
+  merge(repo: string, number: number, strategy: "fast-forward" | "squash" | "merge" | "rebase" = "fast-forward") {
+    return this.c.request("POST", this.path(repo, `/pulls/${number}/merge`), undefined, { strategy });
   }
 
-  close(owner: string, name: string, number: number) {
-    return this.c.request("POST", `/v1/repos/${seg(owner)}/${seg(name)}/pulls/${number}/close`);
+  close(repo: string, number: number) {
+    return this.c.request("POST", this.path(repo, `/pulls/${number}/close`));
   }
 
   // commits
-  compare(owner: string, name: string, base: string, head: string) {
-    return this.c.request("GET", `/v1/repos/${seg(owner)}/${seg(name)}/compare`, undefined, { base, head });
+  compare(repo: string, base: string, head: string) {
+    return this.c.request("GET", this.path(repo, "/compare"), undefined, { base, head });
   }
 
   /** One commit of file changes; `expect` refuses the commit if the branch moved. */
   commit(
-    owner: string,
-    name: string,
+    repo: string,
     opts: { branch: string; message: string; changes: FileChange[]; expect?: string; newBranch?: string },
   ) {
-    return this.c.request<{ commit: string; branch: string }>("POST", `/v1/repos/${seg(owner)}/${seg(name)}/commits`, opts);
+    return this.c.request<{ commit: string; branch: string }>("POST", this.path(repo, "/commits"), opts);
   }
 
-  signature(owner: string, name: string, sha: string) {
-    return this.c.request("GET", `/v1/repos/${seg(owner)}/${seg(name)}/commits/${seg(sha)}/signature`);
+  signature(repo: string, sha: string) {
+    return this.c.request("GET", this.path(repo, `/commits/${seg(sha)}/signature`));
   }
 }
 
