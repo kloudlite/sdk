@@ -420,4 +420,13 @@ mod tests {
         assert!(x.call("exec", json!({ "cmd": "true", "pty": true })).await.is_err());
         assert!(x.call("exec", json!({ "cmd": "true", "cwd": "/etc" })).await.is_err(), "cwd is confined");
     }
+
+    #[tokio::test]
+    async fn a_quoted_detach_still_detaches() {
+        let (_t, x, _trees) = exec_set();
+        let started = std::time::Instant::now();
+        let v = x.call("exec", json!({ "cmd": "sleep 30", "detach": "true" })).await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "ran as a job");
+        x.call("process_kill", json!({ "id": v["id"].as_str().unwrap() })).await.unwrap();
+    }
 }

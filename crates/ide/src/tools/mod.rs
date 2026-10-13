@@ -105,8 +105,17 @@ pub(crate) fn opt_u64(args: &Value, key: &str) -> Option<u64> {
         _ => None,
     }
 }
+/// A flag, taken from a JSON bool OR the string `"true"`/`"false"`.
+///
+/// `as_bool` alone read `"detach": "true"` as false, so a quoted flag ran the server as a job that
+/// blocked for the whole timeout, three times over, with no error to read (workspace agent,
+/// 2026-10-13). Anything else stays false, the default every caller already has.
 pub(crate) fn opt_bool(args: &Value, key: &str) -> bool {
-    args.get(key).and_then(Value::as_bool).unwrap_or(false)
+    match args.get(key) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    }
 }
 
 /// An argv array's entries. A non-string used to be dropped silently, which shifted every
@@ -124,5 +133,12 @@ mod tests {
         assert_eq!(argv(&[serde_json::json!("echo"), serde_json::json!("hi")]).unwrap(), vec!["echo", "hi"]);
         let e = argv(&[serde_json::json!("echo"), serde_json::json!(1)]).unwrap_err();
         assert!(matches!(e, ToolError::Invalid(ref m) if m.contains('1')), "{e:?}");
+    }
+
+    #[test]
+    fn a_quoted_flag_reads_as_the_flag() {
+        let f = |v: Value| opt_bool(&serde_json::json!({ "detach": v }), "detach");
+        assert!(f(serde_json::json!(true)) && f(serde_json::json!("true")) && f(serde_json::json!(" TRUE ")));
+        assert!(!f(serde_json::json!(false)) && !f(serde_json::json!("false")) && !f(serde_json::json!("yes")) && !f(serde_json::json!(1)));
     }
 }
