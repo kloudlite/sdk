@@ -44,6 +44,7 @@ class Kloudlite:
         self.data_repos = HubRepos(self, "dataset")
         self.workspaces = Workspaces(self)
         self.environments = Environments(self)
+        self.sessions = Sessions(self)
         self.volumes = Volumes(self)
 
     def quota(self, owner: str | None = None):
@@ -489,6 +490,61 @@ def _owned(s: str) -> tuple[str | None, str]:
 def _services(services: list | None) -> list:
     """The server requires every field; fill the ones a caller leaves out."""
     return [{"command": [], "env": {}, "mounts": [], "ports": [], **sv} for sv in services or []]
+
+
+class Sessions:
+    """Working sessions, over ``/v1/sessions``: some of YOUR workspaces in one team, connected to
+    one environment. Many people's sessions connect to the same environment and collaborate
+    through it; an intercept a session takes is environment-wide, and the session owns it — only
+    it can release it, and removing the workspace or deleting the session releases it.
+
+    A session is named like an environment — ``"name"`` (personal) or ``"team/name"`` — or by its
+    id (``ses-…``); a workspace by its id, name or ``"team/name"``."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    def create(self, session: str, environment: str):
+        """``environment`` must be the session's team's: an id, a name or ``"team/name"``."""
+        team, name = _owned(session)
+        return self._c.request("POST", "/v1/sessions",
+                               {"name": name, "team": team, "environment": environment})
+
+    def list(self, team: str | None = None):
+        return self._c.request("GET", "/v1/sessions", query={"team": team})
+
+    def get(self, session: str):
+        """The session with its ``workspaces`` and the ``intercepts`` it holds."""
+        return self._at("GET", session)
+
+    def delete(self, session: str):
+        """Releases its intercepts and lets its workspaces go — never deletes a workspace."""
+        return self._at("DELETE", session)
+
+    def add(self, session: str, workspace: str):
+        """A workspace is in at most one session; while in one it resolves that session's
+        environment by bare service name instead of its team's choice."""
+        return self._at("POST", session, "/workspaces", {"workspace": workspace})
+
+    def remove(self, session: str, workspace: str):
+        """Releases whatever the workspace intercepts in this session first."""
+        return self._at("DELETE", session, f"/workspaces/{_seg(workspace)}")
+
+    def intercept(self, session: str, service: str, workspace: str, ports: dict | None = None):
+        """Send everything that calls ``service`` in the environment to ``workspace`` (a member),
+        ``ports`` mapping each service port to the workspace port that answers it
+        (``{8080: 3000}``); an unmapped port answers on the same number."""
+        return self._at("POST", session, "/intercepts", {
+            "service": service, "workspace": workspace,
+            "ports": [{"service": int(k), "workspace": int(v)} for k, v in (ports or {}).items()],
+        })
+
+    def release(self, session: str, service: str):
+        return self._at("DELETE", session, f"/intercepts/{_seg(service)}")
+
+    def _at(self, method: str, session: str, tail: str = "", body=None):
+        team, name = _owned(session)
+        return self._c.request(method, f"/v1/sessions/{_seg(name)}{tail}", body, query={"owner": team})
 
 
 class Volumes:

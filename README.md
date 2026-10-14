@@ -137,6 +137,31 @@ kl.environments.delete("acme/staging")                  # snapshots survive on t
 Java builds services with `new Kloudlite.Service("db", "postgres:16").port(5432)
 .env("POSTGRES_PASSWORD", "dev").mount("pgdata", "/var/lib/postgresql/data")`.
 
+## The `sessions` module
+
+A working session is some of YOUR workspaces in one team, connected to one
+environment. Many people's sessions connect to the same environment and
+collaborate through it. An intercept a session takes is environment-wide —
+the environment's own services and every other session reach your workspace —
+and the session owns it: only it releases it, and removing the workspace or
+deleting the session releases it. A session is named like an environment
+(`"name"` or `"team/name"`); workspaces are created with `workspaces` and then
+added:
+
+```python
+kl.sessions.create("acme/fix-login", environment="acme/staging")
+kl.sessions.add("acme/fix-login", "acme/api-dev")      # resolves staging's services by bare name
+kl.sessions.add("acme/fix-login", "acme/web-dev")
+kl.sessions.intercept("acme/fix-login", "api", "acme/api-dev", {8080: 3000})
+kl.sessions.get("acme/fix-login")                      # its workspaces and intercepts
+kl.sessions.release("acme/fix-login", "api")
+kl.sessions.remove("acme/fix-login", "acme/web-dev")   # back to the team's choice
+kl.sessions.delete("acme/fix-login")                   # releases, lets go; deletes no workspace
+```
+
+A workspace is in at most one session; adding one that is in another session
+is refused naming it.
+
 ## The `model_repos` and `data_repos` modules
 
 Model and dataset repositories live on the HUB listener (the Hugging Face Hub
