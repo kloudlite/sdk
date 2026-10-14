@@ -14,20 +14,34 @@
 //   Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://api.example.com").token("…"));
 //   String repo = kl.codeRepos().create(new Kloudlite.CreateRepo().repo("acme/payments"));
 //
-// Methods return the raw JSON body as a String; bring your own JSON mapper.
+// Methods return the raw JSON body as a String; bring your own JSON mapper. The one
+// exception is sandboxes(), whose calls hand back live handles (SandboxHandle,
+// SandboxProcess) — each still exposes its raw JSON.
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 public class Kloudlite {
     public static final String VERSION = "0.1.0";
@@ -67,6 +81,7 @@ public class Kloudlite {
     private final Environments environments = new Environments();
     private final Sessions sessions = new Sessions();
     private final Volumes volumes = new Volumes();
+    private final Sandboxes sandboxes = new Sandboxes();
 
     public Kloudlite(Options opts) {
         this.baseUrl = need(opts.baseUrl, "baseUrl").replaceAll("/+$", "");
@@ -108,6 +123,11 @@ public class Kloudlite {
     /** The volumes behind workspaces and environments: {@code /v1/volumes}. */
     public Volumes volumes() {
         return volumes;
+    }
+
+    /** Throwaway gVisor sandboxes with a tool server: {@code /v1/sandboxes}. */
+    public Sandboxes sandboxes() {
+        return sandboxes;
     }
 
     /** The caller's own ceiling and what is against it. */
@@ -1419,6 +1439,761 @@ public class Kloudlite {
 
         public DeleteSnapshot volume(String v) { volume = v; return this; }
         public DeleteSnapshot snapshot(String v) { snapshot = v; return this; }
+    }
+
+    /**
+     * Throwaway sandboxes, over {@code /v1/sandboxes}: one pod under gVisor running a tool server,
+     * gone when the caller terminates it or its own timeout passes. A sandbox is named by its id.
+     * Unlike every other module these calls hand back handles — {@link SandboxHandle} and
+     * {@link SandboxProcess} — because a process is driven, not read once; each still exposes
+     * its raw JSON.
+     *
+     * <pre>
+     *   Kloudlite.SandboxHandle sb = kl.sandboxes().create(new Kloudlite.CreateSandbox().image("python:3.12"));
+     *   Kloudlite.SandboxProcess p = sb.exec(new Kloudlite.SandboxExec().cmd(List.of("bash", "-c", "while read l; do echo $l; done")));
+     *   p.stdin().write("foo bar\n");
+     *   p.stdin().writeEof();
+     *   int code = p.waitFor(null);
+     *   String out = p.stdout().read();
+     *   sb.terminate();
+     * </pre>
+     */
+    public class Sandboxes {
+        /** Returns at once, the sandbox still {@code starting}; {@link SandboxHandle#exec} waits for it. */
+        public SandboxHandle create(CreateSandbox p) throws IOException, InterruptedException {
+            return new SandboxHandle(api("POST", "/v1/sandboxes", p.body()));
+        }
+
+        public SandboxHandle get(String sandbox) throws IOException, InterruptedException {
+            return new SandboxHandle(api("GET", "/v1/sandboxes/" + seg(need(sandbox, "sandbox")), null));
+        }
+
+        /** The caller's sandboxes, newest first; a non-null team scopes to their sandboxes in that team. */
+        public List<SandboxHandle> list(String team) throws IOException, InterruptedException {
+            String raw = api("GET", "/v1/sandboxes" + query("team", team), null);
+            List<SandboxHandle> out = new ArrayList<>();
+            List<String> docs;
+            try {
+                docs = JsonReader.elements(raw);
+            } catch (IllegalArgumentException e) {
+                throw new ApiException(502, "the sandbox listing was not a JSON array");
+            }
+            for (String doc : docs) out.add(new SandboxHandle(doc));
+            return out;
+        }
+
+        /**
+         * Create a sandbox, run {@code cmd} in it, wait for the command, read all its output — and
+         * terminate the sandbox whatever happened, a failed terminate surfacing beside (never
+         * instead of) the failure that came first.
+         */
+        public RunResult run(RunSandbox p) throws IOException, InterruptedException {
+            p.exec.body(); // a missing cmd is refused before the sandbox exists
+            // A command allowed longer than the sandbox's default lifetime must not be cut by it:
+            // the sandbox outlives the wait by a minute, within the server's 10 s..24 h.
+            if (p.timeout != null && !p.timeout.isZero()) {
+                long secs = Math.min(86_400, Math.max(10, (p.timeout.toMillis() + 999) / 1000 + 60));
+                p.create.timeout(Duration.ofSeconds(secs));
+            }
+            SandboxHandle sb = create(p.create);
+            Throwable failed = null;
+            try {
+                SandboxProcess proc = sb.exec(p.exec);
+                int code = proc.waitFor(p.timeout);
+                StringBuilder out = new StringBuilder(), err = new StringBuilder();
+                proc.follow(out, err);
+                return new RunResult(code, out.toString(), err.toString(), sb.id());
+            } catch (Throwable t) {
+                failed = t;
+                throw t;
+            } finally {
+                try {
+                    sb.terminate();
+                } catch (IOException | InterruptedException | RuntimeException e) {
+                    if (failed == null) throw e;
+                    failed.addSuppressed(e);
+                }
+            }
+        }
+    }
+
+    /**
+     * One sandbox: the doc as last read ({@link #json}, with {@link #id}, {@link #phase} —
+     * {@code pending|starting|running|terminated} — and, once terminated, {@link #reason}).
+     * Nothing re-reads it behind the caller's back except the waits; {@link #refresh} does.
+     */
+    public final class SandboxHandle {
+        private volatile String json;
+        private volatile Map<String, Object> doc;
+
+        SandboxHandle(String json) throws ApiException {
+            set(json);
+        }
+
+        private void set(String raw) throws ApiException {
+            Map<String, Object> d = JsonReader.parsed(raw);
+            if (text(d.get("id")) == null) throw new ApiException(502, "the answer named no sandbox id");
+            doc = d;
+            json = raw;
+        }
+
+        public String id() { return text(doc.get("id")); }
+        public String phase() { return text(doc.get("phase")); }
+        /** Terminated, Timeout, Idle, Exited, Failed, Unplaceable, SourceGone or Lost; null until terminated. */
+        public String reason() { return text(doc.get("reason")); }
+        public String message() { return text(doc.get("message")); }
+        /** The doc's raw JSON, as the server last answered it. */
+        public String json() { return json; }
+
+        /** Re-read the doc; returns this handle. */
+        public SandboxHandle refresh() throws IOException, InterruptedException {
+            set(api("GET", path(""), null));
+            return this;
+        }
+
+        /** {@link #waitRunning(Duration)} with the default limit of two minutes. */
+        public SandboxHandle waitRunning() throws IOException, InterruptedException {
+            return waitRunning(Duration.ofSeconds(120));
+        }
+
+        /**
+         * Poll until {@code running} (0.5 s, backing off to 2 s). A sandbox that ends instead is an
+         * {@link ApiException} (409) naming its reason; the limit passing is an
+         * {@link HttpTimeoutException}. A null or zero limit waits as long as it takes.
+         */
+        public SandboxHandle waitRunning(Duration timeout) throws IOException, InterruptedException {
+            long deadline = deadline(timeout);
+            for (long pause = 500; ; pause = nap(deadline, pause)) {
+                refresh();
+                if ("running".equals(phase())) return this;
+                if ("terminated".equals(phase())) throw ended();
+                if (expired(deadline)) {
+                    throw new HttpTimeoutException("sandbox " + id() + " was not running within " + timeout);
+                }
+            }
+        }
+
+        /**
+         * Start {@code cmd} as a process — always detached, so nothing here is bounded by a
+         * request timeout. Waits for the sandbox to run first unless it is already known running.
+         */
+        public SandboxProcess exec(SandboxExec p) throws IOException, InterruptedException {
+            String body = p.body();
+            if (!"running".equals(phase())) waitRunning();
+            String pid = text(JsonReader.parsed(tool("exec", body)).get("id"));
+            if (pid == null) throw new ApiException(502, "the exec answer named no process id");
+            return new SandboxProcess(this, pid);
+        }
+
+        /** The read tool's JSON answer; paths are relative to {@code ~/workspace}. */
+        public String read(String path) throws IOException, InterruptedException {
+            return tool("read", obj("path", need(path, "path")));
+        }
+
+        /** The write tool's JSON answer; paths are relative to {@code ~/workspace}. */
+        public String write(WriteFile p) throws IOException, InterruptedException {
+            String path = need(p.path, "path"), content = need(p.content, "content");
+            return tool("write", obj("path", path, "content", content));
+        }
+
+        /** Ask for the end (202); the doc turns {@code terminated} shortly after. Returns this handle. */
+        public SandboxHandle terminate() throws IOException, InterruptedException {
+            set(api("POST", path("/terminate"), null));
+            return this;
+        }
+
+        /**
+         * Poll until {@code terminated} and answer the reason. A null or zero limit waits as long
+         * as it takes; the limit passing is an {@link HttpTimeoutException}.
+         */
+        public String waitFor(Duration timeout) throws IOException, InterruptedException {
+            long deadline = deadline(timeout);
+            for (long pause = 500; ; pause = nap(deadline, pause)) {
+                refresh();
+                if ("terminated".equals(phase())) return reason();
+                if (expired(deadline)) {
+                    throw new HttpTimeoutException("sandbox " + id() + " did not terminate within " + timeout);
+                }
+            }
+        }
+
+        /** Delete the record (204). */
+        public void delete() throws IOException, InterruptedException {
+            api("DELETE", path(""), null);
+        }
+
+        String tool(String name, String argsJson) throws IOException, InterruptedException {
+            return api("POST", path("/tools/" + seg(name)), argsJson);
+        }
+
+        String path(String tail) {
+            return "/v1/sandboxes/" + seg(id()) + tail;
+        }
+
+        private ApiException ended() {
+            String msg = message();
+            return new ApiException(409, "sandbox " + id() + " is terminated (" + or(reason(), "no reason given") + ")"
+                + (msg == null || msg.isEmpty() ? "" : ": " + msg));
+        }
+    }
+
+    /**
+     * A process started by {@link SandboxHandle#exec}: {@link #stdin} feeds it, {@link #stdout} and
+     * {@link #stderr} follow its output from the start, {@link #waitFor} answers its exit code.
+     */
+    public final class SandboxProcess {
+        private final SandboxHandle sandbox;
+        private final String id;
+        private final Stdin stdin = new Stdin();
+        private final Output stdout = new Output("stdout"), stderr = new Output("stderr");
+        private volatile Integer returncode;
+
+        SandboxProcess(SandboxHandle sandbox, String id) {
+            this.sandbox = sandbox;
+            this.id = id;
+        }
+
+        public String id() { return id; }
+        public SandboxHandle sandbox() { return sandbox; }
+        public Stdin stdin() { return stdin; }
+        public Output stdout() { return stdout; }
+        public Output stderr() { return stderr; }
+        /** The exit code last seen, -1 for an exit with none (a signal); null until it has exited. */
+        public Integer returncode() { return returncode; }
+
+        /**
+         * Block until the process exits and answer its exit code (-1 when it had none). Polls in
+         * slices of at most 20 s, the server's own bound; a null or zero limit waits as long as it
+         * takes, and the limit passing is an {@link HttpTimeoutException}.
+         */
+        public int waitFor(Duration timeout) throws IOException, InterruptedException {
+            long deadline = deadline(timeout);
+            while (true) {
+                long slice = Math.max(0, Math.min(20_000, remainingMs(deadline)));
+                Map<String, Object> got = JsonReader.parsed(sandbox.tool("process_wait",
+                    new Json().str("id", id).num("timeout_ms", slice).toString()));
+                if ("exited".equals(got.get("state"))) return settle(got.get("exit_code"));
+                if (expired(deadline)) {
+                    throw new HttpTimeoutException("process " + id + " did not exit within " + timeout);
+                }
+            }
+        }
+
+        /** The exit code if the process has exited (-1 when it had none), else null; never blocks. */
+        public Integer poll() throws IOException, InterruptedException {
+            Map<String, Object> got = JsonReader.parsed(sandbox.tool("process_wait",
+                new Json().str("id", id).num("timeout_ms", 0L).toString()));
+            return "exited".equals(got.get("state")) ? settle(got.get("exit_code")) : null;
+        }
+
+        /** TERM, reaching the process group. */
+        public String kill() throws IOException, InterruptedException {
+            return kill(null);
+        }
+
+        /** {@code signal} is TERM (the tool's default) or KILL; it reaches the process group. */
+        public String kill(String signal) throws IOException, InterruptedException {
+            return sandbox.tool("process_kill", obj("id", id, "signal", signal));
+        }
+
+        private int settle(Object code) {
+            int c = code instanceof Number ? ((Number) code).intValue() : -1;
+            returncode = c;
+            return c;
+        }
+
+        /** Both streams in one pass over the process stream, until its exit frame. */
+        void follow(StringBuilder out, StringBuilder err) throws IOException, InterruptedException {
+            try (Frames frames = new Frames()) {
+                for (String[] f = frames.next(); f != null; f = frames.next()) {
+                    ("stderr".equals(f[0]) ? err : out).append(f[1]);
+                }
+            }
+        }
+
+        /** The process's stdin. Every write is delivered when the call returns. */
+        public final class Stdin {
+            public void write(byte[] data) throws IOException, InterruptedException {
+                sandbox.tool("process_write", obj("id", id,
+                    "data_base64", Base64.getEncoder().encodeToString(need(data, "data"))));
+            }
+
+            /** Sent as UTF-8. */
+            public void write(String data) throws IOException, InterruptedException {
+                write(need(data, "data").getBytes(StandardCharsets.UTF_8));
+            }
+
+            /** Close stdin: a read loop in the process sees end-of-file. */
+            public void writeEof() throws IOException, InterruptedException {
+                sandbox.tool("process_close_stdin", obj("id", id));
+            }
+
+            /** Nothing to do — kept so a Modal-shaped caller reads the same. */
+            public void drain() {}
+        }
+
+        /** One of the process's output streams, followed from its first byte. */
+        public final class Output {
+            private final String name;
+
+            Output(String name) {
+                this.name = name;
+            }
+
+            /** Everything the stream carries, blocking until the process exits. */
+            public String read() throws IOException, InterruptedException {
+                StringBuilder out = new StringBuilder(), err = new StringBuilder();
+                follow(out, err);
+                return ("stderr".equals(name) ? err : out).toString();
+            }
+
+            /**
+             * Lines as they arrive, without their {@code \n}; a trailing partial line comes last.
+             * The stream ends when the process exits; close it to stop following early. A failure
+             * mid-stream is an {@link UncheckedIOException}.
+             */
+            public Stream<String> lines() throws IOException, InterruptedException {
+                Frames frames = new Frames();
+                Iterator<String> it = new Iterator<>() {
+                    private final StringBuilder buf = new StringBuilder();
+                    private String ready;
+                    private boolean end;
+
+                    @Override
+                    public boolean hasNext() {
+                        while (ready == null && !end) {
+                            int nl = buf.indexOf("\n");
+                            if (nl >= 0) {
+                                ready = buf.substring(0, nl);
+                                buf.delete(0, nl + 1);
+                                break;
+                            }
+                            String[] f = frames.nextUnchecked();
+                            if (f == null) {
+                                end = true;
+                                if (buf.length() > 0) ready = buf.toString();
+                                buf.setLength(0);
+                            } else if (name.equals(f[0])) {
+                                buf.append(f[1]);
+                            }
+                        }
+                        return ready != null;
+                    }
+
+                    @Override
+                    public String next() {
+                        if (!hasNext()) throw new NoSuchElementException();
+                        String line = ready;
+                        ready = null;
+                        return line;
+                    }
+                };
+                return StreamSupport.stream(Spliterators.spliteratorUnknownSize(it,
+                    Spliterator.ORDERED | Spliterator.NONNULL), false).onClose(frames::close);
+            }
+        }
+
+        /**
+         * The NDJSON process stream as {stream, data} frames, ending at the exit frame. A
+         * connection that ends before it is reopened from the byte cursors read so far (counting
+         * what the server reports dropped from its ring), a few times at most.
+         */
+        private final class Frames implements AutoCloseable {
+            private long since, sinceErr;
+            private int reopened;
+            private Stream<String> body;
+            private Iterator<String> lines;
+            private boolean done;
+
+            Frames() throws IOException, InterruptedException {
+                open();
+            }
+
+            private void open() throws IOException, InterruptedException {
+                HttpRequest.Builder b = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + sandbox.path("/processes/" + seg(id) + "/stream")
+                        + "?since=" + since + "&since_err=" + sinceErr))
+                    // No request timeout: the stream lasts as long as the process does.
+                    .header("User-Agent", "kloudlite-sdk-java/" + VERSION)
+                    .header("Accept", "application/x-ndjson")
+                    .GET();
+                if (token != null) b.header("Authorization", "Bearer " + token);
+                HttpResponse<Stream<String>> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofLines());
+                if (resp.statusCode() < 200 || resp.statusCode() > 299) {
+                    String text;
+                    try (Stream<String> s = resp.body()) {
+                        text = s.collect(Collectors.joining("\n"));
+                    }
+                    throw new ApiException(resp.statusCode(), errorText(text));
+                }
+                body = resp.body();
+                lines = body.iterator();
+            }
+
+            /** The next output frame, or null once the process has exited. */
+            String[] next() throws IOException, InterruptedException {
+                while (!done) {
+                    String line = null;
+                    try {
+                        if (lines.hasNext()) line = lines.next();
+                    } catch (UncheckedIOException e) {
+                        line = null; // a dropped connection: reopened below like a clean end
+                    }
+                    if (line == null) {
+                        body.close();
+                        if (++reopened > 3) {
+                            throw new ApiException(502, "the stream of process " + id + " ended before it exited");
+                        }
+                        open();
+                        continue;
+                    }
+                    if (line.isBlank()) continue;
+                    Map<String, Object> f = JsonReader.parsed(line);
+                    if (f.containsKey("exit")) {
+                        done = true;
+                        settle(f.get("exit"));
+                        body.close();
+                        return null;
+                    }
+                    if (f.get("dropped") instanceof Number) since += ((Number) f.get("dropped")).longValue();
+                    if (f.get("dropped_err") instanceof Number) sinceErr += ((Number) f.get("dropped_err")).longValue();
+                    Object stream = f.get("stream"), data = f.get("data");
+                    if (stream instanceof String && data instanceof String) {
+                        long n = ((String) data).getBytes(StandardCharsets.UTF_8).length;
+                        if ("stderr".equals(stream)) sinceErr += n;
+                        else since += n;
+                        return new String[] {(String) stream, (String) data};
+                    }
+                }
+                return null;
+            }
+
+            String[] nextUnchecked() {
+                try {
+                    return next();
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new UncheckedIOException(new InterruptedIOException("interrupted following process " + id));
+                }
+            }
+
+            @Override
+            public void close() {
+                if (body != null) body.close();
+            }
+        }
+    }
+
+    // ── sandbox params ─────────────────────────────────────────────────────
+
+    /**
+     * {@link Sandboxes#create}: every field optional, an unset one being the server's default
+     * (a 300 s timeout, 1 core, 2 GB of memory, 10 GB of disk, the internet reachable).
+     * {@code fromWorkspace} is an id, a name or "team/name"; {@code fromSnapshot} a snapshot id.
+     */
+    public static final class CreateSandbox {
+        private String image, fromWorkspace, fromSnapshot, team, region, network;
+        private List<String> packages;
+        private Duration timeout, idleTimeout;
+        private Map<String, String> env;
+        private Long cpu, memoryGb, diskGb;
+
+        public CreateSandbox image(String v) { image = v; return this; }
+        /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
+        public CreateSandbox packages(String... v) { packages = Arrays.asList(v); return this; }
+        public CreateSandbox fromWorkspace(String v) { fromWorkspace = v; return this; }
+        public CreateSandbox fromSnapshot(String v) { fromSnapshot = v; return this; }
+        public CreateSandbox team(String v) { team = v; return this; }
+        public CreateSandbox region(String v) { region = v; return this; }
+        /** The sandbox's whole lifetime, sent in whole seconds (rounded up). */
+        public CreateSandbox timeout(Duration v) { timeout = v; return this; }
+        /** Terminate once nothing has touched it for this long. */
+        public CreateSandbox idleTimeout(Duration v) { idleTimeout = v; return this; }
+        /** "internet" or "none". */
+        public CreateSandbox network(String v) { network = v; return this; }
+        public CreateSandbox env(Map<String, String> v) { env = v; return this; }
+        public CreateSandbox cpu(int cores) { cpu = (long) cores; return this; }
+        public CreateSandbox memoryGb(int v) { memoryGb = (long) v; return this; }
+        public CreateSandbox diskGb(int v) { diskGb = (long) v; return this; }
+
+        String body() {
+            return new Json()
+                .str("team", team)
+                .str("region", region)
+                .str("image", image)
+                .raw("packages", packages == null ? null : strings(packages))
+                .str("from_workspace", fromWorkspace)
+                .str("from_snapshot", fromSnapshot)
+                .num("timeout_secs", seconds(timeout))
+                .num("idle_timeout_secs", seconds(idleTimeout))
+                .str("network", network)
+                .raw("env", env == null ? null : stringMap(env))
+                .num("cpu", cpu)
+                .num("memory_gb", memoryGb)
+                .num("disk_gb", diskGb)
+                .toString();
+        }
+    }
+
+    /** {@link SandboxHandle#exec}: {@code cmd} — a shell string or an argv list — is required. */
+    public static final class SandboxExec {
+        private String cmd, cwd; // cmd held as JSON: a string or an array
+        private Map<String, String> env;
+
+        public SandboxExec cmd(String shell) { cmd = shell == null ? null : quote(shell); return this; }
+        public SandboxExec cmd(List<String> argv) { cmd = argv == null ? null : strings(argv); return this; }
+        public SandboxExec cwd(String v) { cwd = v; return this; }
+        public SandboxExec env(Map<String, String> v) { env = v; return this; }
+
+        String body() {
+            return new Json().raw("cmd", need(cmd, "cmd")).str("cwd", cwd)
+                .raw("env", env == null ? null : stringMap(env)).bool("detach", true).toString();
+        }
+    }
+
+    /**
+     * {@link Sandboxes#run}: the command ({@code cmd} required, {@code cwd}, {@code env}), how long
+     * to wait for it ({@code timeout}; unset waits until it exits), and every
+     * {@link CreateSandbox} field — except that {@code env} and {@code timeout} here are the
+     * COMMAND's, as in every other SDK, so the sandbox keeps its default lifetime.
+     */
+    public static final class RunSandbox {
+        private final CreateSandbox create = new CreateSandbox();
+        private final SandboxExec exec = new SandboxExec();
+        private Duration timeout;
+
+        public RunSandbox cmd(String shell) { exec.cmd(shell); return this; }
+        public RunSandbox cmd(List<String> argv) { exec.cmd(argv); return this; }
+        public RunSandbox cwd(String v) { exec.cwd(v); return this; }
+        public RunSandbox env(Map<String, String> v) { exec.env(v); return this; }
+        public RunSandbox timeout(Duration v) { timeout = v; return this; }
+        public RunSandbox image(String v) { create.image(v); return this; }
+        public RunSandbox packages(String... v) { create.packages(v); return this; }
+        public RunSandbox fromWorkspace(String v) { create.fromWorkspace(v); return this; }
+        public RunSandbox fromSnapshot(String v) { create.fromSnapshot(v); return this; }
+        public RunSandbox team(String v) { create.team(v); return this; }
+        public RunSandbox region(String v) { create.region(v); return this; }
+        public RunSandbox idleTimeout(Duration v) { create.idleTimeout(v); return this; }
+        public RunSandbox network(String v) { create.network(v); return this; }
+        public RunSandbox cpu(int cores) { create.cpu(cores); return this; }
+        public RunSandbox memoryGb(int v) { create.memoryGb(v); return this; }
+        public RunSandbox diskGb(int v) { create.diskGb(v); return this; }
+    }
+
+    /** What {@link Sandboxes#run} answers; {@link #toString} is its JSON. */
+    public static final class RunResult {
+        /** -1 when the process exited without one (a signal). */
+        public final int exitCode;
+        public final String stdout, stderr;
+        /** The sandbox's id — already terminated. */
+        public final String sandbox;
+
+        RunResult(int exitCode, String stdout, String stderr, String sandbox) {
+            this.exitCode = exitCode;
+            this.stdout = stdout;
+            this.stderr = stderr;
+            this.sandbox = sandbox;
+        }
+
+        @Override
+        public String toString() {
+            return new Json().num("exit_code", (long) exitCode).str("stdout", stdout)
+                .str("stderr", stderr).str("sandbox", sandbox).toString();
+        }
+    }
+
+    /** Whole seconds, rounded up so a sub-second limit is never sent as none. */
+    static Long seconds(Duration d) {
+        if (d == null) return null;
+        long ms = d.toMillis();
+        return (ms + 999) / 1000;
+    }
+
+    /** A {@link System#nanoTime} deadline; Long.MAX_VALUE stands for "no limit" (null or zero). */
+    static long deadline(Duration d) {
+        return d == null || d.isZero() || d.isNegative() ? Long.MAX_VALUE : System.nanoTime() + d.toNanos();
+    }
+
+    static long remainingMs(long deadline) {
+        return deadline == Long.MAX_VALUE ? Long.MAX_VALUE : (deadline - System.nanoTime()) / 1_000_000;
+    }
+
+    static boolean expired(long deadline) {
+        return deadline != Long.MAX_VALUE && deadline - System.nanoTime() <= 0;
+    }
+
+    /** Sleep {@code pause} (never past the deadline) and answer the next, doubled up to 2 s. */
+    static long nap(long deadline, long pause) throws InterruptedException {
+        long left = remainingMs(deadline);
+        if (left > 0) Thread.sleep(Math.min(pause, left));
+        return Math.min(pause * 2, 2000);
+    }
+
+    /** A scalar field as text: a string as is, a number in its plain spelling, null for absent or null. */
+    static String text(Object v) {
+        return v == null ? null : v.toString();
+    }
+
+    /**
+     * Just enough of a JSON reader for the sandbox handles, which must see a doc's phase and a
+     * stream frame's data with every escape undone: objects become LinkedHashMaps, arrays Lists,
+     * integers Longs, other numbers Doubles. Malformed input is an IllegalArgumentException.
+     */
+    static final class JsonReader {
+        private final String s;
+        private int i;
+
+        private JsonReader(String s) {
+            this.s = s;
+        }
+
+        /** A JSON object, or a 502 — the server answered something that is not one. */
+        static Map<String, Object> parsed(String json) throws ApiException {
+            try {
+                JsonReader r = new JsonReader(json == null ? "" : json);
+                Object v = r.value();
+                r.ws();
+                if (r.i != r.s.length() || !(v instanceof Map)) throw r.bad();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = (Map<String, Object>) v;
+                return m;
+            } catch (IllegalArgumentException e) {
+                throw new ApiException(502, "expected a JSON object, got " + json);
+            }
+        }
+
+        /** Each element of a top-level array, as its own raw JSON text. */
+        static List<String> elements(String json) {
+            JsonReader r = new JsonReader(json);
+            List<String> out = new ArrayList<>();
+            r.ws();
+            r.expect('[');
+            r.ws();
+            if (r.peek() == ']') {
+                r.i++;
+                return out;
+            }
+            while (true) {
+                r.ws();
+                int start = r.i;
+                r.value();
+                out.add(json.substring(start, r.i));
+                r.ws();
+                char c = r.take();
+                if (c == ']') return out;
+                if (c != ',') throw r.bad();
+            }
+        }
+
+        private Object value() {
+            ws();
+            char c = peek();
+            if (c == '{') {
+                i++;
+                Map<String, Object> m = new LinkedHashMap<>();
+                ws();
+                if (peek() == '}') {
+                    i++;
+                    return m;
+                }
+                while (true) {
+                    ws();
+                    expect('"');
+                    String k = string();
+                    ws();
+                    expect(':');
+                    m.put(k, value());
+                    ws();
+                    char d = take();
+                    if (d == '}') return m;
+                    if (d != ',') throw bad();
+                }
+            }
+            if (c == '[') {
+                i++;
+                List<Object> a = new ArrayList<>();
+                ws();
+                if (peek() == ']') {
+                    i++;
+                    return a;
+                }
+                while (true) {
+                    a.add(value());
+                    ws();
+                    char d = take();
+                    if (d == ']') return a;
+                    if (d != ',') throw bad();
+                }
+            }
+            if (c == '"') {
+                i++;
+                return string();
+            }
+            if (s.startsWith("true", i)) { i += 4; return Boolean.TRUE; }
+            if (s.startsWith("false", i)) { i += 5; return Boolean.FALSE; }
+            if (s.startsWith("null", i)) { i += 4; return null; }
+            int start = i;
+            while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) i++;
+            String num = s.substring(start, i);
+            if (num.isEmpty()) throw bad();
+            try {
+                return num.matches("-?\\d+") ? (Object) Long.parseLong(num) : (Object) Double.parseDouble(num);
+            } catch (NumberFormatException e) {
+                return Double.parseDouble(num);
+            }
+        }
+
+        /** The rest of a string whose opening quote is consumed. */
+        private String string() {
+            StringBuilder b = new StringBuilder();
+            while (true) {
+                char c = take();
+                if (c == '"') return b.toString();
+                if (c != '\\') {
+                    b.append(c);
+                    continue;
+                }
+                char e = take();
+                switch (e) {
+                    case 'n' -> b.append('\n');
+                    case 't' -> b.append('\t');
+                    case 'r' -> b.append('\r');
+                    case 'b' -> b.append('\b');
+                    case 'f' -> b.append('\f');
+                    case 'u' -> {
+                        if (i + 4 > s.length()) throw bad();
+                        b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                        i += 4;
+                    }
+                    default -> b.append(e); // \" \\ \/
+                }
+            }
+        }
+
+        private void ws() {
+            while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++;
+        }
+
+        private char peek() {
+            if (i >= s.length()) throw bad();
+            return s.charAt(i);
+        }
+
+        private char take() {
+            char c = peek();
+            i++;
+            return c;
+        }
+
+        private void expect(char c) {
+            if (take() != c) throw bad();
+        }
+
+        private IllegalArgumentException bad() {
+            return new IllegalArgumentException("malformed JSON at offset " + i);
+        }
     }
 
     // ── small helpers, so a one-file SDK needs no JSON dependency ──────────

@@ -15,12 +15,19 @@ argument order.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import contextlib
+import functools
 import json
+import math
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-__all__ = ["Kloudlite", "ApiError"]
+__all__ = ["Kloudlite", "ApiError", "SandboxTerminated"]
 
 VERSION = "0.1.0"
 USER_AGENT = f"kloudlite-sdk-python/{VERSION}"
@@ -49,6 +56,7 @@ class Kloudlite:
         self.environments = Environments(self)
         self.sessions = Sessions(self)
         self.volumes = Volumes(self)
+        self.sandboxes = Sandboxes(self)
 
     def quota(self, *, owner: str | None = None):
         """The ceiling and what is against it; ``owner`` defaults to the caller's own."""
@@ -68,19 +76,7 @@ class Kloudlite:
         return self._request(self.hub_url, method, path, body, query)
 
     def _request(self, base: str, method: str, path: str, body=None, query: dict | None = None):
-        url = base + path
-        if query:
-            q = {k: v for k, v in query.items() if v is not None}
-            if q:
-                url += "?" + urllib.parse.urlencode(q)
-        data = None
-        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        if body is not None:
-            data = json.dumps(body).encode()
-            headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        req = self._prepare(base, method, path, body, query, "application/json")
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 raw = resp.read()
@@ -89,6 +85,37 @@ class Kloudlite:
         if not raw:
             return None
         return json.loads(raw)
+
+    def _ndjson(self, path: str, query: dict | None = None):
+        """GET an NDJSON stream from the api and yield each line, decoded, as it arrives. Same
+        auth, base URL and :class:`ApiError` mapping as :meth:`request`, but no read timeout: a
+        process may print nothing for longer than any round trip should take, and the server
+        ends the stream itself after the exit frame."""
+        req = self._prepare(self.base_url, "GET", path, None, query, "application/x-ndjson")
+        try:
+            resp = urllib.request.urlopen(req, timeout=None)
+        except urllib.error.HTTPError as e:
+            raise ApiError(e.code, _error_text(e.read())) from None
+        with resp:
+            for line in resp:  # readline on a chunked body returns each line once it lands
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
+    def _prepare(self, base: str, method: str, path: str, body, query: dict | None, accept: str):
+        url = base + path
+        if query:
+            q = {k: v for k, v in query.items() if v is not None}
+            if q:
+                url += "?" + urllib.parse.urlencode(q)
+        data = None
+        headers = {"User-Agent": USER_AGENT, "Accept": accept}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        return urllib.request.Request(url, data=data, headers=headers, method=method)
 
 
 def _seg(s: str) -> str:
@@ -586,6 +613,399 @@ class Volumes:
     def delete(self, *, volume: str):
         """Takes a DETACHED volume with all its snapshots; refused while a working copy remains."""
         return self._c.request("DELETE", f"/v1/volumes/{_seg(volume)}")
+
+
+class SandboxTerminated(ApiError):
+    """A call needed the sandbox ``running`` and it is ``terminated``. ``reason`` is the server's
+    (``Timeout``, ``Idle``, ``Exited``, ``Failed``, ``Unplaceable``, ``SourceGone``, ``Lost`` or
+    ``Terminated``); ``status`` is 409, as the tool route answers a sandbox that is not running."""
+
+    def __init__(self, sandbox: str, reason: str | None, message: str | None = None):
+        text = f"sandbox {sandbox} terminated: {reason or 'unknown reason'}"
+        super().__init__(409, f"{text} ({message})" if message else text)
+        self.sandbox = sandbox
+        self.reason = reason
+
+
+class _aio:
+    """``obj.call(...)`` blocks; ``await obj.call.aio(...)`` runs the very same call on a worker
+    thread (:func:`asyncio.to_thread`) — one implementation per call, so the async spelling can
+    never drift from the blocking one."""
+
+    def __init__(self, fn):
+        self._fn = fn
+        functools.update_wrapper(self, fn)
+
+    def __call__(self, *args, **kwargs):  # Class.method(obj, ...) still works
+        return self._fn(*args, **kwargs)
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return self
+        fn = self._fn
+
+        @functools.wraps(fn)
+        def call(*args, **kwargs):
+            return fn(obj, *args, **kwargs)
+
+        async def aio(*args, **kwargs):
+            return await asyncio.to_thread(fn, obj, *args, **kwargs)
+
+        call.aio = aio
+        return call
+
+
+def _backoff(timeout_s: float | None, what: str):
+    """Sleep 0.5 s growing to 2 s between polls; TimeoutError naming ``what`` past ``timeout_s``."""
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    delay = 0.5
+    while True:
+        yield
+        if deadline is not None and time.monotonic() + delay > deadline:
+            raise TimeoutError(f"{what} after {timeout_s} s")
+        time.sleep(delay)
+        delay = min(delay * 1.5, 2.0)
+
+
+class Sandboxes:
+    """Throwaway, isolated machines that run code, over ``/v1/sandboxes``. A sandbox starts from an
+    image, from one of your workspaces (``from_workspace``) or from a pushed snapshot
+    (``from_snapshot``), lives at most ``timeout_s`` (server default 300) and is gone once
+    terminated — read anything you need out of it first. Every call answers a :class:`Sandbox`
+    handle, and every call here and on the handles also has an async twin, ``.aio``::
+
+        sb = kl.sandboxes.create(image="python:3.12")
+        p = sb.exec(cmd=["python", "-c", "print(input())"])
+        p.stdin.write(b"hi\\n"); p.stdin.write_eof()
+        assert p.wait() == 0 and p.stdout.read() == "hi\\n"
+        sb.terminate()
+    """
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    @_aio
+    def create(self, *, image: str | None = None, packages: list | None = None,
+               from_workspace: str | None = None, from_snapshot: str | None = None,
+               team: str | None = None, region: str | None = None,
+               timeout_s: int | None = None, idle_timeout_s: int | None = None,
+               network: str | None = None, env: dict | None = None, cpu: int | None = None,
+               memory_gb: int | None = None, disk_gb: int | None = None) -> "Sandbox":
+        """Ask for a sandbox and return at once (202) — it is usually still ``starting``;
+        :meth:`Sandbox.exec` waits for it. ``from_workspace`` is an id, ``"name"`` or
+        ``"team/name"``; ``network`` is ``internet`` or ``none``; ``cpu`` in cores. Unset
+        arguments are left to the server's defaults and the owner's quota."""
+        body = {"image": image, "packages": packages, "from_workspace": from_workspace,
+                "from_snapshot": from_snapshot, "team": team, "region": region,
+                "timeout_secs": timeout_s, "idle_timeout_secs": idle_timeout_s,
+                "network": network, "env": env, "cpu": cpu, "memory_gb": memory_gb,
+                "disk_gb": disk_gb}
+        doc = self._c.request("POST", "/v1/sandboxes",
+                              body={k: v for k, v in body.items() if v is not None})
+        return Sandbox(self._c, doc)
+
+    @_aio
+    def get(self, *, sandbox: str) -> "Sandbox":
+        return Sandbox(self._c, self._c.request("GET", f"/v1/sandboxes/{_seg(sandbox)}"))
+
+    @_aio
+    def list(self, *, team: str | None = None) -> list:
+        """The caller's sandboxes, newest first; ``team`` scopes to theirs in that team."""
+        docs = self._c.request("GET", "/v1/sandboxes", query={"team": team}) or []
+        return [Sandbox(self._c, d) for d in docs]
+
+    @_aio
+    def run(self, *, cmd, cwd: str | None = None, env: dict | None = None,
+            timeout_s: float | None = None, image: str | None = None,
+            packages: list | None = None, from_workspace: str | None = None,
+            from_snapshot: str | None = None, team: str | None = None,
+            region: str | None = None, idle_timeout_s: int | None = None,
+            network: str | None = None, cpu: int | None = None, memory_gb: int | None = None,
+            disk_gb: int | None = None) -> dict:
+        """One command in a fresh sandbox: create, exec, wait, read every byte of output, and
+        terminate — ALWAYS, also when anything before it raised. Answers
+        ``{"exit_code", "stdout", "stderr", "sandbox"}``. ``env`` and ``cwd`` are the command's;
+        ``timeout_s`` bounds the command (None waits until it exits) and, when given, also sizes
+        the sandbox's own lifetime to cover it plus a minute to start."""
+        lifetime = None if timeout_s is None else min(86_400, max(10, math.ceil(timeout_s) + 60))
+        sb = self.create(image=image, packages=packages, from_workspace=from_workspace,
+                         from_snapshot=from_snapshot, team=team, region=region,
+                         timeout_s=lifetime, idle_timeout_s=idle_timeout_s, network=network,
+                         cpu=cpu, memory_gb=memory_gb, disk_gb=disk_gb)
+        try:
+            p = sb.exec(cmd=cmd, cwd=cwd, env=env)
+            code = p.wait(timeout_s=timeout_s)
+            out, err = p._collect()
+        except BaseException:
+            with contextlib.suppress(Exception):  # never mask the failure that got us here
+                sb.terminate()
+            raise
+        sb.terminate()
+        return {"exit_code": code, "stdout": out, "stderr": err, "sandbox": sb.id}
+
+
+class Sandbox:
+    """A handle on one sandbox: ``id``, ``phase`` (``pending``, ``starting``, ``running``,
+    ``terminated``), ``reason`` once terminated, and the whole server ``doc`` as of the last
+    answer — :meth:`refresh` re-reads it."""
+
+    def __init__(self, client: Kloudlite, doc: dict):
+        self._c = client
+        self.doc = doc
+
+    id = property(lambda self: self.doc["id"])
+    phase = property(lambda self: self.doc.get("phase"))
+    reason = property(lambda self: self.doc.get("reason"))
+
+    def __repr__(self):
+        return f"<Sandbox {self.id} {self.phase}{' ' + self.reason if self.reason else ''}>"
+
+    @_aio
+    def refresh(self) -> "Sandbox":
+        self.doc = self._c.request("GET", self._path())
+        return self
+
+    @_aio
+    def wait_running(self, *, timeout_s: float = 120) -> "Sandbox":
+        """Poll until ``running``; :class:`SandboxTerminated` naming the reason if it terminates
+        instead (an image that does not pull, a quota, a node that cannot place it)."""
+        for _ in _backoff(timeout_s, f"sandbox {self.id} not running"):
+            self.refresh()
+            if self.phase == "running":
+                return self
+            self._raise_if_terminated()
+
+    @_aio
+    def exec(self, *, cmd, cwd: str | None = None, env: dict | None = None) -> "Process":
+        """Start ``cmd`` — an argv list, or a string run by the shell — and return its
+        :class:`Process` at once; waits for the sandbox to run first. Always detached: the
+        process is followed through its stdin/stdout/stderr and :meth:`Process.wait`."""
+        if self.phase != "running":
+            self.wait_running()
+        body = {"cmd": cmd, "detach": True}
+        if cwd is not None:
+            body["cwd"] = cwd
+        if env is not None:
+            body["env"] = env
+        return Process(self, str(self._tool("exec", body)["id"]))
+
+    @_aio
+    def read(self, *, path: str):
+        """The tool server's ``read``; ``path`` is relative to ``~/workspace``."""
+        return self._tool("read", {"path": path})
+
+    @_aio
+    def write(self, *, path: str, content: str):
+        return self._tool("write", {"path": path, "content": content})
+
+    @_aio
+    def terminate(self) -> "Sandbox":
+        """Stop it for good (202); the record stays until :meth:`delete`."""
+        self.doc = self._c.request("POST", self._path("/terminate")) or self.doc
+        return self
+
+    @_aio
+    def wait(self, *, timeout_s: float | None = None) -> str | None:
+        """Poll until ``terminated`` and answer the reason."""
+        for _ in _backoff(timeout_s, f"sandbox {self.id} still {self.phase}"):
+            self.refresh()
+            if self.phase == "terminated":
+                return self.reason
+
+    @_aio
+    def delete(self):
+        return self._c.request("DELETE", self._path())
+
+    def _path(self, tail: str = "") -> str:
+        return f"/v1/sandboxes/{_seg(self.id)}{tail}"
+
+    def _raise_if_terminated(self):
+        if self.phase == "terminated":
+            raise SandboxTerminated(self.id, self.reason, self.doc.get("message"))
+
+    def _tool(self, name: str, body: dict):
+        try:
+            return self._c.request("POST", self._path(f"/tools/{_seg(name)}"), body=body)
+        except ApiError as e:
+            if e.status != 409:
+                raise
+            # 409 is the api saying "not running": name WHY rather than the bare refusal.
+            with contextlib.suppress(ApiError):
+                self.refresh()
+            self._raise_if_terminated()
+            raise
+
+
+class Process:
+    """A detached process in a sandbox: ``id``, ``sandbox``, ``stdin`` to write to, ``stdout`` and
+    ``stderr`` to read or iterate, and ``returncode`` once it is known."""
+
+    def __init__(self, sandbox: Sandbox, pid: str):
+        self.sandbox = sandbox
+        self.id = pid
+        self._returncode = None
+        self.stdin = ProcessStdin(self)
+        self.stdout = ProcessOutput(self, "stdout")
+        self.stderr = ProcessOutput(self, "stderr")
+
+    def __repr__(self):
+        return f"<Process {self.id} in {self.sandbox.id} returncode={self._returncode}>"
+
+    @property
+    def returncode(self) -> int | None:
+        """The exit code as of the last :meth:`wait`, :meth:`poll` or finished read; None
+        before then (or for a process a signal ended)."""
+        return self._returncode
+
+    @_aio
+    def wait(self, *, timeout_s: float | None = None) -> int | None:
+        """Block until it exits and answer the exit code; TimeoutError past ``timeout_s``. Waits
+        in polls of at most 20 s, the most the api holds one open."""
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while True:
+            left_ms = 20_000 if deadline is None else int((deadline - time.monotonic()) * 1000)
+            if left_ms <= 0:
+                raise TimeoutError(f"process {self.id} still running after {timeout_s} s")
+            code = self._wait_ms(min(left_ms, 20_000))
+            if code is not _RUNNING:
+                return code
+
+    @_aio
+    def poll(self) -> int | None:
+        """The exit code if it has exited, else None — never blocks."""
+        code = self._wait_ms(0)
+        return None if code is _RUNNING else code
+
+    @_aio
+    def kill(self, *, signal: str | None = None):
+        """Signal the whole process group (the tool server's default is a kill)."""
+        body = {"id": self.id}
+        if signal is not None:
+            body["signal"] = signal
+        return self.sandbox._tool("process_kill", body)
+
+    def _wait_ms(self, timeout_ms: int):
+        out = self.sandbox._tool("process_wait", {"id": self.id, "timeout_ms": timeout_ms})
+        if out.get("state") != "exited":
+            return _RUNNING
+        self._returncode = out.get("exit_code")
+        return self._returncode
+
+    def _frames(self):
+        """Every frame of the output stream, from the first byte the ring still holds to the
+        exit frame — each read or iteration is its own replay, so they never steal output."""
+        path = self.sandbox._path(f"/processes/{_seg(self.id)}/stream")
+        for frame in self.sandbox._c._ndjson(path, {"since": 0, "since_err": 0}):
+            if "exit" in frame:
+                self._returncode = frame["exit"]
+            yield frame
+
+    def _collect(self) -> tuple[str, str]:
+        out, err = [], []
+        for frame in self._frames():
+            if frame.get("stream") == "stdout":
+                out.append(frame.get("data", ""))
+            elif frame.get("stream") == "stderr":
+                err.append(frame.get("data", ""))
+        return "".join(out), "".join(err)
+
+
+_RUNNING = object()
+
+
+class ProcessStdin:
+    """A process's stdin. Each write is delivered when the call returns, so :meth:`drain` has
+    nothing to wait for; :meth:`write_eof` closes it."""
+
+    def __init__(self, process: Process):
+        self._p = process
+
+    @_aio
+    def write(self, data: str | bytes) -> int:
+        """Send ``data`` (bytes, or text as UTF-8) and answer how many bytes went. The one call
+        that also takes its input by position — ``stdin.write(b"…")`` — because it is a file's
+        ``write`` and has exactly one input to get in order."""
+        raw = data.encode() if isinstance(data, str) else bytes(data)
+        self._p.sandbox._tool("process_write", {
+            "id": self._p.id, "data_base64": base64.b64encode(raw).decode("ascii"),
+        })
+        return len(raw)
+
+    @_aio
+    def write_eof(self):
+        """Close stdin — what ends a ``while read line`` loop."""
+        return self._p.sandbox._tool("process_close_stdin", {"id": self._p.id})
+
+    @_aio
+    def drain(self):
+        """Nothing to flush: kept so code written against a stream writer reads the same."""
+        return None
+
+
+class ProcessOutput:
+    """A process's stdout or stderr. :meth:`read` answers the whole stream once the process has
+    exited; iterating yields lines as they arrive — newline kept, as a file does, and a last
+    unterminated line at the end — and :meth:`aio_lines` is the same iteration for ``async for``."""
+
+    def __init__(self, process: Process, name: str):
+        self._p = process
+        self._name = name
+
+    @_aio
+    def read(self) -> str:
+        return "".join(self._chunks())
+
+    def __iter__(self):
+        pending = ""
+        for chunk in self._chunks():
+            pending += chunk
+            *lines, pending = pending.split("\n")
+            for line in lines:
+                yield line + "\n"
+        if pending:
+            yield pending
+
+    async def aio_lines(self):
+        """``async for line in p.stdout.aio_lines()``: the blocking stream runs on its own
+        daemon thread and hands lines over a queue, so a consumer that stops early leaves
+        nothing for the event loop to wait on at shutdown."""
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        stop = threading.Event()
+        end = object()
+
+        def hand(item):
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:  # the loop closed under a consumer that went away
+                stop.set()
+
+        def pump():
+            try:
+                for line in self:
+                    if stop.is_set():
+                        return
+                    hand((line, None))
+                hand((end, None))
+            except BaseException as e:  # surfaced in the consumer, not lost on the thread
+                hand((end, e))
+
+        threading.Thread(target=pump, daemon=True).start()
+        try:
+            while True:
+                line, err = await queue.get()
+                if line is end:
+                    if err is not None:
+                        raise err
+                    return
+                yield line
+        finally:
+            stop.set()
+
+    def _chunks(self):
+        for frame in self._p._frames():
+            if frame.get("stream") == self._name:
+                yield frame.get("data", "")
 
 
 class HubRepos:
