@@ -43,6 +43,7 @@ class Kloudlite:
         self.model_repos = HubRepos(self, "model")
         self.data_repos = HubRepos(self, "dataset")
         self.workspaces = Workspaces(self)
+        self.environments = Environments(self)
         self.volumes = Volumes(self)
 
     def quota(self, owner: str | None = None):
@@ -402,6 +403,92 @@ class Ide:
         except urllib.error.HTTPError as e:
             raise ApiError(e.code, _error_text(e.read())) from None
         return json.loads(raw) if raw else None
+
+
+class Environments:
+    """Multi-service environments, over ``/v1/environments``: a set of containers sharing one
+    disk. An environment is named by ONE string — ``"name"`` for the caller's own, ``"team/name"``
+    for a team's — or by its id (``env-…``). Each service is a dict: ``name`` and ``image``, plus
+    optional ``ports``, ``env``, ``command`` and ``mounts`` (``[{"folder", "path"}]``, a folder of
+    the environment's disk)."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    def create(self, env: str, services: list | None = None, quota_gb: int | None = None,
+               snapshot_id: str | None = None):
+        """``snapshot_id`` grows it from a pushed snapshot — also one of a deleted environment —
+        and then ``services`` default to the ones that snapshot froze."""
+        owner, name = _owned(env)
+        return self._c.request("POST", "/v1/environments", {
+            "name": name, "owner": owner, "services": _services(services),
+            "quota_gb": quota_gb, "snapshot_id": snapshot_id,
+        })
+
+    def list(self, owner: str | None = None):
+        """The caller's environments and their teams'; ``owner`` narrows to one handle or team."""
+        return self._c.request("GET", "/v1/environments", query={"owner": owner})
+
+    def get(self, env: str):
+        return self._at("GET", env)
+
+    def set_services(self, env: str, services: list):
+        """Replace the WHOLE service list. A removed service keeps its folders on the disk, so
+        adding it back finds its data."""
+        return self._at("PATCH", env, body={"services": _services(services)})
+
+    def start(self, env: str):
+        return self._at("POST", env, "/start")
+
+    def stop(self, env: str):
+        return self._at("POST", env, "/stop")
+
+    def hold(self, env: str):
+        """Reset the idle clock — call it periodically while something depends on the services."""
+        return self._at("POST", env, "/hold")
+
+    def delete(self, env: str):
+        """The volume survives while a pushed snapshot references it."""
+        return self._at("DELETE", env)
+
+    def push(self, env: str, message: str | None = None):
+        """Cut a SNAPSHOT of every service's data — the one durable, restorable state."""
+        return self._at("POST", env, "/push", body={"message": message} if message is not None else None)
+
+    def clone(self, env: str, to: str, snapshot_id: str | None = None,
+              services: list | None = None, quota_gb: int | None = None):
+        """A new environment ``to`` (``"name"`` or ``"team/name"``): a copy of the live disk, or
+        with ``snapshot_id`` of one of this environment's snapshots."""
+        owner, name = _owned(to)
+        return self._at("POST", env, "/clone", body={
+            "name": name, "owner": owner, "snapshot_id": snapshot_id,
+            "services": _services(services) if services else None, "quota_gb": quota_gb,
+        })
+
+    def restore(self, env: str, snapshot_id: str, discard: list | None = None):
+        """Put THIS environment back to one of its own snapshots, services and data (202). A
+        persistent service the snapshot lacks is a 409 naming it; list it in ``discard`` to
+        accept losing its data."""
+        return self._at("POST", env, "/restore",
+                        body={"snapshot_id": snapshot_id, "discard": discard or []})
+
+    def _at(self, method: str, env: str, tail: str = "", body=None):
+        owner, name = _owned(env)
+        return self._c.request(method, f"/v1/environments/{_seg(name)}{tail}", body,
+                               query={"owner": owner})
+
+
+def _owned(s: str) -> tuple[str | None, str]:
+    """``"name"`` → (None, name); ``"team/name"`` → (team, name)."""
+    owner, sep, name = s.rpartition("/")
+    if sep and (not owner or not name or "/" in owner):
+        raise ValueError(f"expected name or team/name, got {s!r}")
+    return (owner or None), name
+
+
+def _services(services: list | None) -> list:
+    """The server requires every field; fill the ones a caller leaves out."""
+    return [{"command": [], "env": {}, "mounts": [], "ports": [], **sv} for sv in services or []]
 
 
 class Volumes:

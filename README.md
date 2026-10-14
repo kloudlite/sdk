@@ -105,6 +105,38 @@ kl.workspaces.delete(wid)                                  # snapshots survive o
 kl.volumes.delete_snapshot(vol, snaps[0]["id"])
 ```
 
+## The `environments` module
+
+Multi-service environments over `/v1/environments`: a set of containers sharing
+one disk. An environment is named by ONE string — `"name"` for your own,
+`"team/name"` for a team's — or by its id (`env-…`). A service needs only
+`name` and `image`; `ports`, `env`, `command` and `mounts` (folders of the
+environment's disk) are optional:
+
+```python
+kl.environments.create("acme/staging", quota_gb=20, services=[
+    {"name": "db", "image": "postgres:16", "ports": [5432],
+     "env": {"POSTGRES_PASSWORD": "dev"},
+     "mounts": [{"folder": "pgdata", "path": "/var/lib/postgresql/data"}]},
+    {"name": "api", "image": "ghcr.io/acme/api:1", "ports": [8080]},
+])
+kl.environments.list(owner="acme")
+kl.environments.get("acme/staging")
+kl.environments.set_services("acme/staging", [...])     # the whole list; data folders stay
+kl.environments.stop("acme/staging"); kl.environments.start("acme/staging")
+kl.environments.hold("acme/staging")                    # reset the idle clock
+
+kl.environments.push("acme/staging", message="seeded")  # a kept snapshot
+kl.environments.clone("acme/staging", "acme/staging-2") # a copy of the live disk
+snaps = kl.volumes.history(kl.environments.get("acme/staging")["volume"])
+kl.environments.restore("acme/staging", snaps[0]["id"]) # in place: services and data
+kl.environments.create("acme/staging-old", snapshot_id=snaps[0]["id"])  # a new one from it
+kl.environments.delete("acme/staging")                  # snapshots survive on the volume
+```
+
+Java builds services with `new Kloudlite.Service("db", "postgres:16").port(5432)
+.env("POSTGRES_PASSWORD", "dev").mount("pgdata", "/var/lib/postgresql/data")`.
+
 ## The `model_repos` and `data_repos` modules
 
 Model and dataset repositories live on the HUB listener (the Hugging Face Hub

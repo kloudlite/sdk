@@ -17,6 +17,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 public class Kloudlite {
     public static final String VERSION = "0.1.0";
@@ -41,6 +43,7 @@ public class Kloudlite {
     private final HubRepos modelRepos = new HubRepos("model", "models");
     private final HubRepos dataRepos = new HubRepos("dataset", "datasets");
     private final Workspaces workspaces = new Workspaces();
+    private final Environments environments = new Environments();
     private final Volumes volumes = new Volumes();
 
     /** token may be null for anonymous access to public data. */
@@ -74,6 +77,11 @@ public class Kloudlite {
     /** Btrfs-backed dev workspaces: {@code /v1/workspaces}. */
     public Workspaces workspaces() {
         return workspaces;
+    }
+
+    /** Multi-service environments: {@code /v1/environments}. */
+    public Environments environments() {
+        return environments;
     }
 
     /** The volumes behind workspaces and environments: {@code /v1/volumes}. */
@@ -492,6 +500,165 @@ public class Kloudlite {
                 throw new ApiException(resp.statusCode(), errorText(resp.body()));
             }
             return resp.body();
+        }
+    }
+
+    /**
+     * One container of an environment, built fluently and rendered with every field the server
+     * requires: {@code new Service("db", "postgres:16").port(5432).env("POSTGRES_PASSWORD", "dev")
+     * .mount("pgdata", "/var/lib/postgresql/data")}. A mount's folder is a folder of the
+     * environment's own disk.
+     */
+    public static class Service {
+        private final String name;
+        private final String image;
+        private final List<String> ports = new ArrayList<>();
+        private final List<String> env = new ArrayList<>();
+        private final List<String> command = new ArrayList<>();
+        private final List<String> mounts = new ArrayList<>();
+
+        public Service(String name, String image) {
+            this.name = name;
+            this.image = image;
+        }
+
+        public Service port(int port) {
+            ports.add(Integer.toString(port));
+            return this;
+        }
+
+        public Service env(String key, String value) {
+            env.add(quote(key) + ":" + quote(value));
+            return this;
+        }
+
+        public Service command(String... argv) {
+            for (String a : argv) command.add(quote(a));
+            return this;
+        }
+
+        public Service mount(String folder, String path) {
+            mounts.add(obj("folder", folder, "path", path));
+            return this;
+        }
+
+        String toJson() {
+            return "{\"name\":" + quote(name) + ",\"image\":" + quote(image)
+                + ",\"ports\":[" + String.join(",", ports) + "]"
+                + ",\"env\":{" + String.join(",", env) + "}"
+                + ",\"command\":[" + String.join(",", command) + "]"
+                + ",\"mounts\":[" + String.join(",", mounts) + "]}";
+        }
+    }
+
+    /**
+     * Multi-service environments, over {@code /v1/environments}: a set of containers sharing one
+     * disk. An environment is named by ONE string — {@code "name"} for the caller's own,
+     * {@code "team/name"} for a team's — or by its id ({@code env-…}).
+     */
+    public class Environments {
+        public String create(String env, Service... services) throws IOException, InterruptedException {
+            return create(env, null, null, services);
+        }
+
+        /**
+         * A null {@code quotaGb} means the default. {@code snapshotId} grows it from a pushed
+         * snapshot — also one of a deleted environment — and then an empty {@code services}
+         * means the ones that snapshot froze.
+         */
+        public String create(String env, Long quotaGb, String snapshotId, Service... services)
+            throws IOException, InterruptedException {
+            return request("POST", "/v1/environments", body(env, quotaGb, snapshotId, services, true));
+        }
+
+        /** The caller's environments and their teams'; a non-null owner narrows to one handle or team. */
+        public String list(String owner) throws IOException, InterruptedException {
+            return request("GET", owner == null ? "/v1/environments" : "/v1/environments?owner=" + seg(owner), null);
+        }
+
+        public String get(String env) throws IOException, InterruptedException {
+            return request("GET", path(env, ""), null);
+        }
+
+        /** Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its data. */
+        public String setServices(String env, Service... services) throws IOException, InterruptedException {
+            return request("PATCH", path(env, ""), "{\"services\":" + array(services) + "}");
+        }
+
+        public String start(String env) throws IOException, InterruptedException {
+            return request("POST", path(env, "/start"), null);
+        }
+
+        public String stop(String env) throws IOException, InterruptedException {
+            return request("POST", path(env, "/stop"), null);
+        }
+
+        /** Reset the idle clock — call it periodically while something depends on the services. */
+        public String hold(String env) throws IOException, InterruptedException {
+            return request("POST", path(env, "/hold"), null);
+        }
+
+        /** The volume survives while a pushed snapshot references it. */
+        public String delete(String env) throws IOException, InterruptedException {
+            return request("DELETE", path(env, ""), null);
+        }
+
+        /** Cut a SNAPSHOT of every service's data — the one durable, restorable state. */
+        public String push(String env, String message) throws IOException, InterruptedException {
+            return request("POST", path(env, "/push"), message == null ? null : obj("message", message));
+        }
+
+        /** A new environment {@code to} ("name" or "team/name"), copied from the live disk. */
+        public String clone_(String env, String to) throws IOException, InterruptedException {
+            return clone_(env, to, null);
+        }
+
+        /** As above, but from one of this environment's snapshots when {@code snapshotId} is set. */
+        public String clone_(String env, String to, String snapshotId) throws IOException, InterruptedException {
+            return request("POST", path(env, "/clone"), body(to, null, snapshotId, new Service[0], false));
+        }
+
+        /**
+         * Put THIS environment back to one of its own snapshots, services and data (202). A
+         * persistent service the snapshot lacks is a 409 naming it; list it in {@code discard}
+         * to accept losing its data.
+         */
+        public String restore(String env, String snapshotId, String... discard) throws IOException, InterruptedException {
+            List<String> d = new ArrayList<>();
+            for (String x : discard) d.add(quote(x));
+            return request("POST", path(env, "/restore"),
+                "{\"snapshot_id\":" + quote(snapshotId) + ",\"discard\":[" + String.join(",", d) + "]}");
+        }
+
+        private String path(String env, String tail) {
+            String[] on = owned(env);
+            return "/v1/environments/" + seg(on[1]) + tail + (on[0] == null ? "" : "?owner=" + seg(on[0]));
+        }
+
+        private String body(String env, Long quotaGb, String snapshotId, Service[] services, boolean always) {
+            String[] on = owned(env);
+            String b = obj("name", on[1], "owner", on[0], "snapshot_id", snapshotId);
+            StringBuilder out = new StringBuilder(b.substring(0, b.length() - 1));
+            if (quotaGb != null) out.append(",\"quota_gb\":").append(quotaGb);
+            if (always || services.length > 0) out.append(",\"services\":").append(array(services));
+            return out.append('}').toString();
+        }
+
+        private String array(Service[] services) {
+            List<String> parts = new ArrayList<>();
+            for (Service sv : services) parts.add(sv.toJson());
+            return "[" + String.join(",", parts) + "]";
+        }
+
+        /** "name" → {null, name}; "team/name" → {team, name}. */
+        private String[] owned(String s) {
+            int i = s.lastIndexOf('/');
+            if (i < 0) return new String[] {null, s};
+            String owner = s.substring(0, i), name = s.substring(i + 1);
+            if (owner.isEmpty() || name.isEmpty() || owner.contains("/")) {
+                throw new IllegalArgumentException("expected name or team/name, got " + s);
+            }
+            return new String[] {owner, name};
         }
     }
 

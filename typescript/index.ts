@@ -41,6 +41,7 @@ export class Kloudlite {
   readonly modelRepos: HubRepos;
   readonly dataRepos: HubRepos;
   readonly workspaces: Workspaces;
+  readonly environments: Environments;
   readonly volumes: Volumes;
   private readonly baseUrl: string;
   private readonly hubUrl?: string;
@@ -56,6 +57,7 @@ export class Kloudlite {
     this.modelRepos = new HubRepos(this, "model");
     this.dataRepos = new HubRepos(this, "dataset");
     this.workspaces = new Workspaces(this);
+    this.environments = new Environments(this);
     this.volumes = new Volumes(this);
   }
 
@@ -503,6 +505,113 @@ export class Ide {
  * The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
  * the two deletes — over `/v1/volumes`.
  */
+/**
+ * A service of an environment: `name` and `image`, plus optional `ports`, `env`, `command` and
+ * `mounts` (a folder of the environment's disk, mounted at `path`).
+ */
+export interface Service {
+  name: string;
+  image: string;
+  ports?: number[];
+  env?: Record<string, string>;
+  command?: string[];
+  mounts?: { folder: string; path: string }[];
+}
+
+/**
+ * Multi-service environments, over `/v1/environments`: a set of containers sharing one disk. An
+ * environment is named by ONE string — `"name"` for the caller's own, `"team/name"` for a
+ * team's — or by its id (`env-…`).
+ */
+export class Environments {
+  constructor(private readonly c: Kloudlite) {}
+
+  /**
+   * `snapshot_id` grows it from a pushed snapshot — also one of a deleted environment — and then
+   * `services` default to the ones that snapshot froze.
+   */
+  create(env: string, opts: { services?: Service[]; quota_gb?: number; snapshot_id?: string } = {}) {
+    const [owner, name] = owned(env);
+    return this.c.request("POST", "/v1/environments", {
+      name, owner, quota_gb: opts.quota_gb, snapshot_id: opts.snapshot_id, services: services(opts.services),
+    });
+  }
+
+  /** The caller's environments and their teams'; `owner` narrows to one handle or team. */
+  list(owner?: string) {
+    return this.c.request<unknown[]>("GET", "/v1/environments", undefined, { owner });
+  }
+
+  get(env: string) {
+    return this.at("GET", env);
+  }
+
+  /** Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its data. */
+  setServices(env: string, list: Service[]) {
+    return this.at("PATCH", env, "", { services: services(list) });
+  }
+
+  start(env: string) {
+    return this.at("POST", env, "/start");
+  }
+
+  stop(env: string) {
+    return this.at("POST", env, "/stop");
+  }
+
+  /** Reset the idle clock — call it periodically while something depends on the services. */
+  hold(env: string) {
+    return this.at("POST", env, "/hold");
+  }
+
+  /** The volume survives while a pushed snapshot references it. */
+  delete(env: string) {
+    return this.at("DELETE", env);
+  }
+
+  /** Cut a SNAPSHOT of every service's data — the one durable, restorable state. */
+  push(env: string, message?: string) {
+    return this.at("POST", env, "/push", message === undefined ? undefined : { message });
+  }
+
+  /** A new environment `to` ("name" or "team/name"): the live disk, or with `snapshot_id` one of this one's snapshots. */
+  clone(env: string, to: string, opts: { snapshot_id?: string; services?: Service[]; quota_gb?: number } = {}) {
+    const [owner, name] = owned(to);
+    return this.at("POST", env, "/clone", {
+      name, owner, snapshot_id: opts.snapshot_id, quota_gb: opts.quota_gb,
+      services: opts.services ? services(opts.services) : undefined,
+    });
+  }
+
+  /**
+   * Put THIS environment back to one of its own snapshots, services and data (202). A persistent
+   * service the snapshot lacks is a 409 naming it; list it in `discard` to accept losing its data.
+   */
+  restore(env: string, snapshot_id: string, discard: string[] = []) {
+    return this.at("POST", env, "/restore", { snapshot_id, discard });
+  }
+
+  private at(method: string, env: string, tail = "", body?: unknown) {
+    const [owner, name] = owned(env);
+    return this.c.request(method, `/v1/environments/${seg(name)}${tail}`, body, { owner });
+  }
+}
+
+/** `"name"` → [undefined, name]; `"team/name"` → [team, name]. */
+function owned(s: string): [string | undefined, string] {
+  const i = s.lastIndexOf("/");
+  if (i < 0) return [undefined, s];
+  const owner = s.slice(0, i);
+  const name = s.slice(i + 1);
+  if (!owner || !name || owner.includes("/")) throw new Error(`expected name or team/name, got ${JSON.stringify(s)}`);
+  return [owner, name];
+}
+
+/** The server requires every field; fill the ones a caller leaves out. */
+function services(list: Service[] = []) {
+  return list.map((sv) => ({ command: [], env: {}, mounts: [], ports: [], ...sv }));
+}
+
 export class Volumes {
   constructor(private readonly c: Kloudlite) {}
 
