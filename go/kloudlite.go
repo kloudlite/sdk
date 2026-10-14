@@ -37,6 +37,7 @@ type Client struct {
 	DataRepos    *HubRepos
 	Workspaces   *Workspaces
 	Environments *Environments
+	Sessions     *Sessions
 	Volumes      *Volumes
 
 	baseURL string
@@ -64,6 +65,7 @@ func NewWithHub(baseURL, hubURL, token string) *Client {
 	c.DataRepos = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
 	c.Workspaces = &Workspaces{c}
 	c.Environments = &Environments{c}
+	c.Sessions = &Sessions{c}
 	c.Volumes = &Volumes{c}
 	return c
 }
@@ -1031,6 +1033,95 @@ func fillServices(in []Service) []Service {
 		out[i] = sv
 	}
 	return out
+}
+
+// Sessions are working sessions over /v1/sessions: some of YOUR workspaces in
+// one team, connected to one environment. Many people's sessions connect to
+// the same environment and collaborate through it; an intercept a session takes
+// is environment-wide, and the session owns it — only it can release it, and
+// removing the workspace or deleting the session releases it.
+//
+// A session is named like an environment — "name" (personal) or "team/name" —
+// or by its id (ses-…); a workspace by its id, name or "team/name".
+type Sessions struct{ c *Client }
+
+// Create connects a new session to environment, which must be the session's
+// team's: an id, a name or "team/name".
+func (s *Sessions) Create(session, environment string) (map[string]any, error) {
+	team, name, err := owned(session)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]string{"name": name, "environment": environment}
+	if team != "" {
+		body["team"] = team
+	}
+	var out map[string]any
+	err = s.c.Request("POST", "/v1/sessions", nil, body, &out)
+	return out, err
+}
+
+func (s *Sessions) List(team string) ([]map[string]any, error) {
+	q := url.Values{}
+	if team != "" {
+		q.Set("team", team)
+	}
+	var out []map[string]any
+	err := s.c.Request("GET", "/v1/sessions", q, nil, &out)
+	return out, err
+}
+
+// Get answers the session with its workspaces and the intercepts it holds.
+func (s *Sessions) Get(session string) (map[string]any, error) {
+	var out map[string]any
+	err := s.at("GET", session, "", nil, &out)
+	return out, err
+}
+
+// Delete releases its intercepts and lets its workspaces go — never deletes a
+// workspace.
+func (s *Sessions) Delete(session string) error { return s.at("DELETE", session, "", nil, nil) }
+
+// Add puts a workspace in the session. A workspace is in at most one session;
+// while in one it resolves that session's environment.
+func (s *Sessions) Add(session, workspace string) (map[string]any, error) {
+	var out map[string]any
+	err := s.at("POST", session, "/workspaces", map[string]string{"workspace": workspace}, &out)
+	return out, err
+}
+
+// Remove releases whatever the workspace intercepts in this session first.
+func (s *Sessions) Remove(session, workspace string) error {
+	return s.at("DELETE", session, "/workspaces/"+seg(workspace), nil, nil)
+}
+
+// Intercept sends everything that calls service in the environment to
+// workspace (a member); ports maps each service port to the workspace port
+// that answers it ({8080: 3000}).
+func (s *Sessions) Intercept(session, service, workspace string, ports map[int]int) (map[string]any, error) {
+	pm := make([]map[string]int, 0, len(ports))
+	for sp, wp := range ports {
+		pm = append(pm, map[string]int{"service": sp, "workspace": wp})
+	}
+	var out map[string]any
+	err := s.at("POST", session, "/intercepts", map[string]any{"service": service, "workspace": workspace, "ports": pm}, &out)
+	return out, err
+}
+
+func (s *Sessions) Release(session, service string) error {
+	return s.at("DELETE", session, "/intercepts/"+seg(service), nil, nil)
+}
+
+func (s *Sessions) at(method, session, tail string, body, out any) error {
+	owner, name, err := owned(session)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	if owner != "" {
+		q.Set("owner", owner)
+	}
+	return s.c.Request(method, "/v1/sessions/"+seg(name)+tail, q, body, out)
 }
 
 type Volumes struct{ c *Client }
