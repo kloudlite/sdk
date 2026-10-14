@@ -42,6 +42,7 @@ export class Kloudlite {
   readonly dataRepos: HubRepos;
   readonly workspaces: Workspaces;
   readonly environments: Environments;
+  readonly sessions: Sessions;
   readonly volumes: Volumes;
   private readonly baseUrl: string;
   private readonly hubUrl?: string;
@@ -58,6 +59,7 @@ export class Kloudlite {
     this.dataRepos = new HubRepos(this, "dataset");
     this.workspaces = new Workspaces(this);
     this.environments = new Environments(this);
+    this.sessions = new Sessions(this);
     this.volumes = new Volumes(this);
   }
 
@@ -610,6 +612,70 @@ function owned(s: string): [string | undefined, string] {
 /** The server requires every field; fill the ones a caller leaves out. */
 function services(list: Service[] = []) {
   return list.map((sv) => ({ command: [], env: {}, mounts: [], ports: [], ...sv }));
+}
+
+/**
+ * Working sessions, over `/v1/sessions`: some of YOUR workspaces in one team, connected to one
+ * environment. Many people's sessions connect to the same environment and collaborate through it;
+ * an intercept a session takes is environment-wide, and the session owns it — only it can release
+ * it, and removing the workspace or deleting the session releases it.
+ *
+ * A session is named like an environment — `"name"` (personal) or `"team/name"` — or by its id
+ * (`ses-…`); a workspace by its id, name or `"team/name"`.
+ */
+export class Sessions {
+  constructor(private readonly c: Kloudlite) {}
+
+  /** `environment` must be the session's team's: an id, a name or `"team/name"`. */
+  create(session: string, environment: string) {
+    const [team, name] = owned(session);
+    return this.c.request("POST", "/v1/sessions", { name, team, environment });
+  }
+
+  list(team?: string) {
+    return this.c.request<unknown[]>("GET", "/v1/sessions", undefined, { team });
+  }
+
+  /** The session with its `workspaces` and the `intercepts` it holds. */
+  get(session: string) {
+    return this.at("GET", session);
+  }
+
+  /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
+  delete(session: string) {
+    return this.at("DELETE", session);
+  }
+
+  /** A workspace is in at most one session; while in one it resolves that session's environment. */
+  add(session: string, workspace: string) {
+    return this.at("POST", session, "/workspaces", { workspace });
+  }
+
+  /** Releases whatever the workspace intercepts in this session first. */
+  remove(session: string, workspace: string) {
+    return this.at("DELETE", session, `/workspaces/${seg(workspace)}`);
+  }
+
+  /**
+   * Send everything that calls `service` in the environment to `workspace` (a member), `ports`
+   * mapping each service port to the workspace port that answers it (`{ 8080: 3000 }`).
+   */
+  intercept(session: string, service: string, workspace: string, ports: Record<number, number> = {}) {
+    return this.at("POST", session, "/intercepts", {
+      service,
+      workspace,
+      ports: Object.entries(ports).map(([s, w]) => ({ service: Number(s), workspace: Number(w) })),
+    });
+  }
+
+  release(session: string, service: string) {
+    return this.at("DELETE", session, `/intercepts/${seg(service)}`);
+  }
+
+  private at(method: string, session: string, tail = "", body?: unknown) {
+    const [owner, name] = owned(session);
+    return this.c.request(method, `/v1/sessions/${seg(name)}${tail}`, body, { owner });
+  }
 }
 
 export class Volumes {

@@ -28,7 +28,7 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :volumes
+    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :sessions, :volumes
 
     def initialize(base_url, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
@@ -40,6 +40,7 @@ module Kloudlite
       @data_repos = HubRepos.new(self, "dataset")
       @workspaces = Workspaces.new(self)
       @environments = Environments.new(self)
+      @sessions = Sessions.new(self)
       @volumes = Volumes.new(self)
     end
 
@@ -534,6 +535,81 @@ module Kloudlite
     # The server requires every field; fill the ones a caller leaves out.
     def fill(services)
       services.map { |sv| { command: [], env: {}, mounts: [], ports: [] }.merge(sv.transform_keys(&:to_sym)) }
+    end
+
+    def seg(s)
+      URI.encode_uri_component(s.to_s)
+    end
+  end
+
+  # Working sessions, over /v1/sessions: some of YOUR workspaces in one team, connected to one
+  # environment. Many people's sessions connect to the same environment and collaborate through
+  # it; an intercept a session takes is environment-wide, and the session owns it — only it can
+  # release it, and removing the workspace or deleting the session releases it.
+  #
+  # A session is named like an environment — "name" (personal) or "team/name" — or by its id
+  # ("ses-…"); a workspace by its id, name or "team/name".
+  class Sessions
+    def initialize(client)
+      @c = client
+    end
+
+    # +environment+ must be the session's team's: an id, a name or "team/name".
+    def create(session, environment)
+      team, name = owned(session)
+      @c.request("POST", "/v1/sessions", body: { name: name, team: team, environment: environment })
+    end
+
+    def list(team: nil)
+      @c.request("GET", "/v1/sessions", query: { team: team })
+    end
+
+    # The session with its +workspaces+ and the +intercepts+ it holds.
+    def get(session)
+      at("GET", session)
+    end
+
+    # Releases its intercepts and lets its workspaces go — never deletes a workspace.
+    def delete(session)
+      at("DELETE", session)
+    end
+
+    # A workspace is in at most one session; while in one it resolves that session's environment.
+    def add(session, workspace)
+      at("POST", session, "/workspaces", body: { workspace: workspace })
+    end
+
+    # Releases whatever the workspace intercepts in this session first.
+    def remove(session, workspace)
+      at("DELETE", session, "/workspaces/#{seg(workspace)}")
+    end
+
+    # Send everything that calls +service+ in the environment to +workspace+ (a member), +ports+
+    # mapping each service port to the workspace port that answers it ({ 8080 => 3000 }).
+    def intercept(session, service, workspace, ports: {})
+      at("POST", session, "/intercepts",
+         body: { service: service, workspace: workspace,
+                 ports: ports.map { |s, w| { service: Integer(s), workspace: Integer(w) } } })
+    end
+
+    def release(session, service)
+      at("DELETE", session, "/intercepts/#{seg(service)}")
+    end
+
+    private
+
+    def at(method, session, tail = "", body: nil)
+      owner, name = owned(session)
+      @c.request(method, "/v1/sessions/#{seg(name)}#{tail}", body: body, query: { owner: owner })
+    end
+
+    # "name" → [nil, name]; "team/name" → [team, name].
+    def owned(s)
+      i = s.rindex("/")
+      return [nil, s] if i.nil?
+      owner, name = s[0...i], s[(i + 1)..]
+      raise ArgumentError, "expected name or team/name, got #{s.inspect}" if owner.empty? || name.empty? || owner.include?("/")
+      [owner, name]
     end
 
     def seg(s)

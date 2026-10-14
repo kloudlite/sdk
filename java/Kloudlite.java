@@ -44,6 +44,7 @@ public class Kloudlite {
     private final HubRepos dataRepos = new HubRepos("dataset", "datasets");
     private final Workspaces workspaces = new Workspaces();
     private final Environments environments = new Environments();
+    private final Sessions sessions = new Sessions();
     private final Volumes volumes = new Volumes();
 
     /** token may be null for anonymous access to public data. */
@@ -82,6 +83,11 @@ public class Kloudlite {
     /** Multi-service environments: {@code /v1/environments}. */
     public Environments environments() {
         return environments;
+    }
+
+    /** Working sessions: {@code /v1/sessions}. */
+    public Sessions sessions() {
+        return sessions;
     }
 
     /** The volumes behind workspaces and environments: {@code /v1/volumes}. */
@@ -650,16 +656,81 @@ public class Kloudlite {
             return "[" + String.join(",", parts) + "]";
         }
 
-        /** "name" → {null, name}; "team/name" → {team, name}. */
-        private String[] owned(String s) {
-            int i = s.lastIndexOf('/');
-            if (i < 0) return new String[] {null, s};
-            String owner = s.substring(0, i), name = s.substring(i + 1);
-            if (owner.isEmpty() || name.isEmpty() || owner.contains("/")) {
-                throw new IllegalArgumentException("expected name or team/name, got " + s);
-            }
-            return new String[] {owner, name};
+    }
+
+    /**
+     * Working sessions, over {@code /v1/sessions}: some of YOUR workspaces in one team, connected
+     * to one environment. Many people's sessions connect to the same environment and collaborate
+     * through it; an intercept a session takes is environment-wide, and the session owns it — only
+     * it can release it, and removing the workspace or deleting the session releases it. A session
+     * is named like an environment ({@code "name"} or {@code "team/name"}) or by its id; a
+     * workspace by its id, name or {@code "team/name"}.
+     */
+    public class Sessions {
+        /** {@code environment} must be the session's team's: an id, a name or "team/name". */
+        public String create(String session, String environment) throws IOException, InterruptedException {
+            String[] on = owned(session);
+            return request("POST", "/v1/sessions", obj("name", on[1], "team", on[0], "environment", environment));
         }
+
+        public String list(String team) throws IOException, InterruptedException {
+            return request("GET", team == null ? "/v1/sessions" : "/v1/sessions?team=" + seg(team), null);
+        }
+
+        /** The session with its workspaces and the intercepts it holds. */
+        public String get(String session) throws IOException, InterruptedException {
+            return request("GET", path(session, ""), null);
+        }
+
+        /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
+        public String delete(String session) throws IOException, InterruptedException {
+            return request("DELETE", path(session, ""), null);
+        }
+
+        /** A workspace is in at most one session; while in one it resolves that session's environment. */
+        public String add(String session, String workspace) throws IOException, InterruptedException {
+            return request("POST", path(session, "/workspaces"), obj("workspace", workspace));
+        }
+
+        /** Releases whatever the workspace intercepts in this session first. */
+        public String remove(String session, String workspace) throws IOException, InterruptedException {
+            return request("DELETE", path(session, "/workspaces/" + seg(workspace)), null);
+        }
+
+        /**
+         * Send everything that calls {@code service} in the environment to {@code workspace} (a
+         * member). {@code ports} are pairs: service port, then the workspace port answering it.
+         */
+        public String intercept(String session, String service, String workspace, int... ports)
+            throws IOException, InterruptedException {
+            List<String> pm = new ArrayList<>();
+            for (int i = 0; i + 1 < ports.length; i += 2) {
+                pm.add("{\"service\":" + ports[i] + ",\"workspace\":" + ports[i + 1] + "}");
+            }
+            String b = obj("service", service, "workspace", workspace);
+            return request("POST", path(session, "/intercepts"),
+                b.substring(0, b.length() - 1) + ",\"ports\":[" + String.join(",", pm) + "]}");
+        }
+
+        public String release(String session, String service) throws IOException, InterruptedException {
+            return request("DELETE", path(session, "/intercepts/" + seg(service)), null);
+        }
+
+        private String path(String session, String tail) {
+            String[] on = owned(session);
+            return "/v1/sessions/" + seg(on[1]) + tail + (on[0] == null ? "" : "?owner=" + seg(on[0]));
+        }
+    }
+
+    /** "name" → {null, name}; "team/name" → {team, name}. */
+    static String[] owned(String s) {
+        int i = s.lastIndexOf('/');
+        if (i < 0) return new String[] {null, s};
+        String owner = s.substring(0, i), name = s.substring(i + 1);
+        if (owner.isEmpty() || name.isEmpty() || owner.contains("/")) {
+            throw new IllegalArgumentException("expected name or team/name, got " + s);
+        }
+        return new String[] {owner, name};
     }
 
     /**
