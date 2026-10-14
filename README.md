@@ -6,7 +6,7 @@ Bearer token (a session or CLI token; omit it for anonymous access to public
 data), a `request` core that returns parsed JSON and raises an `ApiError`-style
 error carrying the HTTP status and the server's message, and one module per
 area of the platform: `code_repos`, `model_repos`, `data_repos`, `workspaces`,
-`environments`, `sessions` and `volumes` (`codeRepos`/`CodeRepos` in the camel-
+`environments`, `sessions`, `sandboxes` and `volumes` (`codeRepos`/`CodeRepos` in the camel-
 and Pascal-cased languages).
 
 ## Every input is named
@@ -188,6 +188,50 @@ kl.sessions.delete(session="acme/fix-login")                            # releas
 
 A workspace is in at most one session; adding one that is in another session
 is refused naming it.
+
+## `sandboxes`
+
+A sandbox is a short-lived, isolated container you send commands to: any image, its
+own disk (empty, or a copy of one of your workspaces as it is right now, or of a
+snapshot), no access to your keys or the cluster, and gone when you terminate it or
+its timeout passes. Each command is a process with stdin, stdout and stderr:
+
+```python
+sb = kl.sandboxes.create(image="python:3.12", timeout_s=600)
+
+p = sb.exec(cmd=["bash", "-c", "while read line; do echo $line; done"])
+p.stdin.write(b"foo bar\n")
+p.stdin.write_eof()
+p.stdin.drain()
+p.wait()                  # 0
+p.stdout.read()           # "foo bar\n"
+for line in p.stdout:     # or line by line, as it arrives
+    ...
+sb.terminate()
+
+# Everything also has .aio:
+sb = await kl.sandboxes.create.aio(image="python:3.12")
+p = await sb.exec.aio(cmd=["bash", "-c", "while read line; do echo $line; done"])
+await p.stdin.write.aio(b"foo bar\n")
+
+# One command, start to finish (the sandbox is always terminated):
+kl.sandboxes.run(cmd="cargo test", from_workspace="acme/api-dev", timeout_s=900)
+# → {"exit_code": 0, "stdout": "...", "stderr": "...", "sandbox": "sbx-…"}
+```
+
+`create` takes `image`, `packages`, `from_workspace` or `from_snapshot`, `team`,
+`timeout_s` (default 300), `idle_timeout_s`, `network` (`"internet"`, the default —
+never the cluster — or `"none"`), `env`, `cpu`, `memory_gb` and `disk_gb`. A sandbox
+also has `read(path=…)` and `write(path=…, content=…)` for files under
+`~/workspace`; read anything you want to keep before terminating. A terminated
+sandbox's record (`get`, `list`) says why it ended (`Terminated`, `Timeout`,
+`Idle`, `Exited`, `Failed`, `Unplaceable`, `SourceGone`, `Lost`) for a day.
+
+Per language: TypeScript is promise-based (`for await (const line of
+p.stdout)`); Go has `Process.Stdin` as an `io.Writer` with `WriteEOF()`, and
+`Stdout.ReadAll()` / `Stdout.Lines(fn)`; Ruby has `stdout.each_line`; Java has
+`stdout().read()` and `stdout().lines()` (a `Stream<String>`). Python and Ruby
+yield lines with their `\n`, like file iteration; TypeScript, Go and Java without.
 
 ## `model_repos` and `data_repos`
 
