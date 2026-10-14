@@ -871,8 +871,8 @@ func (v *Volumes) List(kind, owner string) ([]map[string]any, error) {
 
 // History answers the chain of PUSHED snapshots, newest first — each row a
 // restore target.
-func (v *Volumes) History(name string) (map[string]any, error) {
-	var out map[string]any
+func (v *Volumes) History(name string) ([]map[string]any, error) {
+	var out []map[string]any
 	err := v.c.Request("GET", "/v1/volumes/"+seg(name)+"/history", nil, nil, &out)
 	return out, err
 }

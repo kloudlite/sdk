@@ -76,32 +76,33 @@ kl.quota()                                           # the ceiling, and what is 
 ws = kl.workspaces.create(name="dev", quota_gb=40,
                           repo="acme/payments", branch="main",
                           packages=["nodejs@22", "ripgrep"])
-# region is only a thing on multi-region fleets: create(..., region="blr1")
+wid = ws["id"]                                       # "ws-…": every call takes the id, not the name
 kl.workspaces.list(team="acme")
-kl.workspaces.stop("dev"); kl.workspaces.start("dev")
+kl.workspaces.stop(wid); kl.workspaces.start(wid)
 
-kl.workspaces.push("dev", message="before the refactor")   # a kept snapshot
-kl.workspaces.clone("dev", "dev-experiment", task="try the new parser")
-snaps = kl.volumes.history("dev")                          # restore targets
+kl.workspaces.push(wid, message="before the refactor")    # a kept snapshot
+kl.workspaces.clone(wid, "dev-experiment", task="try the new parser")
+vol = kl.workspaces.get(wid)["volume"]                    # set once the workspace has a volume
+snaps = kl.volumes.history(vol)                           # restore targets, newest first
 kl.workspaces.restore(name="dev-again", snapshot_id=snaps[0]["id"])
 
-kl.workspaces.set_packages("dev", ["nodejs@22", "ripgrep", "jq"])
+kl.workspaces.set_packages(wid, ["nodejs@22", "ripgrep", "jq"])
 
 # The IDE tools: every workspace runs a tool server, and ide() binds a client
 # to it — read/write/edit/patch/glob/grep, exec and detached processes, watches,
 # and container builds. list() carries every schema.
-ide = kl.workspaces.ide("dev")      # inside the fleet (a bench); from a laptop:
+ide = kl.workspaces.ide(wid)        # inside the fleet (a bench); from a laptop:
                                     # `kl-connect ws ide dev` then Ide("http://127.0.0.1:7788", token)
-ide.write("notes.md", "# plan\n")
-ide.edit(path="notes.md", edits=[{"old": "plan", "new": "steps"}])
-ide.read(path="notes.md")
+ide.write("~/workspace/notes.md", "# plan\n")
+ide.edit(path="~/workspace/notes.md", edits=[{"old": "plan", "new": "steps"}])
+ide.read(path="~/workspace/notes.md")
 ide.grep("TODO", glob="**/*.rs")
 job = ide.exec(["cargo", "test"], timeout_ms=600_000, tail=40)
 proc = ide.exec("npm run dev", detach=True)          # → {"id"}; then:
 ide.process_output(proc["id"]); ide.process_kill(proc["id"])
-kl.workspaces.update_packages("dev")                       # re-resolve pins
-kl.workspaces.delete("dev")                                # snapshots survive on the volume
-kl.volumes.delete_snapshot("dev", snaps[0]["id"])
+kl.workspaces.update_packages(wid)                         # re-resolve pins
+kl.workspaces.delete(wid)                                  # snapshots survive on the volume
+kl.volumes.delete_snapshot(vol, snaps[0]["id"])
 ```
 
 ## The `model_repos` and `data_repos` modules
