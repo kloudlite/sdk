@@ -28,7 +28,7 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :volumes
+    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :volumes
 
     def initialize(base_url, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
@@ -39,6 +39,7 @@ module Kloudlite
       @model_repos = HubRepos.new(self, "model")
       @data_repos = HubRepos.new(self, "dataset")
       @workspaces = Workspaces.new(self)
+      @environments = Environments.new(self)
       @volumes = Volumes.new(self)
     end
 
@@ -443,6 +444,103 @@ module Kloudlite
 
   # The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
   # the two deletes — over /v1/volumes.
+  # Multi-service environments, over /v1/environments: a set of containers sharing one disk. An
+  # environment is named by ONE string — "name" for the caller's own, "team/name" for a team's —
+  # or by its id ("env-…"). Each service is a hash: +name+ and +image+, plus optional +ports+,
+  # +env+, +command+ and +mounts+ ([{ folder:, path: }], a folder of the environment's disk).
+  class Environments
+    def initialize(client)
+      @c = client
+    end
+
+    # +snapshot_id+ grows it from a pushed snapshot — also one of a deleted environment — and
+    # then +services+ default to the ones that snapshot froze.
+    def create(env, services: [], quota_gb: nil, snapshot_id: nil)
+      owner, name = owned(env)
+      @c.request("POST", "/v1/environments",
+                 body: { name: name, owner: owner, services: fill(services),
+                         quota_gb: quota_gb, snapshot_id: snapshot_id })
+    end
+
+    # The caller's environments and their teams'; +owner+ narrows to one handle or team.
+    def list(owner: nil)
+      @c.request("GET", "/v1/environments", query: { owner: owner })
+    end
+
+    def get(env)
+      at("GET", env)
+    end
+
+    # Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its data.
+    def set_services(env, services)
+      at("PATCH", env, body: { services: fill(services) })
+    end
+
+    def start(env)
+      at("POST", env, "/start")
+    end
+
+    def stop(env)
+      at("POST", env, "/stop")
+    end
+
+    # Reset the idle clock — call it periodically while something depends on the services.
+    def hold(env)
+      at("POST", env, "/hold")
+    end
+
+    # The volume survives while a pushed snapshot references it.
+    def delete(env)
+      at("DELETE", env)
+    end
+
+    # Cut a SNAPSHOT of every service's data — the one durable, restorable state.
+    def push(env, message: nil)
+      at("POST", env, "/push", body: message.nil? ? nil : { message: message })
+    end
+
+    # A new environment +to+ ("name" or "team/name"): a copy of the live disk, or with
+    # +snapshot_id+ of one of this environment's snapshots.
+    def clone(env, to, snapshot_id: nil, services: nil, quota_gb: nil)
+      owner, name = owned(to)
+      at("POST", env, "/clone",
+         body: { name: name, owner: owner, snapshot_id: snapshot_id,
+                 services: services && fill(services), quota_gb: quota_gb })
+    end
+
+    # Put THIS environment back to one of its own snapshots, services and data (202). A
+    # persistent service the snapshot lacks is a 409 naming it; list it in +discard+ to accept
+    # losing its data.
+    def restore(env, snapshot_id, discard: [])
+      at("POST", env, "/restore", body: { snapshot_id: snapshot_id, discard: discard })
+    end
+
+    private
+
+    def at(method, env, tail = "", body: nil)
+      owner, name = owned(env)
+      @c.request(method, "/v1/environments/#{seg(name)}#{tail}", body: body, query: { owner: owner })
+    end
+
+    # "name" → [nil, name]; "team/name" → [team, name].
+    def owned(s)
+      i = s.rindex("/")
+      return [nil, s] if i.nil?
+      owner, name = s[0...i], s[(i + 1)..]
+      raise ArgumentError, "expected name or team/name, got #{s.inspect}" if owner.empty? || name.empty? || owner.include?("/")
+      [owner, name]
+    end
+
+    # The server requires every field; fill the ones a caller leaves out.
+    def fill(services)
+      services.map { |sv| { command: [], env: {}, mounts: [], ports: [] }.merge(sv.transform_keys(&:to_sym)) }
+    end
+
+    def seg(s)
+      URI.encode_uri_component(s.to_s)
+    end
+  end
+
   class Volumes
     def initialize(client)
       @c = client
