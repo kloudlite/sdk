@@ -57,6 +57,7 @@ class Kloudlite:
         self.sessions = Sessions(self)
         self.volumes = Volumes(self)
         self.sandboxes = Sandboxes(self)
+        self.pipelines = Pipelines(self)
 
     def quota(self, *, owner: str | None = None):
         """The ceiling and what is against it; ``owner`` defaults to the caller's own."""
@@ -1011,6 +1012,199 @@ class ProcessOutput:
         for frame in self._p._frames():
             if frame.get("stream") == self._name:
                 yield frame.get("data", "")
+
+
+_RUN_TERMINAL = ("success", "failure", "cancelled")
+
+
+class Pipelines:
+    """CI pipelines, over ``/v1/pipelines``: definitions live as YAML in an owner's
+    ``{owner}/pipelines`` repository and run against that owner's repositories, each job in its
+    own sandbox. A run is recorded on the repository it is about, so it is read back by that
+    ``repo`` (``"owner/name"``). :meth:`run`, :meth:`runs` and :meth:`get_run` answer :class:`Run`
+    handles, and every call here and on a handle also has an async twin, ``.aio``::
+
+        run = kl.pipelines.run(owner="acme", pipeline="ci", repo="acme/payments")
+        for chunk in run.follow(job="test"):
+            print(chunk, end="")
+        assert run.wait() == "success"
+    """
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    @_aio
+    def list(self, *, owner: str | None = None) -> dict:
+        """The definitions on ``{owner}/pipelines``'s main branch, broken ones included:
+        ``{"repo", "sha", "pipelines": [{"name", "file", "valid", "errors", "repos", "on",
+        "jobs"}], "errors"}``. ``owner`` (a handle or team slug) defaults to the caller."""
+        return self._c.request("GET", "/v1/pipelines", query={"owner": owner})
+
+    @_aio
+    def run(self, *, owner: str, pipeline: str, repo: str, ref: str | None = None,
+            inputs: dict | None = None, environment: str | None = None,
+            clone: str | None = None) -> "Run":
+        """Start ``owner``'s ``pipeline`` by hand on ``repo`` (a name, or ``"owner/name"`` — one of
+        ``owner``'s) at ``ref`` (a branch, tag, full ref or sha; default ``main``) and answer the
+        :class:`Run` at once (202), ``queued``. ``inputs`` are the ones the pipeline's
+        ``on.manual.inputs`` declares. ``environment`` runs every job that names none in that
+        environment; ``clone`` instead in a per-run copy of it, deleted when the run ends — one or
+        the other. A definition that cannot run is an :class:`ApiError` 422 whose message lists
+        every reason, and nothing is recorded."""
+        body = {"repo": repo, "ref": ref, "inputs": inputs,
+                "environment": _run_environment(environment, clone)}
+        doc = self._c.request("POST", f"/v1/pipelines/{_seg(owner)}/{_seg(pipeline)}/runs",
+                              body={k: v for k, v in body.items() if v is not None})
+        return Run(self._c, doc)
+
+    @_aio
+    def runs(self, *, repo: str, pipeline: str | None = None, limit: int | None = None) -> list:
+        """``repo``'s runs, newest first; ``pipeline`` keeps one pipeline's."""
+        docs = self._c.request("GET", _repo_runs(repo), query={"pipeline": pipeline, "limit": limit})
+        return [Run(self._c, d) for d in docs or []]
+
+    @_aio
+    def get_run(self, *, repo: str, run: str) -> "Run":
+        """One run of ``repo`` by its id (``1760400000000-0a1b2c``)."""
+        return Run(self._c, self._c.request("GET", _repo_runs(repo, f"/{_seg(run)}")))
+
+
+def _repo_runs(repo: str, tail: str = "") -> str:
+    owner, name = _split(repo)
+    return f"/v1/repos/{_seg(owner)}/{_seg(name)}/runs{tail}"
+
+
+def _run_environment(environment: str | None, clone: str | None):
+    """The wire's one ``environment`` field: a name, or ``{"clone": name}``."""
+    if environment is not None and clone is not None:
+        raise ValueError("pass environment or clone, not both")
+    return {"clone": clone} if clone is not None else environment
+
+
+class Run:
+    """A handle on one pipeline run: its fields as of the last answer (``id``, ``number``,
+    ``state`` — ``queued``, ``running``, ``success``, ``failure`` or ``cancelled`` — ``jobs`` and
+    the rest; ``doc`` is the whole server answer, camelCase as the wire spells it) and the calls
+    on it. :meth:`refresh` re-reads it. Each job in ``jobs`` is a dict with ``key``, ``job``,
+    ``matrix``, ``needs``, ``state`` (``pending``, ``running``, ``success``, ``failure``,
+    ``skipped``, ``cancelled``), ``sandbox``, ``startedAtMs``, ``finishedAtMs``, ``exitCode``,
+    ``failedStep`` and ``detail``; :meth:`logs` and :meth:`follow` name one by its index or its
+    ``key``."""
+
+    def __init__(self, client: Kloudlite, doc: dict):
+        self._c = client
+        self.doc = doc
+
+    id = property(lambda self: self.doc["id"])
+    number = property(lambda self: self.doc.get("number"))
+    pipeline = property(lambda self: self.doc.get("pipeline"))
+    pipelines_repo = property(lambda self: self.doc.get("pipelinesRepo"))
+    pipelines_sha = property(lambda self: self.doc.get("pipelinesSha"))
+    repo = property(lambda self: self.doc.get("repo"))
+    ref = property(lambda self: self.doc.get("ref"))
+    sha = property(lambda self: self.doc.get("sha"))
+    event = property(lambda self: self.doc.get("event"))
+    inputs = property(lambda self: self.doc.get("inputs") or {})
+    environment = property(lambda self: self.doc.get("environment"))
+    requested_by = property(lambda self: self.doc.get("requestedBy"))
+    requested_at_ms = property(lambda self: self.doc.get("requestedAtMs"))
+    state = property(lambda self: self.doc.get("state"))
+    cancel_requested = property(lambda self: bool(self.doc.get("cancelRequested")))
+    started_at_ms = property(lambda self: self.doc.get("startedAtMs"))
+    finished_at_ms = property(lambda self: self.doc.get("finishedAtMs"))
+    detail = property(lambda self: self.doc.get("detail"))
+    jobs = property(lambda self: self.doc.get("jobs") or [])
+
+    def __repr__(self):
+        return f"<Run {self.repo}#{self.number} {self.pipeline} {self.state}>"
+
+    @_aio
+    def refresh(self) -> "Run":
+        self.doc = self._c.request("GET", self._path())
+        return self
+
+    @_aio
+    def cancel(self) -> "Run":
+        """Ask it to stop: a queued run is cancelled at once, a running one once its worker has
+        ended its sandboxes — :meth:`wait` sees it reach ``cancelled``."""
+        self.doc = self._c.request("POST", self._path("/cancel")) or self.doc
+        return self
+
+    @_aio
+    def wait(self, *, timeout_s: float | None = None, poll_s: float = 5) -> str:
+        """Poll every ``poll_s`` until the run has ended and answer its final ``state``;
+        TimeoutError past ``timeout_s`` (None waits as long as it takes)."""
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        while self.state not in _RUN_TERMINAL:
+            self.refresh()
+            if self.state in _RUN_TERMINAL:
+                break
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                raise TimeoutError(f"run {self.id} still {self.state} after {timeout_s} s")
+            time.sleep(poll_s if left is None else min(poll_s, left))
+        return self.state
+
+    @_aio
+    def logs(self, *, job: int | str) -> str:
+        """The job's whole log so far (combined stdout and stderr), every page of it. ``job`` is
+        its index in ``jobs`` or its ``key`` (``"test (postgres16)"``)."""
+        index, offset, out = self._job_index(job), 0, []
+        while True:
+            page = self._page(index, offset)
+            out.append(page.get("data") or "")
+            nxt = int(page.get("next") or offset)
+            if page.get("complete") or nxt <= offset:
+                return "".join(out)
+            offset = nxt
+
+    def follow(self, *, job: int | str, poll_s: float = 5):
+        """Yield the job's log in chunks as it is written — from the first byte, polling every
+        ``poll_s`` while nothing new has landed — and stop once the job has ended and every byte
+        was yielded. :meth:`aio_follow` is the same for ``async for``."""
+        index, offset = self._job_index(job), 0
+        while True:
+            page = self._page(index, offset)
+            if page.get("data"):
+                yield page["data"]
+            if page.get("complete"):
+                return
+            nxt = int(page.get("next") or offset)
+            if nxt <= offset:
+                time.sleep(poll_s)
+            offset = max(offset, nxt)
+
+    async def aio_follow(self, *, job: int | str, poll_s: float = 5):
+        """``async for chunk in run.aio_follow(job=…)``: :meth:`follow` with each page read on a
+        worker thread and the waits on the event loop."""
+        index, offset = self._job_index(job), 0
+        while True:
+            page = await asyncio.to_thread(self._page, index, offset)
+            if page.get("data"):
+                yield page["data"]
+            if page.get("complete"):
+                return
+            nxt = int(page.get("next") or offset)
+            if nxt <= offset:
+                await asyncio.sleep(poll_s)
+            offset = max(offset, nxt)
+
+    def _path(self, tail: str = "") -> str:
+        return _repo_runs(self.repo, f"/{_seg(self.id)}{tail}")
+
+    def _page(self, index: int, offset: int) -> dict:
+        """``{data, next, complete, state}``: at most a page of the log from byte ``offset``."""
+        return self._c.request("GET", self._path(f"/jobs/{index}/logs"), query={"offset": offset})
+
+    def _job_index(self, job: int | str) -> int:
+        keys = [j.get("key") for j in self.jobs]
+        if isinstance(job, int) and not isinstance(job, bool):
+            if not 0 <= job < len(keys):
+                raise ValueError(f"run {self.id} has {len(keys)} jobs, no job {job}")
+            return job
+        if job in keys:
+            return keys.index(job)
+        raise ValueError(f"run {self.id} has no job {job!r}; its jobs are {keys}")
 
 
 class HubRepos:

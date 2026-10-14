@@ -53,6 +53,7 @@ export class Kloudlite {
   readonly sessions: Sessions;
   readonly volumes: Volumes;
   readonly sandboxes: Sandboxes;
+  readonly pipelines: Pipelines;
   private readonly baseUrl: string;
   private readonly hubUrl?: string;
   private readonly token?: string;
@@ -71,6 +72,7 @@ export class Kloudlite {
     this.sessions = new Sessions(this);
     this.volumes = new Volumes(this);
     this.sandboxes = new Sandboxes(this);
+    this.pipelines = new Pipelines(this);
   }
 
   /** The ceiling and what is against it; `owner` defaults to the caller's own. */
@@ -1342,6 +1344,257 @@ export class ProcessOutput implements AsyncIterable<string> {
       if ("stream" in f && f.stream === this.which) yield f.data;
       else if ("exit" in f) return;
     }
+  }
+}
+
+/** One definition of `GET /v1/pipelines`; a broken one has `valid: false` and its `errors`. */
+export interface PipelineDef {
+  name: string;
+  /** The path it was parsed from, e.g. `pipelines/ci.yaml`. */
+  file: string;
+  valid: boolean;
+  errors: string[];
+  /** The repositories it runs on. */
+  repos: string[];
+  /** Its triggers, as the definition spells them; `null` when it has none. */
+  on: Record<string, unknown> | null;
+  /** Its job names, in the order written. */
+  jobs: string[];
+}
+
+/** `GET /v1/pipelines`: the definitions on `{owner}/pipelines`'s main branch at `sha`. */
+export interface PipelineCatalog {
+  repo: string;
+  sha: string;
+  pipelines: PipelineDef[];
+  /** Errors in the shared actions, which belong to no one pipeline. */
+  errors: string[];
+}
+
+export type RunState = "queued" | "running" | "success" | "failure" | "cancelled";
+export type JobState = "pending" | "running" | "success" | "failure" | "skipped" | "cancelled";
+
+/** One job of a run, matrix instances expanded: `key` is unique in the run (`test (postgres16)`). */
+export interface RunJob {
+  key: string;
+  /** The job's name in the definition — what `needs` names. */
+  job: string;
+  matrix: Record<string, unknown>;
+  needs: string[];
+  state: JobState;
+  sandbox: string | null;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  exitCode: number | null;
+  failedStep: string | null;
+  detail: string | null;
+}
+
+/** A run as `/v1` answers it — the wire's camelCase, as stored. */
+export interface RunDoc {
+  id: string;
+  /** Per repo, from 1: the name people say out loud. */
+  number: number;
+  pipeline: string;
+  pipelinesRepo: string;
+  pipelinesSha: string;
+  /** `"owner/name"` of the repo the run is about. */
+  repo: string;
+  ref: string;
+  sha: string;
+  event: "manual" | "push" | "pull_request" | "schedule" | "pipeline";
+  inputs: Record<string, unknown>;
+  /** As requested: an environment, `{ clone: name }`, or `null` for the pipeline's own. */
+  environment: string | { clone: string } | null;
+  requestedBy: string;
+  requestedAtMs: number;
+  state: RunState;
+  cancelRequested: boolean;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  detail: string | null;
+  jobs: RunJob[];
+}
+
+/** One page of a job's log from a byte offset; poll with `next` until `complete`. */
+export interface LogPage {
+  data: string;
+  next: number;
+  /** The job has ended and every byte was returned. */
+  complete: boolean;
+  state: JobState;
+}
+
+/**
+ * {@link Pipelines.run}: `owner`'s `pipeline` on `repo` (a name, or `"owner/name"` — one of
+ * `owner`'s). `environment` runs every job that names none in that environment; `clone` instead
+ * in a per-run copy of it, deleted when the run ends — one or the other.
+ */
+export interface RunPipeline {
+  owner: string;
+  pipeline: string;
+  repo: string;
+  /** A branch, tag, full ref or sha; default `main`. */
+  ref?: string;
+  /** The inputs the pipeline's `on.manual.inputs` declares. */
+  inputs?: Record<string, string>;
+  environment?: string;
+  clone?: string;
+}
+
+/** A job of a run: its index in `jobs`, or its `key`. */
+export type JobRef = number | string;
+
+const RUN_TERMINAL: readonly RunState[] = ["success", "failure", "cancelled"];
+
+function runsPath(repo: string, tail = ""): string {
+  const [owner, name] = split(repo);
+  return `/v1/repos/${seg(owner)}/${seg(name)}/runs${tail}`;
+}
+
+/**
+ * CI pipelines, over `/v1/pipelines`: definitions live as YAML in an owner's `{owner}/pipelines`
+ * repository and run against that owner's repositories, each job in its own sandbox. A run is
+ * recorded on the repository it is about, so it is read back by that `repo` (`"owner/name"`):
+ *
+ *     const run = await kl.pipelines.run({ owner: "acme", pipeline: "ci", repo: "acme/payments" });
+ *     for await (const chunk of run.follow({ job: "test" })) process.stdout.write(chunk);
+ *     console.log(await run.wait()); // "success"
+ */
+export class Pipelines {
+  constructor(private readonly c: Kloudlite) {}
+
+  /** `owner` (a handle or team slug) defaults to the caller. */
+  list({ owner }: { owner?: string } = {}) {
+    return this.c.request<PipelineCatalog>("GET", "/v1/pipelines", undefined, { owner });
+  }
+
+  /**
+   * Start a run by hand and answer it at once (202), `queued`. A definition that cannot run
+   * rejects with an {@link ApiError} 422 whose message lists every reason, and nothing is recorded.
+   */
+  async run({ owner, pipeline, repo, ref, inputs, environment, clone }: RunPipeline): Promise<Run> {
+    if (environment !== undefined && clone !== undefined) throw new Error("pass environment or clone, not both");
+    const body = { repo, ref, inputs, environment: clone !== undefined ? { clone } : environment };
+    const doc = await this.c.request<RunDoc>("POST", `/v1/pipelines/${seg(owner)}/${seg(pipeline)}/runs`, body);
+    return new Run(this.c, doc);
+  }
+
+  /** `repo`'s runs, newest first; `pipeline` keeps one pipeline's. */
+  async runs({ repo, pipeline, limit }: RepoRef & { pipeline?: string; limit?: number }): Promise<Run[]> {
+    const docs = await this.c.request<RunDoc[]>("GET", runsPath(repo), undefined, { pipeline, limit });
+    return (docs ?? []).map((d) => new Run(this.c, d));
+  }
+
+  /** One run of `repo` by its id (`1760400000000-0a1b2c`). */
+  async getRun({ repo, run }: RepoRef & { run: string }): Promise<Run> {
+    return new Run(this.c, await this.c.request<RunDoc>("GET", runsPath(repo, `/${seg(run)}`)));
+  }
+}
+
+/** One pipeline run: the last doc seen ({@link doc}) plus the calls on it. */
+export class Run {
+  constructor(
+    private readonly c: Kloudlite,
+    /** The last doc the server answered; {@link refresh} re-reads it. */
+    public doc: RunDoc,
+  ) {}
+
+  get id(): string {
+    return this.doc.id;
+  }
+
+  get number(): number {
+    return this.doc.number;
+  }
+
+  get state(): RunState {
+    return this.doc.state;
+  }
+
+  get jobs(): RunJob[] {
+    return this.doc.jobs ?? [];
+  }
+
+  async refresh(): Promise<this> {
+    this.doc = await this.c.request<RunDoc>("GET", this.path());
+    return this;
+  }
+
+  /**
+   * Ask it to stop: a queued run is cancelled at once, a running one once its worker has ended
+   * its sandboxes — {@link wait} sees it reach `cancelled`.
+   */
+  async cancel(): Promise<this> {
+    this.doc = (await this.c.request<RunDoc>("POST", this.path("/cancel"))) ?? this.doc;
+    return this;
+  }
+
+  /**
+   * Poll every `pollS` (default 5) until the run has ended and answer its final state; a
+   * {@link TimeoutError} after `timeoutS` (absent: no limit).
+   */
+  async wait({ timeoutS, pollS = 5 }: { timeoutS?: number; pollS?: number } = {}): Promise<RunState> {
+    const deadline = timeoutS === undefined ? Infinity : Date.now() + timeoutS * 1000;
+    while (!RUN_TERMINAL.includes(this.state)) {
+      await this.refresh();
+      if (RUN_TERMINAL.includes(this.state)) break;
+      const left = deadline - Date.now();
+      if (left <= 0) throw new TimeoutError(`run ${this.id} still ${this.state} after ${timeoutS}s`);
+      await sleep(Math.min(pollS * 1000, left));
+    }
+    return this.state;
+  }
+
+  /** The job's whole log so far (combined stdout and stderr), every page of it. */
+  async logs({ job }: { job: JobRef }): Promise<string> {
+    const index = this.jobIndex(job);
+    let out = "";
+    for (let offset = 0; ; ) {
+      const page = await this.page(index, offset);
+      out += page.data ?? "";
+      const next = page.next ?? offset;
+      if (page.complete || next <= offset) return out;
+      offset = next;
+    }
+  }
+
+  /**
+   * The job's log in chunks as it is written — from the first byte, polling every `pollS`
+   * (default 5) while nothing new has landed — ending once the job has ended and every byte was
+   * yielded: `for await (const chunk of run.follow({ job: "test" }))`.
+   */
+  async *follow({ job, pollS = 5 }: { job: JobRef; pollS?: number }): AsyncGenerator<string> {
+    const index = this.jobIndex(job);
+    for (let offset = 0; ; ) {
+      const page = await this.page(index, offset);
+      if (page.data) yield page.data;
+      if (page.complete) return;
+      const next = page.next ?? offset;
+      if (next <= offset) await sleep(pollS * 1000);
+      offset = Math.max(offset, next);
+    }
+  }
+
+  private path(tail = ""): string {
+    return runsPath(this.doc.repo, `/${seg(this.id)}${tail}`);
+  }
+
+  private page(index: number, offset: number): Promise<LogPage> {
+    return this.c.request<LogPage>("GET", this.path(`/jobs/${index}/logs`), undefined, { offset });
+  }
+
+  private jobIndex(job: JobRef): number {
+    const keys = this.jobs.map((j) => j.key);
+    if (typeof job === "number") {
+      if (!Number.isInteger(job) || job < 0 || job >= keys.length) {
+        throw new Error(`run ${this.id} has ${keys.length} jobs, no job ${job}`);
+      }
+      return job;
+    }
+    const i = keys.indexOf(job);
+    if (i < 0) throw new Error(`run ${this.id} has no job ${JSON.stringify(job)}; its jobs are ${JSON.stringify(keys)}`);
+    return i;
   }
 }
 

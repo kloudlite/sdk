@@ -14,9 +14,9 @@
 //   Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://api.example.com").token("…"));
 //   String repo = kl.codeRepos().create(new Kloudlite.CreateRepo().repo("acme/payments"));
 //
-// Methods return the raw JSON body as a String; bring your own JSON mapper. The one
-// exception is sandboxes(), whose calls hand back live handles (SandboxHandle,
-// SandboxProcess) — each still exposes its raw JSON.
+// Methods return the raw JSON body as a String; bring your own JSON mapper. The two
+// exceptions are sandboxes() and pipelines(), whose calls hand back live handles
+// (SandboxHandle, SandboxProcess, Run) — each still exposes its raw JSON.
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -82,6 +82,7 @@ public class Kloudlite {
     private final Sessions sessions = new Sessions();
     private final Volumes volumes = new Volumes();
     private final Sandboxes sandboxes = new Sandboxes();
+    private final Pipelines pipelines = new Pipelines();
 
     public Kloudlite(Options opts) {
         this.baseUrl = need(opts.baseUrl, "baseUrl").replaceAll("/+$", "");
@@ -128,6 +129,11 @@ public class Kloudlite {
     /** Throwaway gVisor sandboxes with a tool server: {@code /v1/sandboxes}. */
     public Sandboxes sandboxes() {
         return sandboxes;
+    }
+
+    /** CI pipelines and their runs: {@code /v1/pipelines}, runs under {@code /v1/repos}. */
+    public Pipelines pipelines() {
+        return pipelines;
     }
 
     /** The caller's own ceiling and what is against it. */
@@ -2010,6 +2016,377 @@ public class Kloudlite {
             return new Json().num("exit_code", (long) exitCode).str("stdout", stdout)
                 .str("stderr", stderr).str("sandbox", sandbox).toString();
         }
+    }
+
+    /**
+     * CI pipelines, over {@code /v1/pipelines}: definitions live as YAML in an owner's
+     * "{owner}/pipelines" repository and run against that owner's repositories, each job in its own
+     * sandbox. A run is recorded on the repository it is about, so it is read back by that
+     * {@code repo} ("owner/name"). {@link #run}, {@link #runs} and {@link #getRun} hand back
+     * {@link Run} handles.
+     *
+     * <pre>
+     *   Kloudlite.Run run = kl.pipelines().run(new Kloudlite.RunPipeline()
+     *       .owner("acme").pipeline("ci").repo("acme/payments"));
+     *   try (Stream&lt;String&gt; log = run.follow("test")) { log.forEach(System.out::print); }
+     *   String state = run.waitFor(); // "success"
+     * </pre>
+     */
+    public class Pipelines {
+        /**
+         * The caller's own definitions; see {@link #list(String)}.
+         */
+        public String list() throws IOException, InterruptedException {
+            return list(null);
+        }
+
+        /**
+         * The definitions on {owner}/pipelines's main branch, broken ones included:
+         * {@code {repo, sha, pipelines: [{name, file, valid, errors, repos, on, jobs}], errors}}.
+         * A null owner means the caller's own.
+         */
+        public String list(String owner) throws IOException, InterruptedException {
+            return api("GET", "/v1/pipelines" + query("owner", owner), null);
+        }
+
+        /**
+         * Start a run by hand and answer it at once (202), {@code queued}. A definition that cannot
+         * run is an {@link ApiException} 422 whose message lists every reason, and nothing is
+         * recorded.
+         */
+        public Run run(RunPipeline p) throws IOException, InterruptedException {
+            String body = p.body();
+            String owner = need(p.owner, "owner"), pipeline = need(p.pipeline, "pipeline");
+            return new Run(api("POST", "/v1/pipelines/" + seg(owner) + "/" + seg(pipeline) + "/runs", body));
+        }
+
+        /** {@code repo}'s runs, newest first; a set {@code pipeline} keeps one pipeline's. */
+        public List<Run> runs(ListRuns p) throws IOException, InterruptedException {
+            String limit = p.limit == null ? null : p.limit.toString();
+            String raw = api("GET", runsPath(need(p.repo, "repo"), "") + query("pipeline", p.pipeline, "limit", limit), null);
+            List<String> docs;
+            try {
+                docs = JsonReader.elements(raw);
+            } catch (IllegalArgumentException e) {
+                throw new ApiException(502, "the run listing was not a JSON array");
+            }
+            List<Run> out = new ArrayList<>();
+            for (String doc : docs) out.add(new Run(doc));
+            return out;
+        }
+
+        /** One run of {@code repo} by its id ("1760400000000-0a1b2c"). */
+        public Run getRun(GetRun p) throws IOException, InterruptedException {
+            String repo = need(p.repo, "repo"), run = need(p.run, "run");
+            return new Run(api("GET", runsPath(repo, "/" + seg(run)), null));
+        }
+    }
+
+    static String runsPath(String repo, String tail) {
+        String[] on = split(repo);
+        return "/v1/repos/" + seg(on[0]) + "/" + seg(on[1]) + "/runs" + tail;
+    }
+
+    /**
+     * One pipeline run: the doc as last read ({@link #json}, with named readers for its fields;
+     * {@link #state} is {@code queued|running|success|failure|cancelled}). Each of {@link #jobs}
+     * is a map with key, job, matrix, needs, state ({@code pending|running|success|failure|
+     * skipped|cancelled}), sandbox, startedAtMs, finishedAtMs, exitCode, failedStep and detail;
+     * {@link #logs} and {@link #follow} name one by its index or its key. Nothing re-reads the doc
+     * behind the caller's back except {@link #waitFor}; {@link #refresh} does.
+     */
+    public final class Run {
+        private volatile String json;
+        private volatile Map<String, Object> doc;
+
+        Run(String json) throws ApiException {
+            set(json);
+        }
+
+        private void set(String raw) throws ApiException {
+            Map<String, Object> d = JsonReader.parsed(raw);
+            if (text(d.get("id")) == null || text(d.get("repo")) == null) {
+                throw new ApiException(502, "the answer named no run id and repo");
+            }
+            doc = d;
+            json = raw;
+        }
+
+        public String id() { return text(doc.get("id")); }
+        /** Per repo, from 1: the name people say out loud. */
+        public Long number() { return longOf(doc.get("number")); }
+        public String pipeline() { return text(doc.get("pipeline")); }
+        public String pipelinesRepo() { return text(doc.get("pipelinesRepo")); }
+        public String pipelinesSha() { return text(doc.get("pipelinesSha")); }
+        /** "owner/name" of the repo the run is about. */
+        public String repo() { return text(doc.get("repo")); }
+        public String ref() { return text(doc.get("ref")); }
+        public String sha() { return text(doc.get("sha")); }
+        /** manual, push, pull_request, schedule or pipeline. */
+        public String event() { return text(doc.get("event")); }
+        @SuppressWarnings("unchecked")
+        public Map<String, Object> inputs() {
+            Object v = doc.get("inputs");
+            return v instanceof Map ? (Map<String, Object>) v : Map.of();
+        }
+        /** As requested: a String, a Map {@code {clone: name}}, or null for the pipeline's own. */
+        public Object environment() { return doc.get("environment"); }
+        public String requestedBy() { return text(doc.get("requestedBy")); }
+        public Long requestedAtMs() { return longOf(doc.get("requestedAtMs")); }
+        public String state() { return text(doc.get("state")); }
+        public boolean cancelRequested() { return Boolean.TRUE.equals(doc.get("cancelRequested")); }
+        public Long startedAtMs() { return longOf(doc.get("startedAtMs")); }
+        public Long finishedAtMs() { return longOf(doc.get("finishedAtMs")); }
+        public String detail() { return text(doc.get("detail")); }
+        @SuppressWarnings("unchecked")
+        public List<Map<String, Object>> jobs() {
+            Object v = doc.get("jobs");
+            List<Map<String, Object>> out = new ArrayList<>();
+            if (v instanceof List) for (Object j : (List<Object>) v) if (j instanceof Map) out.add((Map<String, Object>) j);
+            return out;
+        }
+        /** The doc's raw JSON, as the server last answered it. */
+        public String json() { return json; }
+
+        /** Whether the run has ended (success, failure or cancelled) as of the last read. */
+        public boolean done() {
+            String st = state();
+            return "success".equals(st) || "failure".equals(st) || "cancelled".equals(st);
+        }
+
+        /** Re-read the doc; returns this handle. */
+        public Run refresh() throws IOException, InterruptedException {
+            set(api("GET", path(""), null));
+            return this;
+        }
+
+        /**
+         * Ask it to stop: a queued run is cancelled at once, a running one once its worker has
+         * ended its sandboxes — {@link #waitFor} sees it reach {@code cancelled}. Returns this handle.
+         */
+        public Run cancel() throws IOException, InterruptedException {
+            set(api("POST", path("/cancel"), null));
+            return this;
+        }
+
+        /** {@link #waitFor(WaitRun)} with no limit, polling every 5 s. */
+        public String waitFor() throws IOException, InterruptedException {
+            return waitFor(new WaitRun());
+        }
+
+        /**
+         * Poll until the run has ended and answer its final state. An unset or zero timeout waits
+         * as long as it takes; the limit passing is an {@link HttpTimeoutException}.
+         */
+        public String waitFor(WaitRun p) throws IOException, InterruptedException {
+            long deadline = deadline(p.timeout);
+            long poll = millisOr(p.poll, 5000);
+            while (!done()) {
+                refresh();
+                if (done()) break;
+                if (expired(deadline)) {
+                    throw new HttpTimeoutException("run " + id() + " still " + state() + " after " + p.timeout);
+                }
+                Thread.sleep(Math.max(0, Math.min(poll, remainingMs(deadline))));
+            }
+            return state();
+        }
+
+        /** The job's whole log so far (combined stdout and stderr), every page of it; by index. */
+        public String logs(int job) throws IOException, InterruptedException {
+            return allLogs(index(job));
+        }
+
+        /** {@link #logs(int)} for the job whose key is {@code job} ("test (postgres16)"). */
+        public String logs(String job) throws IOException, InterruptedException {
+            return allLogs(index(job));
+        }
+
+        /** {@link #follow(FollowLogs)} for job {@code job} by index, polling every 5 s. */
+        public Stream<String> follow(int job) {
+            return follow(new FollowLogs().job(job));
+        }
+
+        /** {@link #follow(FollowLogs)} for the job whose key is {@code job}, polling every 5 s. */
+        public Stream<String> follow(String job) {
+            return follow(new FollowLogs().job(job));
+        }
+
+        /**
+         * The job's log in chunks as it is written — from the first byte, polling while nothing new
+         * has landed — ending once the job has ended and every byte was delivered. Lazy: each
+         * page is read as the stream is consumed. A failure mid-stream is an
+         * {@link UncheckedIOException}.
+         */
+        public Stream<String> follow(FollowLogs p) {
+            int index = p.job instanceof Integer ? index((int) (Integer) p.job) : index((String) need(p.job, "job"));
+            long poll = millisOr(p.poll, 5000);
+            Iterator<String> it = new Iterator<>() {
+                private long offset;
+                private boolean end;
+                private String ready;
+
+                @Override
+                public boolean hasNext() {
+                    while (ready == null && !end) {
+                        try {
+                            Map<String, Object> page = page(index, offset);
+                            String data = text(page.get("data"));
+                            Long next = longOf(page.get("next"));
+                            long to = next == null ? offset : next;
+                            if (data != null && !data.isEmpty()) ready = data;
+                            if (Boolean.TRUE.equals(page.get("complete"))) end = true;
+                            else if (to <= offset) Thread.sleep(poll);
+                            offset = Math.max(offset, to);
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new UncheckedIOException(new InterruptedIOException("interrupted following run " + id()));
+                        }
+                    }
+                    return ready != null;
+                }
+
+                @Override
+                public String next() {
+                    if (!hasNext()) throw new NoSuchElementException();
+                    String chunk = ready;
+                    ready = null;
+                    return chunk;
+                }
+            };
+            return StreamSupport.stream(Spliterators.spliteratorUnknownSize(it,
+                Spliterator.ORDERED | Spliterator.NONNULL), false);
+        }
+
+        private String allLogs(int index) throws IOException, InterruptedException {
+            StringBuilder out = new StringBuilder();
+            for (long offset = 0; ; ) {
+                Map<String, Object> page = page(index, offset);
+                out.append(or(text(page.get("data")), ""));
+                Long next = longOf(page.get("next"));
+                long to = next == null ? offset : next;
+                if (Boolean.TRUE.equals(page.get("complete")) || to <= offset) return out.toString();
+                offset = to;
+            }
+        }
+
+        /** {@code {data, next, complete, state}}: at most a page of the log from byte {@code offset}. */
+        private Map<String, Object> page(int index, long offset) throws IOException, InterruptedException {
+            return JsonReader.parsed(api("GET", path("/jobs/" + index + "/logs?offset=" + offset), null));
+        }
+
+        private int index(int job) {
+            int n = jobs().size();
+            if (job < 0 || job >= n) throw new IllegalArgumentException("run " + id() + " has " + n + " jobs, no job " + job);
+            return job;
+        }
+
+        private int index(String key) {
+            List<String> keys = new ArrayList<>();
+            for (Map<String, Object> j : jobs()) keys.add(text(j.get("key")));
+            int i = keys.indexOf(key);
+            if (i < 0) throw new IllegalArgumentException("run " + id() + " has no job \"" + key + "\"; its jobs are " + keys);
+            return i;
+        }
+
+        private String path(String tail) {
+            return runsPath(repo(), "/" + seg(id()) + tail);
+        }
+
+        @Override
+        public String toString() {
+            return "Run " + repo() + "#" + number() + " " + pipeline() + " " + state();
+        }
+    }
+
+    // ── pipeline params ────────────────────────────────────────────────────
+
+    /**
+     * {@link Pipelines#run}: {@code owner}'s {@code pipeline} on {@code repo} (a name, or
+     * "owner/name" — one of owner's), all three required, at {@code ref} (a branch, tag, full ref or
+     * sha; unset means main). {@code input} adds one of the inputs the pipeline's
+     * {@code on.manual.inputs} declares. {@code environment} runs every job that names none in that
+     * environment; {@code clone} instead in a per-run copy of it, deleted when the run ends — one or
+     * the other.
+     */
+    public static final class RunPipeline {
+        private String owner, pipeline, repo, ref, environment, clone;
+        private Map<String, String> inputs;
+
+        public RunPipeline owner(String v) { owner = v; return this; }
+        public RunPipeline pipeline(String v) { pipeline = v; return this; }
+        public RunPipeline repo(String v) { repo = v; return this; }
+        public RunPipeline ref(String v) { ref = v; return this; }
+        /** Every input at once, replacing any set before. */
+        public RunPipeline inputs(Map<String, String> v) { inputs = v == null ? null : new LinkedHashMap<>(v); return this; }
+        public RunPipeline input(String key, String value) {
+            if (inputs == null) inputs = new LinkedHashMap<>();
+            inputs.put(need(key, "input key"), need(value, "input value"));
+            return this;
+        }
+        public RunPipeline environment(String v) { environment = v; return this; }
+        /** Run in a per-run copy of this environment, deleted when the run ends. */
+        public RunPipeline clone(String v) { clone = v; return this; }
+
+        String body() {
+            need(owner, "owner");
+            need(pipeline, "pipeline");
+            if (environment != null && clone != null) {
+                throw new IllegalArgumentException("pass environment or clone, not both");
+            }
+            return new Json()
+                .str("repo", need(repo, "repo"))
+                .str("ref", ref)
+                .raw("inputs", inputs == null ? null : stringMap(inputs))
+                .raw("environment", clone != null ? obj("clone", clone) : environment == null ? null : quote(environment))
+                .toString();
+        }
+    }
+
+    /** {@link Pipelines#runs}: {@code repo} required; {@code pipeline} and {@code limit} filter. */
+    public static final class ListRuns {
+        private String repo, pipeline;
+        private Integer limit;
+
+        public ListRuns repo(String v) { repo = v; return this; }
+        public ListRuns pipeline(String v) { pipeline = v; return this; }
+        public ListRuns limit(int v) { limit = v; return this; }
+    }
+
+    /** {@link Pipelines#getRun}: both required. */
+    public static final class GetRun {
+        private String repo, run;
+
+        public GetRun repo(String v) { repo = v; return this; }
+        public GetRun run(String v) { run = v; return this; }
+    }
+
+    /** {@link Run#waitFor}: an unset {@code timeout} waits as long as it takes; {@code poll} defaults to 5 s. */
+    public static final class WaitRun {
+        private Duration timeout, poll;
+
+        public WaitRun timeout(Duration v) { timeout = v; return this; }
+        public WaitRun poll(Duration v) { poll = v; return this; }
+    }
+
+    /** {@link Run#follow}: {@code job} (its index or its key) required; {@code poll} defaults to 5 s. */
+    public static final class FollowLogs {
+        private Object job;
+        private Duration poll;
+
+        public FollowLogs job(int index) { job = index; return this; }
+        public FollowLogs job(String key) { job = key; return this; }
+        public FollowLogs poll(Duration v) { poll = v; return this; }
+    }
+
+    static Long longOf(Object v) {
+        return v instanceof Number ? ((Number) v).longValue() : null;
+    }
+
+    static long millisOr(Duration d, long fallback) {
+        return d == null || d.isZero() || d.isNegative() ? fallback : d.toMillis();
     }
 
     /** Whole seconds, rounded up so a sub-second limit is never sent as none. */

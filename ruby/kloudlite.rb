@@ -10,7 +10,7 @@
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
 # resource is always the keyword named after it (repo:, workspace:, environment:, session:,
-# volume:, snapshot:, sandbox:), and a new object made from an existing one is to:.
+# volume:, snapshot:, sandbox:, run:), and a new object made from an existing one is to:.
 
 require "json"
 require "net/http"
@@ -79,7 +79,7 @@ module Kloudlite
 
   class Client
     attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :sessions, :volumes,
-                :sandboxes
+                :sandboxes, :pipelines
 
     def initialize(base_url:, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
@@ -94,6 +94,7 @@ module Kloudlite
       @sessions = Sessions.new(self)
       @volumes = Volumes.new(self)
       @sandboxes = Sandboxes.new(self)
+      @pipelines = Pipelines.new(self)
     end
 
     # The ceiling and what is against it; +owner+ defaults to the caller's own.
@@ -1035,6 +1036,198 @@ module Kloudlite
       def each(&block)
         each_line(&block)
       end
+    end
+  end
+
+  # CI pipelines, over /v1/pipelines: definitions live as YAML in an owner's "{owner}/pipelines"
+  # repository and run against that owner's repositories, each job in its own sandbox. A run is
+  # recorded on the repository it is about, so it is read back by that +repo:+ ("owner/name").
+  # +run+, +runs+ and +get_run+ answer Run handles.
+  #
+  #   run = kl.pipelines.run(owner: "acme", pipeline: "ci", repo: "acme/payments")
+  #   run.follow(job: "test") { |chunk| print chunk }
+  #   run.wait   # => "success"
+  class Pipelines
+    include Names
+
+    def initialize(client)
+      @c = client
+    end
+
+    # The definitions on {owner}/pipelines's main branch, broken ones included:
+    # {"repo", "sha", "pipelines" => [{"name", "file", "valid", "errors", "repos", "on", "jobs"}],
+    # "errors"}. +owner+ (a handle or team slug) defaults to the caller.
+    def list(owner: nil)
+      @c.request("GET", "/v1/pipelines", query: { owner: owner })
+    end
+
+    # Start +owner+'s +pipeline+ by hand on +repo+ (a name, or "owner/name" — one of +owner+'s) at
+    # +ref+ (a branch, tag, full ref or sha; default main) and answer the Run at once (202),
+    # queued. +inputs+ are the ones the pipeline's on.manual.inputs declares. +environment+ runs
+    # every job that names none in that environment; +clone+ instead in a per-run copy of it,
+    # deleted when the run ends — one or the other. A definition that cannot run is an ApiError
+    # 422 whose message lists every reason, and nothing is recorded.
+    def run(owner:, pipeline:, repo:, ref: nil, inputs: nil, environment: nil, clone: nil)
+      raise ArgumentError, "pass environment: or clone:, not both" if environment && clone
+
+      body = { repo: repo, ref: ref, inputs: inputs,
+               environment: clone ? { clone: clone } : environment }.compact
+      Run.new(@c, @c.request("POST", "/v1/pipelines/#{seg(owner)}/#{seg(pipeline)}/runs", body: body))
+    end
+
+    # +repo+'s runs, newest first; +pipeline+ keeps one pipeline's.
+    def runs(repo:, pipeline: nil, limit: nil)
+      docs = @c.request("GET", Run.path_of(repo), query: { pipeline: pipeline, limit: limit }) || []
+      docs.map { |doc| Run.new(@c, doc) }
+    end
+
+    # One run of +repo+ by its id ("1760400000000-0a1b2c").
+    def get_run(repo:, run:)
+      Run.new(@c, @c.request("GET", Run.path_of(repo, "/#{seg(run)}")))
+    end
+  end
+
+  # One pipeline run: the doc the server last answered (camelCase, as the wire spells it), plus
+  # the verbs. Fields read as run["state"] or through the named readers; +state+ is queued,
+  # running, success, failure or cancelled. Each of +jobs+ is a Hash with "key", "job", "matrix",
+  # "needs", "state" (pending, running, success, failure, skipped, cancelled), "sandbox",
+  # "startedAtMs", "finishedAtMs", "exitCode", "failedStep" and "detail"; +logs+ and +follow+
+  # name one by its index or its "key".
+  class Run
+    include Names
+    extend Names
+
+    TERMINAL = %w[success failure cancelled].freeze
+
+    attr_reader :doc
+
+    def initialize(client, doc)
+      @c = client
+      @doc = doc || {}
+    end
+
+    def id = @doc["id"]
+    def number = @doc["number"]
+    def pipeline = @doc["pipeline"]
+    def pipelines_repo = @doc["pipelinesRepo"]
+    def pipelines_sha = @doc["pipelinesSha"]
+    def repo = @doc["repo"]
+    def ref = @doc["ref"]
+    def sha = @doc["sha"]
+    def event = @doc["event"]
+    def inputs = @doc["inputs"] || {}
+    def environment = @doc["environment"]
+    def requested_by = @doc["requestedBy"]
+    def requested_at_ms = @doc["requestedAtMs"]
+    def state = @doc["state"]
+    def cancel_requested? = @doc["cancelRequested"] == true
+    def started_at_ms = @doc["startedAtMs"]
+    def finished_at_ms = @doc["finishedAtMs"]
+    def detail = @doc["detail"]
+    def jobs = @doc["jobs"] || []
+
+    def [](field)
+      @doc[field.to_s]
+    end
+
+    # Re-read the doc; returns self.
+    def refresh
+      @doc = @c.request("GET", base)
+      self
+    end
+
+    # Ask it to stop: a queued run is cancelled at once, a running one once its worker has ended
+    # its sandboxes — +wait+ sees it reach cancelled. Returns self with the answered doc.
+    def cancel
+      @doc = @c.request("POST", "#{base}/cancel") || @doc
+      self
+    end
+
+    # Poll every +poll_s+ until the run has ended and answer its final state; +timeout_s+ nil
+    # waits as long as it takes, else TimeoutError once it passes.
+    def wait(timeout_s: nil, poll_s: 5)
+      deadline = timeout_s && (Run.now + timeout_s)
+      until TERMINAL.include?(state)
+        refresh
+        break if TERMINAL.include?(state)
+
+        left = deadline && (deadline - Run.now)
+        raise TimeoutError, "run #{id} still #{state} after #{timeout_s}s" if left && left <= 0
+
+        sleep(left ? [poll_s, left].min : poll_s)
+      end
+      state
+    end
+
+    # The job's whole log so far (combined stdout and stderr), every page of it. +job+ is its
+    # index in +jobs+ or its "key" ("test (postgres16)").
+    def logs(job:)
+      index = job_index(job)
+      offset = 0
+      text = +""
+      loop do
+        page = log_page(index, offset)
+        text << page["data"].to_s
+        nxt = page["next"].to_i
+        return text if page["complete"] || nxt <= offset
+
+        offset = nxt
+      end
+    end
+
+    # Yield the job's log in chunks as it is written — from the first byte, polling every
+    # +poll_s+ while nothing new has landed — until the job has ended and every byte was
+    # yielded. No block answers an Enumerator.
+    def follow(job:, poll_s: 5)
+      return enum_for(:follow, job: job, poll_s: poll_s) unless block_given?
+
+      index = job_index(job)
+      offset = 0
+      loop do
+        page = log_page(index, offset)
+        data = page["data"].to_s
+        yield data unless data.empty?
+        return self if page["complete"]
+
+        nxt = page["next"].to_i
+        sleep(poll_s) if nxt <= offset
+        offset = [offset, nxt].max
+      end
+    end
+
+    def inspect
+      "#<Kloudlite::Run #{repo}##{number} #{pipeline} #{state}>"
+    end
+
+    # "owner/name" → the repo's runs path. Shared with Pipelines.
+    def self.path_of(repo, tail = "")
+      owner, name = split(repo)
+      "/v1/repos/#{seg(owner)}/#{seg(name)}/runs#{tail}"
+    end
+
+    def self.now
+      ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+    end
+
+    private
+
+    def base
+      Run.path_of(repo, "/#{seg(id)}")
+    end
+
+    # {"data", "next", "complete", "state"}: at most a page of the log from byte +offset+.
+    def log_page(index, offset)
+      @c.request("GET", "#{base}/jobs/#{index}/logs", query: { offset: offset })
+    end
+
+    def job_index(job)
+      keys = jobs.map { |j| j["key"] }
+      if job.is_a?(Integer)
+        raise ArgumentError, "run #{id} has #{keys.size} jobs, no job #{job}" unless job >= 0 && job < keys.size
+
+        return job
+      end
+      keys.index(job.to_s) or raise ArgumentError, "run #{id} has no job #{job.inspect}; its jobs are #{keys.inspect}"
     end
   end
 
