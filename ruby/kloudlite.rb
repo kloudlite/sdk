@@ -728,14 +728,18 @@ module Kloudlite
     # Returns at once, before the sandbox runs (Sandbox#exec waits for that). +from_workspace+
     # ("name", "team/name" or an id) starts from a copy of that workspace's disk, +from_snapshot+
     # from a pushed snapshot; +network+ is "internet" (default) or "none"; +cpu+ cores and the
-    # *_gb sizes are integers. Unset keywords are omitted, so the server's defaults apply.
+    # *_gb sizes are integers. +environment+ (an id, "name" or "owner/name" of an environment the
+    # sandbox's owner -- +team+, else you -- owns) connects it: the environment's services resolve
+    # by bare name inside it, and an idle-stopped one is started. Unset keywords are omitted, so
+    # the server's defaults apply.
     def create(image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil, region: nil,
                timeout_s: nil, idle_timeout_s: nil, network: nil, env: nil, cpu: nil, memory_gb: nil,
-               disk_gb: nil)
+               disk_gb: nil, environment: nil)
       body = { team: team, region: region, image: image, packages: packages,
                from_workspace: from_workspace, from_snapshot: from_snapshot,
                timeout_secs: timeout_s, idle_timeout_secs: idle_timeout_s, network: network,
-               env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb }.compact
+               env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb,
+               environment: environment }.compact
       Sandbox.new(@c, @c.request("POST", "/v1/sandboxes", body: body))
     end
 

@@ -617,8 +617,8 @@ class Volumes:
 
 class SandboxTerminated(ApiError):
     """A call needed the sandbox ``running`` and it is ``terminated``. ``reason`` is the server's
-    (``Timeout``, ``Idle``, ``Exited``, ``Failed``, ``Unplaceable``, ``SourceGone``, ``Lost`` or
-    ``Terminated``); ``status`` is 409, as the tool route answers a sandbox that is not running."""
+    (``Timeout``, ``Idle``, ``Exited``, ``Failed``, ``Unplaceable``, ``SourceGone``, ``Lost``,
+    ``EnvironmentGone`` or ``Terminated``); ``status`` is 409, as the tool route answers a sandbox that is not running."""
 
     def __init__(self, sandbox: str, reason: str | None, message: str | None = None):
         text = f"sandbox {sandbox} terminated: {reason or 'unknown reason'}"
@@ -690,16 +690,20 @@ class Sandboxes:
                team: str | None = None, region: str | None = None,
                timeout_s: int | None = None, idle_timeout_s: int | None = None,
                network: str | None = None, env: dict | None = None, cpu: int | None = None,
-               memory_gb: int | None = None, disk_gb: int | None = None) -> "Sandbox":
+               memory_gb: int | None = None, disk_gb: int | None = None,
+               environment: str | None = None) -> "Sandbox":
         """Ask for a sandbox and return at once (202) — it is usually still ``starting``;
         :meth:`Sandbox.exec` waits for it. ``from_workspace`` is an id, ``"name"`` or
-        ``"team/name"``; ``network`` is ``internet`` or ``none``; ``cpu`` in cores. Unset
-        arguments are left to the server's defaults and the owner's quota."""
+        ``"team/name"``; ``network`` is ``internet`` or ``none``; ``cpu`` in cores.
+        ``environment`` (an id, ``"name"`` or ``"owner/name"`` of an environment the sandbox's
+        owner — ``team``, else you — owns) connects it: the environment's services resolve by
+        bare name inside it, and an idle-stopped environment is started. Unset arguments are
+        left to the server's defaults and the owner's quota."""
         body = {"image": image, "packages": packages, "from_workspace": from_workspace,
                 "from_snapshot": from_snapshot, "team": team, "region": region,
                 "timeout_secs": timeout_s, "idle_timeout_secs": idle_timeout_s,
                 "network": network, "env": env, "cpu": cpu, "memory_gb": memory_gb,
-                "disk_gb": disk_gb}
+                "disk_gb": disk_gb, "environment": environment}
         doc = self._c.request("POST", "/v1/sandboxes",
                               body={k: v for k, v in body.items() if v is not None})
         return Sandbox(self._c, doc)
@@ -721,7 +725,7 @@ class Sandboxes:
             from_snapshot: str | None = None, team: str | None = None,
             region: str | None = None, idle_timeout_s: int | None = None,
             network: str | None = None, cpu: int | None = None, memory_gb: int | None = None,
-            disk_gb: int | None = None) -> dict:
+            disk_gb: int | None = None, environment: str | None = None) -> dict:
         """One command in a fresh sandbox: create, exec, wait, read every byte of output, and
         terminate — ALWAYS, also when anything before it raised. Answers
         ``{"exit_code", "stdout", "stderr", "sandbox"}``. ``env`` and ``cwd`` are the command's;
@@ -731,7 +735,8 @@ class Sandboxes:
         sb = self.create(image=image, packages=packages, from_workspace=from_workspace,
                          from_snapshot=from_snapshot, team=team, region=region,
                          timeout_s=lifetime, idle_timeout_s=idle_timeout_s, network=network,
-                         cpu=cpu, memory_gb=memory_gb, disk_gb=disk_gb)
+                         cpu=cpu, memory_gb=memory_gb, disk_gb=disk_gb,
+                         environment=environment)
         try:
             p = sb.exec(cmd=cmd, cwd=cwd, env=env)
             code = p.wait(timeout_s=timeout_s)
