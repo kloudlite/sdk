@@ -33,10 +33,11 @@ type Client struct {
 	CodeRepos *CodeRepos
 	// ModelRepos and DataRepos live on the hub listener; their calls fail with a
 	// plain error until a hub URL is given (New's hubURL, or NewWithHub).
-	ModelRepos *HubRepos
-	DataRepos  *HubRepos
-	Workspaces *Workspaces
-	Volumes    *Volumes
+	ModelRepos   *HubRepos
+	DataRepos    *HubRepos
+	Workspaces   *Workspaces
+	Environments *Environments
+	Volumes      *Volumes
 
 	baseURL string
 	hubURL  string
@@ -62,6 +63,7 @@ func NewWithHub(baseURL, hubURL, token string) *Client {
 	c.ModelRepos = &HubRepos{c: c, kind: "model", plural: "models"}
 	c.DataRepos = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
 	c.Workspaces = &Workspaces{c}
+	c.Environments = &Environments{c}
 	c.Volumes = &Volumes{c}
 	return c
 }
@@ -852,6 +854,185 @@ func (i *Ide) send(method, path string, body map[string]any) (any, error) {
 
 // Volumes is the btrfs volumes behind workspaces and environments: snapshot
 // history, restore targets, and the two deletes — over /v1/volumes.
+// Service is one container of an environment. Mounts are folders of the
+// environment's own disk.
+type Service struct {
+	Name    string            `json:"name"`
+	Image   string            `json:"image"`
+	Ports   []int             `json:"ports"`
+	Env     map[string]string `json:"env"`
+	Command []string          `json:"command"`
+	Mounts  []Mount           `json:"mounts"`
+}
+
+type Mount struct {
+	Folder string `json:"folder"`
+	Path   string `json:"path"`
+}
+
+// EnvOptions are the optional halves of Create and Clone. SnapshotID grows
+// the environment from a pushed snapshot, whose services then are the
+// default; empty fields mean "not set".
+type EnvOptions struct {
+	Services   []Service
+	QuotaGb    int64
+	SnapshotID string
+}
+
+// Environments are multi-service environments over /v1/environments: a set of
+// containers sharing one disk. An environment is named by ONE string — "name"
+// for the caller's own, "team/name" for a team's — or by its id (env-…).
+type Environments struct{ c *Client }
+
+func (e *Environments) Create(env string, opts EnvOptions) (map[string]any, error) {
+	body, err := envBody(env, opts)
+	if err != nil {
+		return nil, err
+	}
+	if body["services"] == nil {
+		body["services"] = []Service{}
+	}
+	var out map[string]any
+	err = e.c.Request("POST", "/v1/environments", nil, body, &out)
+	return out, err
+}
+
+// List answers the caller's environments and their teams'; a non-empty owner
+// narrows to one handle or team.
+func (e *Environments) List(owner string) ([]map[string]any, error) {
+	q := url.Values{}
+	if owner != "" {
+		q.Set("owner", owner)
+	}
+	var out []map[string]any
+	err := e.c.Request("GET", "/v1/environments", q, nil, &out)
+	return out, err
+}
+
+func (e *Environments) Get(env string) (map[string]any, error) {
+	var out map[string]any
+	err := e.at("GET", env, "", nil, &out)
+	return out, err
+}
+
+// SetServices replaces the WHOLE service list. A removed service keeps its
+// folders, so adding it back finds its data.
+func (e *Environments) SetServices(env string, services []Service) error {
+	return e.at("PATCH", env, "", map[string]any{"services": fillServices(services)}, nil)
+}
+
+func (e *Environments) Start(env string) error { return e.at("POST", env, "/start", nil, nil) }
+func (e *Environments) Stop(env string) error  { return e.at("POST", env, "/stop", nil, nil) }
+
+// Hold resets the idle clock — call it periodically while something depends
+// on the services.
+func (e *Environments) Hold(env string) error { return e.at("POST", env, "/hold", nil, nil) }
+
+// Delete keeps the volume while a pushed snapshot references it.
+func (e *Environments) Delete(env string) error { return e.at("DELETE", env, "", nil, nil) }
+
+// Push cuts a SNAPSHOT of every service's data — the one durable, restorable
+// state.
+func (e *Environments) Push(env, message string) (map[string]any, error) {
+	var body any
+	if message != "" {
+		body = map[string]string{"message": message}
+	}
+	var out map[string]any
+	err := e.at("POST", env, "/push", body, &out)
+	return out, err
+}
+
+// Clone makes a new environment `to` ("name" or "team/name"): a copy of the
+// live disk, or with opts.SnapshotID of one of this environment's snapshots.
+func (e *Environments) Clone(env, to string, opts EnvOptions) (map[string]any, error) {
+	body, err := envBody(to, opts)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	err = e.at("POST", env, "/clone", body, &out)
+	return out, err
+}
+
+// Restore puts THIS environment back to one of its own snapshots, services
+// and data (202). A persistent service the snapshot lacks is a 409 naming it;
+// list it in discard to accept losing its data.
+func (e *Environments) Restore(env, snapshotID string, discard []string) error {
+	if discard == nil {
+		discard = []string{}
+	}
+	return e.at("POST", env, "/restore", map[string]any{"snapshot_id": snapshotID, "discard": discard}, nil)
+}
+
+func (e *Environments) at(method, env, tail string, body, out any) error {
+	owner, name, err := owned(env)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	if owner != "" {
+		q.Set("owner", owner)
+	}
+	return e.c.Request(method, "/v1/environments/"+seg(name)+tail, q, body, out)
+}
+
+// owned splits "name" into ("", name) and "team/name" into (team, name).
+func owned(s string) (string, string, error) {
+	i := strings.LastIndex(s, "/")
+	if i < 0 {
+		return "", s, nil
+	}
+	owner, name := s[:i], s[i+1:]
+	if owner == "" || name == "" || strings.Contains(owner, "/") {
+		return "", "", fmt.Errorf("expected name or team/name, got %q", s)
+	}
+	return owner, name, nil
+}
+
+func envBody(env string, opts EnvOptions) (map[string]any, error) {
+	owner, name, err := owned(env)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"name": name}
+	if owner != "" {
+		body["owner"] = owner
+	}
+	if opts.Services != nil {
+		body["services"] = fillServices(opts.Services)
+	}
+	if opts.QuotaGb > 0 {
+		body["quota_gb"] = opts.QuotaGb
+	}
+	if opts.SnapshotID != "" {
+		body["snapshot_id"] = opts.SnapshotID
+	}
+	return body, nil
+}
+
+// fillServices replaces nil fields with empty ones: the server requires every
+// field, and a nil slice or map would encode as null.
+func fillServices(in []Service) []Service {
+	out := make([]Service, len(in))
+	for i, sv := range in {
+		if sv.Ports == nil {
+			sv.Ports = []int{}
+		}
+		if sv.Env == nil {
+			sv.Env = map[string]string{}
+		}
+		if sv.Command == nil {
+			sv.Command = []string{}
+		}
+		if sv.Mounts == nil {
+			sv.Mounts = []Mount{}
+		}
+		out[i] = sv
+	}
+	return out
+}
+
 type Volumes struct{ c *Client }
 
 // List filters by kind ("workspace" or "environment") and owner (a handle or
