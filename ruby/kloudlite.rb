@@ -10,10 +10,11 @@
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
 # resource is always the keyword named after it (repo:, workspace:, environment:, session:,
-# volume:, snapshot:), and a new object made from an existing one is to:.
+# volume:, snapshot:, sandbox:), and a new object made from an existing one is to:.
 
 require "json"
 require "net/http"
+require "timeout"
 require "uri"
 
 module Kloudlite
@@ -30,6 +31,22 @@ module Kloudlite
       super("#{status}: #{message}")
     end
   end
+
+  # A sandbox that ended while the caller waited for it to run; +reason+ is the server's
+  # (Timeout, Idle, Unplaceable, …). An ApiError so one rescue covers both.
+  class SandboxTerminated < ApiError
+    attr_reader :reason
+
+    def initialize(sandbox, reason, detail)
+      @reason = reason
+      text = "sandbox #{sandbox} is terminated (#{reason || 'unknown'})"
+      text += ": #{detail}" unless detail.nil? || detail.to_s.empty?
+      super(409, text)
+    end
+  end
+
+  # A client-side wait ran out. A ::Timeout::Error, so a generic rescue still catches it.
+  class TimeoutError < ::Timeout::Error; end
 
   # The naming rules every module shares. Mixed in privately; never part of the public surface.
   module Names
@@ -61,7 +78,8 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :sessions, :volumes
+    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :sessions, :volumes,
+                :sandboxes
 
     def initialize(base_url:, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
@@ -75,6 +93,7 @@ module Kloudlite
       @environments = Environments.new(self)
       @sessions = Sessions.new(self)
       @volumes = Volumes.new(self)
+      @sandboxes = Sandboxes.new(self)
     end
 
     # The ceiling and what is against it; +owner+ defaults to the caller's own.
@@ -109,6 +128,15 @@ module Kloudlite
     private
 
     def send_to(base, method, path, body: nil, query: nil)
+      uri, req = build(base, method, path, body: body, query: query)
+      resp = Net::HTTP.start(uri.hostname, uri.port,
+                             use_ssl: uri.scheme == "https",
+                             open_timeout: @timeout, read_timeout: @timeout) { |http| http.request(req) }
+      raise ApiError.new(resp.code.to_i, self.class.error_text(resp.body)) unless resp.is_a?(Net::HTTPSuccess)
+      resp.body.nil? || resp.body.empty? ? nil : JSON.parse(resp.body)
+    end
+
+    def build(base, method, path, body: nil, query: nil)
       uri = URI.parse(base + path)
       if query
         q = query.compact
@@ -122,11 +150,33 @@ module Kloudlite
         req["Content-Type"] = "application/json"
         req.body = JSON.generate(body)
       end
-      resp = Net::HTTP.start(uri.hostname, uri.port,
-                             use_ssl: uri.scheme == "https",
-                             open_timeout: @timeout, read_timeout: @timeout) { |http| http.request(req) }
-      raise ApiError.new(resp.code.to_i, self.class.error_text(resp.body)) unless resp.is_a?(Net::HTTPSuccess)
-      resp.body.nil? || resp.body.empty? ? nil : JSON.parse(resp.body)
+      [uri, req]
+    end
+
+    # GET an NDJSON stream, yielding each line parsed. No read timeout: a process may be silent
+    # for longer than any bound we could pick, and the server ends the body after the exit frame.
+    # Chunks split lines anywhere, so bytes are buffered until a whole line is in hand. Reached
+    # by Sandbox and SandboxProcess through __send__ — it is not part of the public surface.
+    def stream_ndjson(path, query: nil)
+      uri, req = build(@base_url, "GET", path, query: query)
+      req["Accept"] = "application/x-ndjson"
+      Net::HTTP.start(uri.hostname, uri.port,
+                      use_ssl: uri.scheme == "https",
+                      open_timeout: @timeout, read_timeout: nil) do |http|
+        http.request(req) do |resp|
+          raise ApiError.new(resp.code.to_i, self.class.error_text(resp.read_body)) unless resp.is_a?(Net::HTTPSuccess)
+          buf = String.new(encoding: Encoding::BINARY)
+          resp.read_body do |chunk|
+            buf << chunk.b
+            while (i = buf.index("\n"))
+              line = buf.slice!(0, i + 1).strip
+              yield JSON.parse(line.force_encoding(Encoding::UTF_8)) unless line.empty?
+            end
+          end
+          tail = buf.strip
+          yield JSON.parse(tail.force_encoding(Encoding::UTF_8)) unless tail.empty?
+        end
+      end
     end
   end
 
@@ -654,6 +704,333 @@ module Kloudlite
     # Takes a DETACHED volume with all its snapshots; refused while a working copy remains.
     def delete(volume:)
       @c.request("DELETE", "/v1/volumes/#{seg(volume)}")
+    end
+  end
+
+  # Short-lived isolated containers you send commands to, over /v1/sandboxes — Modal-shaped:
+  # create, exec as often as you like, terminate. Not a workspace: no ssh, no sync, no wake;
+  # when it ends only its record (phase, reason, timings) stays. Read files out before
+  # terminating — the disk goes with it.
+  #
+  #   sb = kl.sandboxes.create(image: "python:3.12", timeout_s: 600)
+  #   p = sb.exec(cmd: ["bash", "-c", "while read line; do echo $line; done"])
+  #   p.stdin.write("foo bar\n"); p.stdin.write_eof; p.stdin.drain
+  #   p.wait            # => 0
+  #   p.stdout.read     # => "foo bar\n"
+  #   sb.terminate
+  class Sandboxes
+    include Names
+
+    def initialize(client)
+      @c = client
+    end
+
+    # Returns at once, before the sandbox runs (Sandbox#exec waits for that). +from_workspace+
+    # ("name", "team/name" or an id) starts from a copy of that workspace's disk, +from_snapshot+
+    # from a pushed snapshot; +network+ is "internet" (default) or "none"; +cpu+ cores and the
+    # *_gb sizes are integers. Unset keywords are omitted, so the server's defaults apply.
+    def create(image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil, region: nil,
+               timeout_s: nil, idle_timeout_s: nil, network: nil, env: nil, cpu: nil, memory_gb: nil,
+               disk_gb: nil)
+      body = { team: team, region: region, image: image, packages: packages,
+               from_workspace: from_workspace, from_snapshot: from_snapshot,
+               timeout_secs: timeout_s, idle_timeout_secs: idle_timeout_s, network: network,
+               env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb }.compact
+      Sandbox.new(@c, @c.request("POST", "/v1/sandboxes", body: body))
+    end
+
+    def get(sandbox:)
+      Sandbox.new(@c, @c.request("GET", "/v1/sandboxes/#{seg(sandbox)}"))
+    end
+
+    # The caller's sandboxes, newest first; +team+ scopes to theirs in that team.
+    def list(team: nil)
+      (@c.request("GET", "/v1/sandboxes", query: { team: team }) || []).map { |doc| Sandbox.new(@c, doc) }
+    end
+
+    # One command in a fresh sandbox: create, wait until running, exec, wait, read all output,
+    # and ALWAYS terminate. +env+ and +timeout_s+ are the COMMAND's (timeout_s bounds the wait
+    # for it to exit; nil waits until it does); every other keyword is create's. Answers
+    # {"exit_code", "stdout", "stderr", "sandbox"}.
+    def run(cmd:, cwd: nil, env: nil, timeout_s: nil, **create_args)
+      # A command allowed longer than the sandbox's default lifetime must not be cut by it: the
+      # sandbox outlives the wait by a minute, within the server's 10 s..24 h.
+      create_args = create_args.merge(timeout_s: (timeout_s.ceil + 60).clamp(10, 86_400)) if timeout_s
+      sb = create(**create_args)
+      done = false
+      begin
+        p = sb.exec(cmd: cmd, cwd: cwd, env: env)
+        code = p.wait(timeout_s: timeout_s)
+        out, err, = p.__send__(:collect)
+        done = true
+        { "exit_code" => code, "stdout" => out, "stderr" => err, "sandbox" => sb.id }
+      ensure
+        begin
+          sb.terminate
+        rescue ApiError, SystemCallError, IOError
+          # The command's own failure is the one worth reporting; a terminate that fails
+          # after success is not swallowed.
+          raise if done
+        end
+      end
+    end
+  end
+
+  # One sandbox: the doc the server last answered, plus the verbs. Fields read as sb["phase"]
+  # or through the named readers.
+  class Sandbox
+    include Names
+
+    attr_reader :doc
+
+    def initialize(client, doc)
+      @c = client
+      @doc = doc || {}
+    end
+
+    def id = @doc["id"]
+    def phase = @doc["phase"]
+    def reason = @doc["reason"]
+    def message = @doc["message"]
+
+    def [](field)
+      @doc[field.to_s]
+    end
+
+    # Re-read the doc; returns self.
+    def refresh
+      @doc = @c.request("GET", base)
+      self
+    end
+
+    # Poll (0.5 s backing off to 2 s) until running. A sandbox that terminates first raises
+    # SandboxTerminated naming the reason; +timeout_s+ passing raises TimeoutError.
+    def wait_running(timeout_s: 120)
+      poll_until(timeout_s, "running") do
+        raise SandboxTerminated.new(id, reason, message) if phase == "terminated"
+        phase == "running"
+      end
+    end
+
+    # Start +cmd+ — an argv Array, or a String run by the shell — and answer its SandboxProcess.
+    # Always detached: the process outlives this call, and its output and exit are read back.
+    def exec(cmd:, cwd: nil, env: nil)
+      wait_running unless phase == "running"
+      out = call(tool: "exec", cmd: cmd, cwd: cwd, env: env, detach: true)
+      SandboxProcess.new(@c, self, out["id"].to_s)
+    end
+
+    # Paths are relative to ~/workspace; both answer the tool's JSON as is.
+    def read(path:)
+      call(tool: "read", path: path)
+    end
+
+    def write(path:, content:)
+      call(tool: "write", path: path, content: content)
+    end
+
+    # Any tool the sandbox's tool server lists, arguments as keywords (nil ones dropped). The
+    # sandbox must be running — anything else is a 409.
+    def call(tool:, **args)
+      @c.request("POST", "#{base}/tools/#{seg(tool)}", body: args.compact.transform_keys(&:to_s))
+    end
+
+    # Ask it to end (202); the record stays. Returns self with the answered doc.
+    def terminate
+      @doc = @c.request("POST", "#{base}/terminate") || @doc
+      self
+    end
+
+    # Poll until terminated and answer the reason; +timeout_s+ nil waits as long as it takes.
+    def wait(timeout_s: nil)
+      poll_until(timeout_s, "terminated") { phase == "terminated" }
+      reason
+    end
+
+    # Delete the record (and, if it still runs, the sandbox with it).
+    def delete
+      @c.request("DELETE", base)
+      nil
+    end
+
+    def inspect
+      "#<Kloudlite::Sandbox #{id} #{phase}#{reason ? " #{reason}" : ''}>"
+    end
+
+    private
+
+    def base
+      "/v1/sandboxes/#{seg(id)}"
+    end
+
+    def poll_until(timeout_s, what)
+      deadline = timeout_s && (Sandbox.now + timeout_s)
+      delay = 0.5
+      loop do
+        refresh
+        return self if yield
+        left = deadline && (deadline - Sandbox.now)
+        raise TimeoutError, "sandbox #{id} was not #{what} within #{timeout_s}s (phase #{phase})" if left && left <= 0
+        sleep(left ? [delay, left].min : delay)
+        delay = [delay * 2, 2.0].min
+      end
+    end
+
+    # ::Process — this module's own SandboxProcess is the one a bare name would suggest.
+    def self.now
+      ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+    end
+  end
+
+  # A process started by Sandbox#exec. +stdin+ takes bytes, +stdout+/+stderr+ read the output
+  # (whole, or line by line as it arrives), +wait+ answers the exit code.
+  class SandboxProcess
+    include Names
+
+    attr_reader :id, :sandbox, :stdin, :stdout, :stderr
+
+    # The longest single process_wait the api will hold open (it clamps to this).
+    WAIT_SLICE_MS = 20_000
+
+    def initialize(client, sandbox, id)
+      @c = client
+      @sandbox = sandbox
+      @id = id
+      @returncode = nil
+      @stdin = Stdin.new(self)
+      @stdout = Output.new(self, "stdout")
+      @stderr = Output.new(self, "stderr")
+    end
+
+    # The exit code last seen (by wait, poll or the end of an output stream); nil until then,
+    # and nil for a process that ended without one.
+    attr_reader :returncode
+
+    # Block until it exits and answer the exit code, in polls of at most 20 s; +timeout_s+ nil
+    # waits as long as it takes, else TimeoutError once it passes.
+    def wait(timeout_s: nil)
+      deadline = timeout_s && (Sandbox.now + timeout_s)
+      loop do
+        left = deadline && (deadline - Sandbox.now)
+        ms = left ? [[(left * 1000).ceil, 0].max, WAIT_SLICE_MS].min : WAIT_SLICE_MS
+        out = tool("process_wait", timeout_ms: ms)
+        return @returncode = out["exit_code"] if out["state"] == "exited"
+        raise TimeoutError, "process #{@id} in #{@sandbox.id} still running after #{timeout_s}s" if left && Sandbox.now >= deadline
+      end
+    end
+
+    # The exit code if it has exited, else nil — never blocks.
+    def poll
+      out = tool("process_wait", timeout_ms: 0)
+      out["state"] == "exited" ? (@returncode = out["exit_code"]) : nil
+    end
+
+    # +signal+ is the tool's own default (TERM) when nil.
+    def kill(signal: nil)
+      tool("process_kill", signal: signal)
+    end
+
+    def inspect
+      "#<Kloudlite::SandboxProcess #{@id} in #{@sandbox.id}>"
+    end
+
+    private
+
+    def tool(name, **args)
+      @sandbox.call(tool: name, id: @id, **args)
+    end
+
+    # Follow the NDJSON stream from the start, yielding [stream, data] per output frame; ends
+    # after the exit frame, whose code it records. A body that ends without one was cut off.
+    def follow
+      exited = false
+      @c.__send__(:stream_ndjson, "/v1/sandboxes/#{seg(@sandbox.id)}/processes/#{seg(@id)}/stream",
+                      query: { since: 0, since_err: 0 }) do |frame|
+        if frame.key?("exit")
+          @returncode = frame["exit"]
+          exited = true
+        elsif frame["stream"]
+          yield frame["stream"], frame["data"].to_s
+        end
+      end
+      raise IOError, "the output stream of process #{@id} ended before it exited" unless exited
+    end
+
+    # Both streams in one pass: [stdout, stderr, exit code].
+    def collect
+      out = +""
+      err = +""
+      follow { |name, data| (name == "stderr" ? err : out) << data }
+      [out, err, @returncode]
+    end
+
+    # The process's stdin. Writes are delivered when the call returns, so +drain+ has nothing
+    # to wait for; it exists so code written against an asyncio-style writer reads the same.
+    # +write+ takes its data positionally, the way IO#write does.
+    class Stdin
+      def initialize(process)
+        @p = process
+      end
+
+      # A String in any encoding is sent as UTF-8; a binary String's bytes go as they are.
+      # Answers the number of bytes written.
+      def write(data)
+        s = data.to_s
+        s = s.encode(Encoding::UTF_8) unless s.encoding == Encoding::BINARY
+        @p.__send__(:tool, "process_write", data_base64: [s].pack("m0"))
+        s.bytesize
+      end
+
+      # Close the process's stdin, so a reader sees end of file.
+      def write_eof
+        @p.__send__(:tool, "process_close_stdin")
+        nil
+      end
+
+      def drain
+        nil
+      end
+    end
+
+    # stdout or stderr: +read+ the whole stream once the process exits, or +each_line+ as it
+    # arrives. Each call follows the stream from the beginning.
+    class Output
+      include Enumerable
+
+      def initialize(process, name)
+        @p = process
+        @name = name
+      end
+
+      # Everything this stream wrote, once the process has exited.
+      def read
+        text = +""
+        @p.__send__(:follow) { |name, data| text << data if name == @name }
+        text
+      end
+
+      # Lines as they arrive, each with its "\n" (like IO#each_line; +chomp: true+ drops it); a
+      # last line with no newline is yielded at the end. No block answers an Enumerator.
+      def each_line(chomp: false)
+        return enum_for(:each_line, chomp: chomp) unless block_given?
+
+        pending = +""
+        @p.__send__(:follow) do |name, data|
+          next unless name == @name
+
+          pending << data
+          while (i = pending.index("\n"))
+            line = pending.slice!(0, i + 1)
+            yield(chomp ? line.chomp : line)
+          end
+        end
+        yield pending unless pending.empty?
+        self
+      end
+
+      def each(&block)
+        each_line(&block)
+      end
     end
   end
 

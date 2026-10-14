@@ -52,6 +52,7 @@ type Client struct {
 	Environments *Environments
 	Sessions     *Sessions
 	Volumes      *Volumes
+	Sandboxes    *Sandboxes
 
 	baseURL string
 	hubURL  string
@@ -88,6 +89,7 @@ func New(opts Options) *Client {
 	c.Environments = &Environments{c}
 	c.Sessions = &Sessions{c}
 	c.Volumes = &Volumes{c}
+	c.Sandboxes = &Sandboxes{c}
 	return c
 }
 

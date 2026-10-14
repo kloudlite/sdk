@@ -41,6 +41,9 @@ export class ApiError extends Error {
 
 type Query = Record<string, string | number | boolean | undefined>;
 
+/** Module-private: the NDJSON stream {@link Process} output follows. Not exported, so not API. */
+const STREAM = Symbol("stream");
+
 export class Kloudlite {
   readonly codeRepos: CodeRepos;
   readonly modelRepos: HubRepos;
@@ -49,6 +52,7 @@ export class Kloudlite {
   readonly environments: Environments;
   readonly sessions: Sessions;
   readonly volumes: Volumes;
+  readonly sandboxes: Sandboxes;
   private readonly baseUrl: string;
   private readonly hubUrl?: string;
   private readonly token?: string;
@@ -66,6 +70,7 @@ export class Kloudlite {
     this.environments = new Environments(this);
     this.sessions = new Sessions(this);
     this.volumes = new Volumes(this);
+    this.sandboxes = new Sandboxes(this);
   }
 
   /** The ceiling and what is against it; `owner` defaults to the caller's own. */
@@ -88,21 +93,9 @@ export class Kloudlite {
   }
 
   private async send<T>(base: string, method: string, path: string, body?: unknown, query?: Query): Promise<T> {
-    let url = base + path;
-    if (query) {
-      const q = new URLSearchParams();
-      for (const [k, v] of Object.entries(query)) {
-        if (v !== undefined) q.set(k, String(v));
-      }
-      const qs = q.toString();
-      if (qs) url += `?${qs}`;
-    }
-    const headers: Record<string, string> = { "User-Agent": USER_AGENT, Accept: "application/json" };
-    if (this.token) headers.Authorization = `Bearer ${this.token}`;
-    if (body !== undefined) headers["Content-Type"] = "application/json";
-    const resp = await fetch(url, {
+    const resp = await fetch(url(base, path, query), {
       method,
-      headers,
+      headers: this.headers("application/json", body !== undefined),
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -110,6 +103,63 @@ export class Kloudlite {
     if (!resp.ok) throw new ApiError(resp.status, errorText(raw));
     return (raw ? JSON.parse(raw) : null) as T;
   }
+
+  /**
+   * A GET answering `application/x-ndjson`, yielded one parsed object per line as the bytes
+   * arrive. No timeout: a stream lasts as long as the process behind it, and the server sends its
+   * headers at once, so a dead request still fails fast. Leaving the loop early cancels the body.
+   */
+  async *[STREAM](path: string, query?: Query): AsyncGenerator<unknown> {
+    const ctl = new AbortController();
+    const resp = await fetch(url(this.baseUrl, path, query), {
+      headers: this.headers("application/x-ndjson", false),
+      signal: ctl.signal,
+    });
+    if (!resp.ok) throw new ApiError(resp.status, errorText(await resp.text()));
+    if (!resp.body) return;
+    const reader = resp.body.getReader();
+    const text = new TextDecoder();
+    let buf = "";
+    let done = false;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        // `stream: true` holds back a UTF-8 sequence split across chunks; the final call flushes it.
+        buf += chunk.done ? text.decode() : text.decode(chunk.value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line) yield JSON.parse(line);
+        }
+        if (chunk.done) break;
+      }
+      if (buf.trim()) yield JSON.parse(buf);
+      done = true;
+    } finally {
+      if (!done) ctl.abort();
+    }
+  }
+
+  private headers(accept: string, json: boolean): Record<string, string> {
+    const headers: Record<string, string> = { "User-Agent": USER_AGENT, Accept: accept };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (json) headers["Content-Type"] = "application/json";
+    return headers;
+  }
+}
+
+function url(base: string, path: string, query?: Query): string {
+  let out = base + path;
+  if (query) {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined) q.set(k, String(v));
+    }
+    const qs = q.toString();
+    if (qs) out += `?${qs}`;
+  }
+  return out;
 }
 
 export interface Repo {
@@ -883,6 +933,405 @@ export class Volumes {
   /** Takes a DETACHED volume with all its snapshots; refused while a working copy remains. */
   delete({ volume }: VolumeRef) {
     return this.c.request("DELETE", `/v1/volumes/${seg(volume)}`);
+  }
+}
+
+export type SandboxPhase = "pending" | "starting" | "running" | "terminated";
+
+/** Why a sandbox ended; set once its phase is `terminated`. */
+export type SandboxReason =
+  | "Terminated" | "Timeout" | "Idle" | "Exited" | "Failed" | "Unplaceable" | "SourceGone" | "Lost";
+
+/** A sandbox as `/v1/sandboxes` answers it — wire spelling, as every other doc here. */
+export interface SandboxDoc {
+  id: string;
+  owner: string;
+  team: string | null;
+  region: string;
+  image: string;
+  packages: string[];
+  phase: SandboxPhase;
+  reason: SandboxReason | null;
+  message: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  timeout_secs: number;
+  idle_timeout_secs: number | null;
+  network: "internet" | "none";
+  cpu: number;
+  memory_gb: number;
+  disk_gb: number;
+  from: { workspace: string } | { snapshot: string } | null;
+}
+
+/** Every field optional: absent means the server's default. */
+export interface CreateSandbox {
+  image?: string;
+  /** nixpkgs attributes, optionally pinned (`attr@version`). */
+  packages?: string[];
+  /** Start from a copy of one of YOUR workspaces: its id, `"name"` or `"team/name"`. */
+  fromWorkspace?: string;
+  /** Start from a snapshot id the caller may read. */
+  fromSnapshot?: string;
+  team?: string;
+  region?: string;
+  /** Lifetime in seconds from the moment it runs (server default 300, 10..=86 400). */
+  timeoutS?: number;
+  /** Terminate after this many seconds with no tool call (10..=86 400). */
+  idleTimeoutS?: number;
+  network?: "internet" | "none";
+  env?: Record<string, string>;
+  /** Cores (1..=8). */
+  cpu?: number;
+  memoryGb?: number;
+  diskGb?: number;
+}
+
+export interface ExecSandbox {
+  /** argv (`["ls", "-la"]`), or one string run by the shell. */
+  cmd: string | string[];
+  /** Relative to `~/workspace`. */
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+/**
+ * {@link Sandboxes.run}: the command plus every {@link CreateSandbox} field except the two whose
+ * names the command takes — `env` is the COMMAND's environment and `timeoutS` how long to wait
+ * for it (absent: until it exits), never the sandbox's.
+ */
+export interface RunSandbox extends Omit<CreateSandbox, "env" | "timeoutS">, ExecSandbox {
+  timeoutS?: number;
+}
+
+export interface RunResult {
+  /** `null` when the process ended on a signal. */
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  /** The sandbox's id — already terminated. */
+  sandbox: string;
+}
+
+/** One NDJSON frame of a process's output stream; the `exit` frame is always the last. */
+export type ProcessFrame =
+  | { dropped: number; dropped_err: number }
+  | { stream: "stdout" | "stderr"; data: string }
+  | { dropped_frames: number }
+  | { exit: number | null };
+
+/** A wait that ran out its `timeoutS` — the thing waited on carries on. */
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Bytes as base64 without Node: `Buffer` when the runtime has one, else `btoa` over a binary string. */
+function base64(data: string | Uint8Array): string {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const B = (globalThis as { Buffer?: { from(b: Uint8Array): { toString(enc: "base64"): string } } }).Buffer;
+  if (B) return B.from(bytes).toString("base64");
+  let bin = "";
+  // Chunked: spreading a large array into fromCharCode overflows the argument limit.
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/**
+ * Short-lived, isolated containers for running code, over `/v1/sandboxes` — Modal-shaped:
+ *
+ *     const sb = await kl.sandboxes.create({ image: "python:3.12" });
+ *     const p = await sb.exec({ cmd: ["python", "-c", "print(input())"] });
+ *     await p.stdin.write("hi\n");
+ *     await p.stdin.writeEof();
+ *     console.log(await p.wait(), await p.stdout.read());
+ *     await sb.terminate();
+ *
+ * {@link create} answers at once; the first {@link Sandbox.exec} waits for it to run. A sandbox
+ * ends on {@link Sandbox.terminate}, its `timeoutS`, or its `idleTimeoutS` — never on its own
+ * otherwise, so terminate what you create (or use {@link run}, which always does).
+ */
+export class Sandboxes {
+  constructor(private readonly c: Kloudlite) {}
+
+  /** Returns immediately, phase `pending`/`starting`; nothing waits for it to run. */
+  async create(opts: CreateSandbox = {}): Promise<Sandbox> {
+    const doc = await this.c.request<SandboxDoc>("POST", "/v1/sandboxes", createBody(opts));
+    return new Sandbox(this.c, doc);
+  }
+
+  async get({ sandbox }: { sandbox: string }): Promise<Sandbox> {
+    return new Sandbox(this.c, await this.c.request<SandboxDoc>("GET", `/v1/sandboxes/${seg(sandbox)}`));
+  }
+
+  /** The caller's sandboxes, newest first; `team` scopes to theirs in that team. */
+  async list({ team }: { team?: string } = {}): Promise<Sandbox[]> {
+    const docs = await this.c.request<SandboxDoc[]>("GET", "/v1/sandboxes", undefined, { team });
+    return (docs ?? []).map((d) => new Sandbox(this.c, d));
+  }
+
+  /**
+   * Create, wait until running, run `cmd`, wait for it, read all its output — and terminate the
+   * sandbox whatever happened. A terminate that fails after an earlier error never hides it.
+   */
+  async run({ cmd, cwd, env, timeoutS, ...create }: RunSandbox): Promise<RunResult> {
+    // A command allowed longer than the sandbox's default lifetime must not be cut by it: the
+    // sandbox outlives the wait by a minute, within the server's 10 s..24 h.
+    const lifetime = timeoutS == null ? undefined : Math.min(86_400, Math.max(10, Math.ceil(timeoutS) + 60));
+    const sb = await this.create({ ...create, timeoutS: lifetime });
+    let failed = false;
+    try {
+      await sb.waitRunning();
+      const p = await sb.exec({ cmd, cwd, env });
+      const exitCode = await p.wait({ timeoutS });
+      const [stdout, stderr] = await Promise.all([p.stdout.read(), p.stderr.read()]);
+      return { exitCode, stdout, stderr, sandbox: sb.id };
+    } catch (e) {
+      failed = true;
+      throw e;
+    } finally {
+      try {
+        await sb.terminate();
+      } catch (e) {
+        if (!failed) throw e;
+      }
+    }
+  }
+}
+
+function createBody(o: CreateSandbox) {
+  // JSON.stringify drops undefined, so an unset option is absent from the body.
+  return {
+    team: o.team, region: o.region, image: o.image, packages: o.packages,
+    from_workspace: o.fromWorkspace, from_snapshot: o.fromSnapshot,
+    timeout_secs: o.timeoutS, idle_timeout_secs: o.idleTimeoutS,
+    network: o.network, env: o.env, cpu: o.cpu, memory_gb: o.memoryGb, disk_gb: o.diskGb,
+  };
+}
+
+/** One sandbox: the last doc seen ({@link doc}) plus the calls on it. */
+export class Sandbox {
+  constructor(
+    private readonly c: Kloudlite,
+    /** The last doc the server answered; {@link refresh} re-reads it. */
+    public doc: SandboxDoc,
+  ) {}
+
+  get id(): string {
+    return this.doc.id;
+  }
+
+  get phase(): SandboxPhase {
+    return this.doc.phase;
+  }
+
+  /** Why it ended — `null` until it is `terminated`. */
+  get reason(): SandboxReason | null {
+    return this.doc.reason ?? null;
+  }
+
+  async refresh(): Promise<this> {
+    this.doc = await this.c.request<SandboxDoc>("GET", this.path());
+    return this;
+  }
+
+  /**
+   * Poll until `running` (0.5 s, backing off to 2 s). Rejects with an {@link ApiError} (409)
+   * naming the reason if it is `terminated` instead, or a {@link TimeoutError} after `timeoutS`.
+   */
+  async waitRunning({ timeoutS = 120 }: { timeoutS?: number } = {}): Promise<this> {
+    const deadline = Date.now() + timeoutS * 1000;
+    for (let delay = 500; ; delay = Math.min(delay * 2, 2000)) {
+      if (this.phase === "running") return this;
+      if (this.phase === "terminated") throw this.ended();
+      const left = deadline - Date.now();
+      if (left <= 0) throw new TimeoutError(`sandbox ${this.id} not running after ${timeoutS}s (phase ${this.phase})`);
+      await sleep(Math.min(delay, left));
+      await this.refresh();
+    }
+  }
+
+  /** Start `cmd` in the background (waiting for the sandbox to run first) and hand back its {@link Process}. */
+  async exec({ cmd, cwd, env }: ExecSandbox): Promise<Process> {
+    if (this.phase !== "running") await this.waitRunning();
+    // Always detached: a job the api would hold open is clamped to 25 s; wait() polls instead.
+    const out = await this.tool<{ id: string }>("exec", { cmd, cwd, env, detach: true });
+    return new Process(this, String(out.id));
+  }
+
+  /** The tool's JSON, as is; `path` is relative to `~/workspace`. */
+  read({ path }: { path: string }) {
+    return this.tool("read", { path });
+  }
+
+  write({ path, content }: { path: string; content: string }) {
+    return this.tool("write", { path, content });
+  }
+
+  /** Ask it to end (202); the doc it answers is kept. {@link wait} sees it reach `terminated`. */
+  async terminate(): Promise<this> {
+    this.doc = (await this.c.request<SandboxDoc>("POST", this.path("/terminate"))) ?? this.doc;
+    return this;
+  }
+
+  /** Poll until `terminated` and answer the reason; a {@link TimeoutError} after `timeoutS` (absent: no limit). */
+  async wait({ timeoutS }: { timeoutS?: number } = {}): Promise<SandboxReason | null> {
+    const deadline = timeoutS === undefined ? Infinity : Date.now() + timeoutS * 1000;
+    for (let delay = 500; ; delay = Math.min(delay * 2, 2000)) {
+      if (this.phase === "terminated") return this.reason;
+      const left = deadline - Date.now();
+      if (left <= 0) throw new TimeoutError(`sandbox ${this.id} not terminated after ${timeoutS}s (phase ${this.phase})`);
+      await sleep(Math.min(delay, left));
+      await this.refresh();
+    }
+  }
+
+  /** Delete the record (204). */
+  async delete(): Promise<void> {
+    await this.c.request("DELETE", this.path());
+  }
+
+  /**
+   * Any tool of the sandbox's tool server by name, `args` spelled as its schema spells them —
+   * the same tools as {@link Ide}. A sandbox that is not `running` answers 409.
+   */
+  tool<T = unknown>(name: string, args: Record<string, unknown>): Promise<T> {
+    return this.c.request<T>("POST", this.path(`/tools/${seg(name)}`), args);
+  }
+
+  /** @internal The process's NDJSON output frames, from the start; {@link ProcessOutput} reads them. */
+  frames(pid: string): AsyncGenerator<ProcessFrame> {
+    return this.c[STREAM](this.path(`/processes/${seg(pid)}/stream`), { since: 0, since_err: 0 }) as AsyncGenerator<ProcessFrame>;
+  }
+
+  private path(tail = ""): string {
+    return `/v1/sandboxes/${seg(this.id)}${tail}`;
+  }
+
+  private ended(): ApiError {
+    const why = this.reason ?? "unknown reason";
+    return new ApiError(409, `sandbox ${this.id} is terminated (${why})${this.doc.message ? `: ${this.doc.message}` : ""}`);
+  }
+}
+
+/** A process started by {@link Sandbox.exec}, by its `id` (the tool server's process id). */
+export class Process {
+  readonly stdin: ProcessStdin;
+  readonly stdout: ProcessOutput;
+  readonly stderr: ProcessOutput;
+  private code: number | null | undefined;
+
+  constructor(
+    readonly sandbox: Sandbox,
+    readonly id: string,
+  ) {
+    this.stdin = new ProcessStdin(sandbox, id);
+    this.stdout = new ProcessOutput(sandbox, id, "stdout");
+    this.stderr = new ProcessOutput(sandbox, id, "stderr");
+  }
+
+  /** The exit code once a {@link wait} or {@link poll} has seen it exit; `undefined` until then. */
+  get returnCode(): number | null | undefined {
+    return this.code;
+  }
+
+  /**
+   * Block until it exits and answer the exit code (`null` on a signal), in polls of at most 20 s
+   * — the api's own ceiling. A {@link TimeoutError} after `timeoutS` (absent: no limit).
+   */
+  async wait({ timeoutS }: { timeoutS?: number } = {}): Promise<number | null> {
+    const deadline = timeoutS === undefined ? Infinity : Date.now() + timeoutS * 1000;
+    for (;;) {
+      const left = Math.max(0, deadline - Date.now());
+      const st = await this.waitOnce(Math.min(left, 20_000));
+      if (st.state === "exited") return st.exit_code;
+      if (deadline - Date.now() <= 0) throw new TimeoutError(`process ${this.id} still running after ${timeoutS}s`);
+    }
+  }
+
+  /** The exit code if it has exited, `null` while it runs — one look, no wait. */
+  async poll(): Promise<number | null> {
+    const st = await this.waitOnce(0);
+    return st.state === "exited" ? st.exit_code : null;
+  }
+
+  kill({ signal }: { signal?: "TERM" | "KILL" } = {}) {
+    return this.sandbox.tool("process_kill", { id: this.id, signal });
+  }
+
+  private async waitOnce(ms: number) {
+    const st = await this.sandbox.tool<{ state: "running" | "exited"; exit_code: number | null; timed_out: boolean }>(
+      "process_wait", { id: this.id, timeout_ms: Math.floor(ms) },
+    );
+    if (st.state === "exited") this.code = st.exit_code;
+    return st;
+  }
+}
+
+/** A process's stdin. Each write is delivered when its promise resolves. */
+export class ProcessStdin {
+  constructor(
+    private readonly sb: Sandbox,
+    private readonly id: string,
+  ) {}
+
+  /** A string is sent as UTF-8; bytes as they are. */
+  async write(data: string | Uint8Array): Promise<void> {
+    await this.sb.tool("process_write", { id: this.id, data_base64: base64(data) });
+  }
+
+  /** Close stdin: the process reads end-of-file. */
+  async writeEof(): Promise<void> {
+    await this.sb.tool("process_close_stdin", { id: this.id });
+  }
+
+  /** Nothing to flush — kept for Modal's shape, since every write has landed when it resolves. */
+  async drain(): Promise<void> {}
+}
+
+/**
+ * One of a process's output streams, followed from its first byte until the process exits:
+ * {@link read} for all of it, `for await (const line of p.stdout)` for lines as they arrive
+ * (split on `\n`, without it; a final unterminated line is yielded last). Each read or loop
+ * follows the stream afresh, so both can be used, and more than once.
+ */
+export class ProcessOutput implements AsyncIterable<string> {
+  constructor(
+    private readonly sb: Sandbox,
+    private readonly id: string,
+    private readonly which: "stdout" | "stderr",
+  ) {}
+
+  /** The whole stream's text, once the process has exited. */
+  async read(): Promise<string> {
+    let out = "";
+    for await (const chunk of this.chunks()) out += chunk;
+    return out;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+    let buf = "";
+    for await (const chunk of this.chunks()) {
+      buf += chunk;
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        yield buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+      }
+    }
+    if (buf) yield buf;
+  }
+
+  private async *chunks(): AsyncGenerator<string> {
+    for await (const f of this.sb.frames(this.id)) {
+      if ("stream" in f && f.stream === this.which) yield f.data;
+      else if ("exit" in f) return;
+    }
   }
 }
 
