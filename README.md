@@ -6,8 +6,8 @@ Bearer token (a session or CLI token; omit it for anonymous access to public
 data), a `request` core that returns parsed JSON and raises an `ApiError`-style
 error carrying the HTTP status and the server's message, and one module per
 area of the platform: `code_repos`, `model_repos`, `data_repos`, `workspaces`,
-`environments`, `sessions`, `sandboxes` and `volumes` (`codeRepos`/`CodeRepos` in the camel-
-and Pascal-cased languages).
+`environments`, `sessions`, `sandboxes`, `pipelines` and `volumes` (`codeRepos`/`CodeRepos`
+in the camel- and Pascal-cased languages).
 
 ## Every input is named
 
@@ -29,7 +29,7 @@ through the struct or params object.
 The names are the same everywhere:
 
 - A resource is passed under its own name: `repo`, `workspace`, `environment`,
-  `session`, `volume`, `snapshot` — never `id` or `name`.
+  `session`, `volume`, `snapshot`, `run` — never `id` or `name`.
 - **A repository is ONE `"owner/name"` string** (the owner being a person's
   handle or a team slug). **A workspace, environment or session is `"name"`
   (your own) or `"team/name"` (a team's)**, or its id.
@@ -46,7 +46,8 @@ The names are the same everywhere:
 | Java       | `java/Kloudlite.java` | `new Kloudlite(new Kloudlite.Options().baseUrl(…).token(…))` |
 
 The Java client returns the raw JSON string from every call — bring your own
-mapper; every other client returns decoded JSON. The examples below are Python;
+mapper — except `sandboxes()` and `pipelines()`, which hand back live handles
+that still expose their raw JSON; every other client returns decoded JSON. The examples below are Python;
 the other languages use the same names.
 
 ## `code_repos`
@@ -254,6 +255,73 @@ p.stdout)`); Go has `Process.Stdin` as an `io.Writer` with `WriteEOF()`, and
 `Stdout.ReadAll()` / `Stdout.Lines(fn)`; Ruby has `stdout.each_line`; Java has
 `stdout().read()` and `stdout().lines()` (a `Stream<String>`). Python and Ruby
 yield lines with their `\n`, like file iteration; TypeScript, Go and Java without.
+
+## `pipelines`
+
+CI pipelines are YAML files in an owner's `{owner}/pipelines` repository, run against
+that owner's repositories with each job in its own sandbox. A run is recorded on the
+repository it is about, so it is read back by that `repo`:
+
+```python
+kl.pipelines.list(owner="acme")    # every definition on acme/pipelines, with its validation errors
+
+run = kl.pipelines.run(owner="acme", pipeline="ci", repo="acme/payments", ref="main",
+                       inputs={"level": "full"}, clone="acme/staging")   # → a Run, "queued"
+for chunk in run.follow(job="test (postgres16)"):   # a job by its key, or its index
+    print(chunk, end="")
+run.wait(timeout_s=1800)           # "success" | "failure" | "cancelled"
+run.logs(job=0)                    # the whole log so far
+run.cancel()
+
+kl.pipelines.runs(repo="acme/payments", pipeline="ci", limit=10)   # newest first
+kl.pipelines.get_run(repo="acme/payments", run="1760400000000-0a1b2c").refresh()
+
+# Everything also has .aio; follow's twin is aio_follow:
+run = await kl.pipelines.run.aio(owner="acme", pipeline="ci", repo="payments")
+async for chunk in run.aio_follow(job=0):
+    ...
+```
+
+`repo` on `run` is a name or `"owner/name"` (one of the pipeline owner's); `ref` defaults
+to `main`. `environment="acme/staging"` runs every job that names no environment of its
+own in that environment; `clone="acme/staging"` runs them in a copy of it made for the run
+and deleted when it ends — pass one or the other. A pipeline that cannot run answers 422
+with every reason in the error's message, and nothing is recorded. A `Run` carries the
+record's fields (`id`, `number`, `state`, `jobs`, …; the wire's camelCase in the raw doc)
+and `refresh`, `cancel`, `wait` (polls every 5 s by default), `logs` and `follow`, which
+polls the job's log until the job has ended and every byte has arrived.
+
+```ruby
+run = kl.pipelines.run(owner: "acme", pipeline: "ci", repo: "acme/payments", clone: "acme/staging")
+run.follow(job: "test (postgres16)") { |chunk| print chunk }   # no block: an Enumerator
+run.wait(timeout_s: 1800)          # => "success"
+```
+
+```typescript
+const run = await kl.pipelines.run({ owner: "acme", pipeline: "ci", repo: "acme/payments", clone: "acme/staging" });
+for await (const chunk of run.follow({ job: "test (postgres16)" })) process.stdout.write(chunk);
+await run.wait({ timeoutS: 1800 }); // "success"
+```
+
+```go
+run, err := kl.Pipelines.Run(kloudlite.RunPipeline{Owner: "acme", Pipeline: "ci", Repo: "acme/payments", Clone: "acme/staging"})
+err = run.Follow(kloudlite.FollowLogs{Job: "test (postgres16)"}, func(chunk string) bool {
+	fmt.Print(chunk)
+	return true // false stops following
+})
+state, err := run.Wait(kloudlite.WaitRun{Timeout: 30 * time.Minute})
+```
+
+```java
+Kloudlite.Run run = kl.pipelines().run(new Kloudlite.RunPipeline()
+    .owner("acme").pipeline("ci").repo("acme/payments").clone("acme/staging"));
+try (Stream<String> log = run.follow("test (postgres16)")) { log.forEach(System.out::print); }
+String state = run.waitFor(new Kloudlite.WaitRun().timeout(Duration.ofMinutes(30)));
+```
+
+Go names a job with `Job: 0` or `Job: "key"` (and `run.Logs(0)`); Java has `logs(int)` /
+`logs(String)` and `follow(int)` / `follow(String)`, and `FollowLogs` / `WaitRun` to set
+the poll interval.
 
 ## `model_repos` and `data_repos`
 
