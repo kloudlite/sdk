@@ -5,183 +5,210 @@ library. All five share the same shape: a client taking the base URL and a
 Bearer token (a session or CLI token; omit it for anonymous access to public
 data), a `request` core that returns parsed JSON and raises an `ApiError`-style
 error carrying the HTTP status and the server's message, and one module per
-area of the platform: `code_repos`, `model_repos` and `data_repos`
-(`codeRepos`/`CodeRepos` in the camel- and Pascal-cased languages).
+area of the platform: `code_repos`, `model_repos`, `data_repos`, `workspaces`,
+`environments`, `sessions` and `volumes` (`codeRepos`/`CodeRepos` in the camel-
+and Pascal-cased languages).
 
-**A repository is always named by ONE `"owner/name"` string** — the owner half
-being a person's handle or a team slug — wherever it appears: the repo a call
-is about, a fork's destination, a pull's `head_repo`. The only bare handle in
-the API is the owner-scoped listing (`list("acme")`).
+## Every input is named
 
-| Language   | Entry point           | Construct                                     |
-| ---------- | --------------------- | --------------------------------------------- |
-| Python     | `python/kloudlite.py` | `Kloudlite(base_url, token=None)`             |
-| TypeScript | `typescript/index.ts` | `new Kloudlite({ baseUrl, token? })`          |
-| Ruby       | `ruby/kloudlite.rb`   | `Kloudlite::Client.new(base_url, token: nil)` |
-| Go         | `go/kloudlite.go`     | `kloudlite.New(baseURL, token)`               |
-| Java       | `java/Kloudlite.java` | `new Kloudlite(baseUrl, token)`               |
+No call depends on argument order. Each language does it its own way:
+
+| Language   | How                              | Example                                                                                   |
+| ---------- | -------------------------------- | ----------------------------------------------------------------------------------------- |
+| Python     | keyword-only arguments           | `kl.code_repos.open_pull(repo="acme/payments", title="Fix", head="fix", base="main")`     |
+| Ruby       | keyword arguments                | `kl.code_repos.open_pull(repo: "acme/payments", title: "Fix", head: "fix", base: "main")` |
+| TypeScript | one options object               | `kl.codeRepos.openPull({ repo: "acme/payments", title: "Fix", head: "fix", base: "main" })` |
+| Go         | one request struct               | `kl.CodeRepos.OpenPull(kloudlite.OpenPull{Repo: "acme/payments", Title: "Fix", Head: "fix", Base: "main"})` |
+| Java       | one fluent params object         | `kl.codeRepos().openPull(new Kloudlite.OpenPull().repo("acme/payments").title("Fix").head("fix").base("main"))` |
+
+Go and Java have no named arguments, so a call whose ONLY input is the thing it
+is about takes that one string (`kl.CodeRepos.Get("acme/payments")`) — a single
+argument has no order to get wrong. Everything with two or more inputs goes
+through the struct or params object.
+
+The names are the same everywhere:
+
+- A resource is passed under its own name: `repo`, `workspace`, `environment`,
+  `session`, `volume`, `snapshot` — never `id` or `name`.
+- **A repository is ONE `"owner/name"` string** (the owner being a person's
+  handle or a team slug). **A workspace, environment or session is `"name"`
+  (your own) or `"team/name"` (a team's)**, or its id.
+- Something new made from something existing is `to`: `fork(repo=…, to=…)`,
+  `clone(workspace=…, to=…)`, `restore(snapshot=…, to=…)`.
+- A git URL to import from is `url`.
+
+| Language   | Entry point           | Construct                                                  |
+| ---------- | --------------------- | ---------------------------------------------------------- |
+| Python     | `python/kloudlite.py` | `Kloudlite(base_url=…, token=…)`                           |
+| TypeScript | `typescript/index.ts` | `new Kloudlite({ baseUrl, token })`                        |
+| Ruby       | `ruby/kloudlite.rb`   | `Kloudlite::Client.new(base_url: …, token: …)`             |
+| Go         | `go/kloudlite.go`     | `kloudlite.New(kloudlite.Options{BaseURL: …, Token: …})`   |
+| Java       | `java/Kloudlite.java` | `new Kloudlite(new Kloudlite.Options().baseUrl(…).token(…))` |
 
 The Java client returns the raw JSON string from every call — bring your own
-mapper; every other client returns decoded JSON.
+mapper; every other client returns decoded JSON. The examples below are Python;
+the other languages use the same names.
 
-## The `code_repos` module
+## `code_repos`
 
-Code repositories, over `/v1/repos` on the api tier. Python spelling; the other
-languages differ only in casing (`openPull` / `OpenPull`):
+Code repositories, over `/v1/repos` on the api tier:
 
 ```python
-kl = Kloudlite("https://api.example.com", token="…")
+kl = Kloudlite(base_url="https://api.example.com", token="…")
 
-kl.code_repos.create("acme/payments", visibility="private", description="…")
-kl.code_repos.fork("acme/payments", "me/payments")   # objects + refs, private by default
-kl.code_repos.import_git("acme/rails", "https://github.com/rails/rails.git")
-kl.code_repos.import_status("acme/rails")   # 202 — a job: queued | running | done | failed
-kl.code_repos.list("acme")
-kl.code_repos.get("acme/payments")
-kl.code_repos.update("acme/payments", visibility="public")
-kl.code_repos.delete("acme/payments")
+kl.code_repos.create(repo="acme/payments", visibility="private", description="…")
+kl.code_repos.fork(repo="acme/payments", to="me/payments")       # objects + refs, private by default
+kl.code_repos.import_git(repo="acme/rails", url="https://github.com/rails/rails.git")
+kl.code_repos.import_status(repo="acme/rails")   # 202 — a job: queued | running | done | failed
+kl.code_repos.list(owner="acme")
+kl.code_repos.get(repo="acme/payments")
+kl.code_repos.update(repo="acme/payments", visibility="public")
+kl.code_repos.delete(repo="acme/payments")
 
-kl.code_repos.branches("acme/payments")
-kl.code_repos.delete_branch("acme/payments", "old", oid="<head oid>")
-kl.code_repos.protection("acme/payments")
-kl.code_repos.protect("acme/payments", pattern="main")
+kl.code_repos.branches(repo="acme/payments")
+kl.code_repos.delete_branch(repo="acme/payments", branch="old", oid="<head oid>")
+kl.code_repos.protection(repo="acme/payments")
+kl.code_repos.protect(repo="acme/payments", pattern="main")
 
-pr = kl.code_repos.open_pull("acme/payments", title="…", head="fix", base="main")
+pr = kl.code_repos.open_pull(repo="acme/payments", title="…", head="fix", base="main")
 # from a fork: head names the fork's branch, proposed onto this repo's base
-kl.code_repos.open_pull("acme/payments", title="…", head="fix", base="main", head_repo="me/payments")
-kl.code_repos.pulls("acme/payments", state="open")
-kl.code_repos.pull("acme/payments", pr["number"])
-kl.code_repos.comment("acme/payments", pr["number"], "LGTM")
-kl.code_repos.merge("acme/payments", pr["number"], strategy="squash")   # 202: a job
-kl.code_repos.close("acme/payments", pr["number"])
+kl.code_repos.open_pull(repo="acme/payments", title="…", head="fix", base="main", head_repo="me/payments")
+kl.code_repos.pulls(repo="acme/payments", state="open")
+kl.code_repos.pull(repo="acme/payments", number=pr["number"])
+kl.code_repos.comment(repo="acme/payments", number=pr["number"], body="LGTM")
+kl.code_repos.merge(repo="acme/payments", number=pr["number"], strategy="squash")   # 202: a job
+kl.code_repos.close(repo="acme/payments", number=pr["number"])
 
-kl.code_repos.compare("acme/payments", base="main", head="fix")
-kl.code_repos.commit("acme/payments", branch="main", message="…",
-                changes=[{"path": "a.txt", "contentBase64": "aGk="}])
-kl.code_repos.signature("acme/payments", "<commit sha>")
+kl.code_repos.compare(repo="acme/payments", base="main", head="fix")
+kl.code_repos.commit(repo="acme/payments", branch="main", message="…",
+                     changes=[{"path": "a.txt", "contentBase64": "aGk="}])
+kl.code_repos.signature(repo="acme/payments", sha="<commit sha>")
 ```
 
 A cross-repo pull's diff is read with the mirror spelling:
-`kl.code_repos.compare("acme/payments", base="main", head="pull/7/head")`.
+`kl.code_repos.compare(repo="acme/payments", base="main", head="pull/7/head")`.
 
-## The `workspaces` and `volumes` modules
+## `workspaces` and `volumes`
 
 Btrfs-backed dev workspaces over `/v1/workspaces`; their snapshot history lives
 on volumes (`/v1/volumes`). `push` is the one durable verb — it cuts a snapshot
 that outlives the workspace and is a restore target forever:
 
 ```python
-kl.quota()                                           # the ceiling, and what is used
+kl.quota()                                                # the ceiling, and what is used
 
-ws = kl.workspaces.create(name="dev", quota_gb=40,
-                          repo="acme/payments", branch="main",
-                          packages=["nodejs@22", "ripgrep"])
-wid = ws["id"]                                       # "ws-…": every call takes the id, not the name
+kl.workspaces.create(workspace="acme/dev", quota_gb=40,
+                     repo="acme/payments", branch="main",
+                     packages=["nodejs@22", "ripgrep"])
 kl.workspaces.list(team="acme")
-kl.workspaces.stop(wid); kl.workspaces.start(wid)
+kl.workspaces.stop(workspace="acme/dev")
+kl.workspaces.start(workspace="acme/dev")
 
-kl.workspaces.push(wid, message="before the refactor")    # a kept snapshot
-kl.workspaces.clone(wid, "dev-experiment", task="try the new parser")
-vol = kl.workspaces.get(wid)["volume"]                    # set once the workspace has a volume
-snaps = kl.volumes.history(vol)                           # restore targets, newest first
-kl.workspaces.restore(name="dev-again", snapshot_id=snaps[0]["id"])
+kl.workspaces.push(workspace="acme/dev", message="before the refactor")   # a kept snapshot
+kl.workspaces.clone(workspace="acme/dev", to="dev-experiment", task="try the new parser")
+vol = kl.workspaces.get(workspace="acme/dev")["volume"]   # set once it has pushed
+snaps = kl.volumes.history(volume=vol)                    # restore targets, newest first
+kl.workspaces.restore(snapshot=snaps[0]["id"], to="dev-again")
 
-kl.workspaces.set_packages(wid, ["nodejs@22", "ripgrep", "jq"])
+kl.workspaces.set_packages(workspace="acme/dev", packages=["nodejs@22", "ripgrep", "jq"])
+kl.workspaces.update_packages(workspace="acme/dev")       # re-resolve pins
 
 # The IDE tools: every workspace runs a tool server, and ide() binds a client
 # to it — read/write/edit/patch/glob/grep, exec and detached processes, watches,
 # and container builds. list() carries every schema.
-ide = kl.workspaces.ide(wid)        # inside the fleet (a bench); from a laptop:
-                                    # `kl-connect ws ide dev` then Ide("http://127.0.0.1:7788", token)
-ide.write("~/workspace/notes.md", "# plan\n")
+ide = kl.workspaces.ide(workspace="acme/dev")   # inside the fleet (a bench); from a laptop:
+                                                # `kl-connect ws ide dev`, then
+                                                # Ide(url="http://127.0.0.1:7788", token=…)
+ide.write(path="~/workspace/notes.md", content="# plan\n")
 ide.edit(path="~/workspace/notes.md", edits=[{"old": "plan", "new": "steps"}])
 ide.read(path="~/workspace/notes.md")
-ide.grep("TODO", glob="**/*.rs")
-job = ide.exec(["cargo", "test"], timeout_ms=600_000, tail=40)
-proc = ide.exec("npm run dev", detach=True)          # → {"id"}; then:
-ide.process_output(proc["id"]); ide.process_kill(proc["id"])
-kl.workspaces.update_packages(wid)                         # re-resolve pins
-kl.workspaces.delete(wid)                                  # snapshots survive on the volume
-kl.volumes.delete_snapshot(vol, snaps[0]["id"])
+ide.grep(pattern="TODO", glob="**/*.rs")
+job = ide.exec(cmd=["cargo", "test"], timeout_ms=600_000, tail=40)
+proc = ide.exec(cmd="npm run dev", detach=True)          # → {"id"}; then:
+ide.process_output(process=proc["id"])
+ide.process_kill(process=proc["id"])
+
+kl.workspaces.delete(workspace="acme/dev")                # snapshots survive on the volume
+kl.volumes.delete_snapshot(volume=vol, snapshot=snaps[0]["id"])
 ```
 
-## The `environments` module
+## `environments`
 
 Multi-service environments over `/v1/environments`: a set of containers sharing
-one disk. An environment is named by ONE string — `"name"` for your own,
-`"team/name"` for a team's — or by its id (`env-…`). A service needs only
-`name` and `image`; `ports`, `env`, `command` and `mounts` (folders of the
-environment's disk) are optional:
+one disk. A service needs only `name` and `image`; `ports`, `env`, `command`
+and `mounts` (folders of the environment's disk) are optional:
 
 ```python
-kl.environments.create("acme/staging", quota_gb=20, services=[
+kl.environments.create(environment="acme/staging", quota_gb=20, services=[
     {"name": "db", "image": "postgres:16", "ports": [5432],
      "env": {"POSTGRES_PASSWORD": "dev"},
      "mounts": [{"folder": "pgdata", "path": "/var/lib/postgresql/data"}]},
     {"name": "api", "image": "ghcr.io/acme/api:1", "ports": [8080]},
 ])
 kl.environments.list(owner="acme")
-kl.environments.get("acme/staging")
-kl.environments.set_services("acme/staging", [...])     # the whole list; data folders stay
-kl.environments.stop("acme/staging"); kl.environments.start("acme/staging")
-kl.environments.hold("acme/staging")                    # reset the idle clock
+kl.environments.get(environment="acme/staging")
+kl.environments.set_services(environment="acme/staging", services=[...])   # the whole list; data stays
+kl.environments.stop(environment="acme/staging")
+kl.environments.start(environment="acme/staging")
+kl.environments.hold(environment="acme/staging")                            # reset the idle clock
 
-kl.environments.push("acme/staging", message="seeded")  # a kept snapshot
-kl.environments.clone("acme/staging", "acme/staging-2") # a copy of the live disk
-snaps = kl.volumes.history(kl.environments.get("acme/staging")["volume"])
-kl.environments.restore("acme/staging", snaps[0]["id"]) # in place: services and data
-kl.environments.create("acme/staging-old", snapshot_id=snaps[0]["id"])  # a new one from it
-kl.environments.delete("acme/staging")                  # snapshots survive on the volume
+kl.environments.push(environment="acme/staging", message="seeded")         # a kept snapshot
+kl.environments.clone(environment="acme/staging", to="acme/staging-2")     # a copy of the live disk
+snaps = kl.volumes.history(volume=kl.environments.get(environment="acme/staging")["volume"])
+kl.environments.restore(environment="acme/staging", snapshot=snaps[0]["id"])   # in place
+kl.environments.create(environment="acme/staging-old", snapshot=snaps[0]["id"])  # a new one from it
+kl.environments.delete(environment="acme/staging")                         # snapshots survive
 ```
 
-Java builds services with `new Kloudlite.Service("db", "postgres:16").port(5432)
-.env("POSTGRES_PASSWORD", "dev").mount("pgdata", "/var/lib/postgresql/data")`.
+Java builds services the same way: `new Kloudlite.Service().name("db")
+.image("postgres:16").port(5432).env("POSTGRES_PASSWORD", "dev")
+.mount("pgdata", "/var/lib/postgresql/data")`.
 
-## The `sessions` module
+## `sessions`
 
 A working session is some of YOUR workspaces in one team, connected to one
 environment. Many people's sessions connect to the same environment and
 collaborate through it. An intercept a session takes is environment-wide —
 the environment's own services and every other session reach your workspace —
 and the session owns it: only it releases it, and removing the workspace or
-deleting the session releases it. A session is named like an environment
-(`"name"` or `"team/name"`); workspaces are created with `workspaces` and then
-added:
+deleting the session releases it. Workspaces are created with `workspaces` and
+then added:
 
 ```python
-kl.sessions.create("acme/fix-login", environment="acme/staging")
-kl.sessions.add("acme/fix-login", "acme/api-dev")      # resolves staging's services by bare name
-kl.sessions.add("acme/fix-login", "acme/web-dev")
-kl.sessions.intercept("acme/fix-login", "api", "acme/api-dev", {8080: 3000})
-kl.sessions.get("acme/fix-login")                      # its workspaces and intercepts
-kl.sessions.release("acme/fix-login", "api")
-kl.sessions.remove("acme/fix-login", "acme/web-dev")   # back to the team's choice
-kl.sessions.delete("acme/fix-login")                   # releases, lets go; deletes no workspace
+kl.sessions.create(session="acme/fix-login", environment="acme/staging")
+kl.sessions.add(session="acme/fix-login", workspace="acme/api-dev")    # resolves staging by bare name
+kl.sessions.add(session="acme/fix-login", workspace="acme/web-dev")
+kl.sessions.intercept(session="acme/fix-login", service="api",
+                      workspace="acme/api-dev", ports={8080: 3000})
+kl.sessions.get(session="acme/fix-login")                               # its workspaces and intercepts
+kl.sessions.release(session="acme/fix-login", service="api")
+kl.sessions.remove(session="acme/fix-login", workspace="acme/web-dev")  # back to the team's choice
+kl.sessions.delete(session="acme/fix-login")                            # releases; deletes no workspace
 ```
 
 A workspace is in at most one session; adding one that is in another session
 is refused naming it.
 
-## The `model_repos` and `data_repos` modules
+## `model_repos` and `data_repos`
 
 Model and dataset repositories live on the HUB listener (the Hugging Face Hub
 API, `hub.<domain>`), so the client takes its URL separately. Management level
 only — files move with git or `huggingface_hub` against the same hub URL:
 
 ```python
-kl = Kloudlite("https://api.example.com", token="…", hub_url="https://hub.example.com")
+kl = Kloudlite(base_url="https://api.example.com", token="…", hub_url="https://hub.example.com")
 
-kl.model_repos.create("acme/bert-finetune")             # private by default
-kl.model_repos.get("acme/bert-finetune")
-kl.model_repos.refs("acme/bert-finetune")               # branches and tags
-kl.model_repos.set_private("acme/bert-finetune", False)
-kl.model_repos.delete("acme/bert-finetune")
+kl.model_repos.create(repo="acme/bert-finetune")             # private by default
+kl.model_repos.get(repo="acme/bert-finetune")
+kl.model_repos.refs(repo="acme/bert-finetune")               # branches and tags
+kl.model_repos.set_private(repo="acme/bert-finetune", private=False)
+kl.model_repos.delete(repo="acme/bert-finetune")
 
-kl.data_repos.create("acme/support-tickets")         # same five verbs, dataset kind
+kl.data_repos.create(repo="acme/support-tickets")            # same verbs, dataset kind
 
-kl.model_repos.import_git("acme/bert", "https://huggingface.co/google-bert/bert-base-uncased")
-kl.model_repos.import_status("acme/bert")   # 202 — a job; large files included (git-lfs)
-kl.data_repos.import_git("acme/squad", "https://huggingface.co/datasets/rajpurkar/squad")
+kl.model_repos.import_git(repo="acme/bert", url="https://huggingface.co/google-bert/bert-base-uncased")
+kl.model_repos.import_status(repo="acme/bert")   # 202 — a job; large files included (git-lfs)
+kl.data_repos.import_git(repo="acme/squad", url="https://huggingface.co/datasets/rajpurkar/squad")
 ```
 
 Each SDK directory carries a runnable `example` file walking the whole fork
