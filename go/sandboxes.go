@@ -61,6 +61,11 @@ type CreateSandbox struct {
 	Cpu      int
 	MemoryGb int
 	DiskGb   int
+	// Environment connects the sandbox to an environment its owner (Team,
+	// else you) owns — an id, "name" or "owner/name": the environment's
+	// services resolve by bare name inside it, and an idle-stopped one is
+	// started.
+	Environment string
 }
 
 // RunSandbox is Run's input: Cmd ("shell string" or []string argv) with Cwd
@@ -93,7 +98,8 @@ type ExecCommand struct {
 
 // SandboxDoc is the server's view of a sandbox. Phase is pending, starting,
 // running or terminated; Reason (once terminated) is Terminated, Timeout,
-// Idle, Exited, Failed, Unplaceable, SourceGone or Lost. Times are RFC 3339.
+// Idle, Exited, Failed, Unplaceable, SourceGone, Lost or EnvironmentGone.
+// Times are RFC 3339.
 type SandboxDoc struct {
 	ID              string            `json:"id"`
 	Owner           string            `json:"owner"`
@@ -114,6 +120,7 @@ type SandboxDoc struct {
 	MemoryGb        int64             `json:"memory_gb"`
 	DiskGb          int64             `json:"disk_gb"`
 	From            map[string]string `json:"from"`
+	Environment     string            `json:"environment"`
 }
 
 // Sandbox is a handle on one sandbox; its doc is the last one read (Refresh
@@ -139,7 +146,8 @@ func (s *Sandboxes) Create(req CreateSandbox) (*Sandbox, error) {
 		str("from_workspace", req.FromWorkspace).str("from_snapshot", req.FromSnapshot).
 		num("timeout_secs", secs(req.Timeout)).num("idle_timeout_secs", secs(req.IdleTimeout)).
 		str("network", req.Network).val("env", req.Env, req.Env != nil).
-		num("cpu", int64(req.Cpu)).num("memory_gb", int64(req.MemoryGb)).num("disk_gb", int64(req.DiskGb))
+		num("cpu", int64(req.Cpu)).num("memory_gb", int64(req.MemoryGb)).num("disk_gb", int64(req.DiskGb)).
+		str("environment", req.Environment)
 	sb := &Sandbox{c: s.c}
 	if err := s.c.call("POST", "/v1/sandboxes", nil, map[string]any(a), &sb.SandboxDoc); err != nil {
 		return nil, err

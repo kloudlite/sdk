@@ -940,7 +940,8 @@ export type SandboxPhase = "pending" | "starting" | "running" | "terminated";
 
 /** Why a sandbox ended; set once its phase is `terminated`. */
 export type SandboxReason =
-  | "Terminated" | "Timeout" | "Idle" | "Exited" | "Failed" | "Unplaceable" | "SourceGone" | "Lost";
+  | "Terminated" | "Timeout" | "Idle" | "Exited" | "Failed" | "Unplaceable" | "SourceGone" | "Lost"
+  | "EnvironmentGone";
 
 /** A sandbox as `/v1/sandboxes` answers it — wire spelling, as every other doc here. */
 export interface SandboxDoc {
@@ -963,6 +964,8 @@ export interface SandboxDoc {
   memory_gb: number;
   disk_gb: number;
   from: { workspace: string } | { snapshot: string } | null;
+  /** The environment id it is connected to, or null. */
+  environment: string | null;
 }
 
 /** Every field optional: absent means the server's default. */
@@ -986,6 +989,12 @@ export interface CreateSandbox {
   cpu?: number;
   memoryGb?: number;
   diskGb?: number;
+  /**
+   * Connect it to an environment its owner (`team`, else you) owns — an id, `"name"` or
+   * `"owner/name"`: the environment's services resolve by bare name inside it, and an
+   * idle-stopped environment is started.
+   */
+  environment?: string;
 }
 
 export interface ExecSandbox {
@@ -1111,6 +1120,7 @@ function createBody(o: CreateSandbox) {
     from_workspace: o.fromWorkspace, from_snapshot: o.fromSnapshot,
     timeout_secs: o.timeoutS, idle_timeout_secs: o.idleTimeoutS,
     network: o.network, env: o.env, cpu: o.cpu, memory_gb: o.memoryGb, disk_gb: o.diskGb,
+    environment: o.environment,
   };
 }
 
