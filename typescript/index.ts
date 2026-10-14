@@ -3,11 +3,16 @@
  *
  * Auth is a Bearer token (a session or CLI token). Every module hangs off the
  * one client, and every repository is named by ONE `"owner/name"` string — the
- * owner half being a person's handle or a team slug:
+ * owner half being a person's handle or a team slug. Every method takes ONE
+ * options object, so no caller ever has to remember argument order:
  *
  *     import { Kloudlite } from "@kloudlite/sdk";
  *     const kl = new Kloudlite({ baseUrl: "https://api.example.com", token: "…" });
- *     const repo = await kl.codeRepos.create("acme/payments");
+ *     const repo = await kl.codeRepos.create({ repo: "acme/payments" });
+ *
+ * Option names are camelCase everywhere (`headRepo`, `quotaGb`, `snapshot`, `timeoutMs`); the
+ * SDK maps them onto whatever the wire spells (`head_repo`, `quota_gb`, `snapshot_id`,
+ * `timeout_ms`). {@link Kloudlite.request} is the low-level escape hatch and takes the wire as-is.
  */
 
 export const VERSION = "0.1.0";
@@ -64,7 +69,7 @@ export class Kloudlite {
   }
 
   /** The ceiling and what is against it; `owner` defaults to the caller's own. */
-  quota(owner?: string) {
+  quota({ owner }: { owner?: string } = {}) {
     return this.request("GET", "/v1/quota", undefined, { owner });
   }
 
@@ -132,6 +137,76 @@ export interface FileChange {
   delete?: boolean;
 }
 
+export type Visibility = "public" | "private";
+export type MergeStrategy = "fast-forward" | "squash" | "merge" | "rebase";
+
+/** A repository, by its one `"owner/name"` string. */
+export interface RepoRef {
+  repo: string;
+}
+
+/** One pull request of a repository. */
+export interface PullRef extends RepoRef {
+  number: number;
+}
+
+export interface CreateRepo extends RepoRef {
+  /** Default `"private"`. */
+  visibility?: Visibility;
+  /** Default `""`. */
+  description?: string;
+}
+
+export interface UpdateRepo extends RepoRef {
+  description?: string;
+  visibility?: Visibility;
+}
+
+export interface ForkRepo extends RepoRef {
+  /** Where the fork lands, `"owner/name"`. */
+  to: string;
+  visibility?: Visibility;
+  description?: string;
+}
+
+export interface ImportRepo extends RepoRef {
+  /** A strict `https://` git URL. */
+  url: string;
+  visibility?: Visibility;
+  description?: string;
+}
+
+export interface Protect extends RepoRef {
+  pattern: string;
+  remove?: boolean;
+  noForce?: boolean;
+  noDelete?: boolean;
+}
+
+export interface ListPulls extends RepoRef {
+  state?: string;
+  limit?: number;
+}
+
+export interface OpenPull extends RepoRef {
+  title: string;
+  head: string;
+  base: string;
+  /** Another `"owner/name"`: `head` is then a branch of that fork. */
+  headRepo?: string;
+  description?: string;
+}
+
+export interface Commit extends RepoRef {
+  branch: string;
+  message: string;
+  changes: FileChange[];
+  /** The head the caller saw; the commit is refused if the branch moved. */
+  expect?: string;
+  /** Land on a new branch cut from `branch` instead of on `branch` itself. */
+  newBranch?: string;
+}
+
 const seg = encodeURIComponent;
 
 /** `"owner/name"` → its two halves, refused client-side when malformed. */
@@ -146,8 +221,8 @@ function split(repo: string): [string, string] {
 }
 
 /**
- * Code repositories: `/v1/repos`. Every `repo` argument is one `"owner/name"`
- * string; only owner-scoped calls (`list`) take a bare handle.
+ * Code repositories: `/v1/repos`. Every `repo` is one `"owner/name"` string; only owner-scoped
+ * calls (`list`) take a bare handle.
  */
 export class CodeRepos {
   constructor(private readonly c: Kloudlite) {}
@@ -158,254 +233,314 @@ export class CodeRepos {
   }
 
   // repos
-  create(repo: string, opts?: { visibility?: "public" | "private"; description?: string }) {
+  create({ repo, visibility = "private", description = "" }: CreateRepo) {
     const [owner, name] = split(repo);
-    return this.c.request<Repo>("POST", "/v1/repos", {
-      owner,
-      name,
-      visibility: "private",
-      description: "",
-      ...opts,
-    });
+    return this.c.request<Repo>("POST", "/v1/repos", { owner, name, visibility, description });
   }
 
-  list(owner: string) {
+  list({ owner }: { owner: string }) {
     return this.c.request<Repo[]>("GET", "/v1/repos", undefined, { owner });
   }
 
-  get(repo: string) {
+  get({ repo }: RepoRef) {
     return this.c.request<Repo>("GET", this.path(repo));
   }
 
-  update(repo: string, change: { description?: string; visibility?: "public" | "private" }) {
-    return this.c.request("PATCH", this.path(repo), change);
+  update({ repo, description, visibility }: UpdateRepo) {
+    return this.c.request("PATCH", this.path(repo), { description, visibility });
   }
 
-  delete(repo: string) {
+  delete({ repo }: RepoRef) {
     return this.c.request("DELETE", this.path(repo));
   }
 
   /**
-   * A new repo `dst` copied from `src`: objects and refs, never its pull requests
-   * or settings. Private by default, whatever the source was.
+   * A new repo `to` copied from `repo`: objects and refs, never its pull requests or settings.
+   * Private by default, whatever the source was.
    */
-  fork(src: string, dst: string, opts?: { visibility?: "public" | "private"; description?: string }) {
-    const [owner, name] = split(dst);
-    return this.c.request<Repo>("POST", this.path(src, "/fork"), {
-      owner,
-      name,
-      visibility: "private",
-      description: "",
-      ...opts,
-    });
+  fork({ repo, to, visibility = "private", description = "" }: ForkRepo) {
+    const [owner, name] = split(to);
+    return this.c.request<Repo>("POST", this.path(repo, "/fork"), { owner, name, visibility, description });
   }
 
   /**
-   * A new repo whose contents are fetched from a PUBLIC git remote — `git` is a strict
+   * A new repo whose contents are fetched from a PUBLIC git remote — `url` is a strict
    * `https://` URL (GitHub is one host among any). Answers 202: the repo exists but the fetch
    * runs in the background; poll {@link importStatus}.
    */
-  importGit(repo: string, git: string, opts?: { visibility?: "public" | "private"; description?: string }) {
+  importGit({ repo, url, visibility = "private", description = "" }: ImportRepo) {
     const [owner, name] = split(repo);
-    return this.c.request<Repo>("POST", "/v1/repos/import", {
-      owner,
-      name,
-      git,
-      visibility: "private",
-      description: "",
-      ...opts,
-    });
+    return this.c.request<Repo>("POST", "/v1/repos/import", { owner, name, git: url, visibility, description });
   }
 
   /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */
-  importStatus(repo: string) {
+  importStatus({ repo }: RepoRef) {
     return this.c.request("GET", this.path(repo, "/import"));
   }
 
   // branches
-  branches(repo: string) {
+  branches({ repo }: RepoRef) {
     return this.c.request<Branch[]>("GET", this.path(repo, "/branches"));
   }
 
   /** `oid` is the head the caller saw; the delete is refused if the branch moved. */
-  deleteBranch(repo: string, branch: string, oid: string) {
+  deleteBranch({ repo, branch, oid }: RepoRef & { branch: string; oid: string }) {
     return this.c.request("DELETE", this.path(repo, `/branches/${seg(branch)}`), undefined, { oid });
   }
 
   // protection
-  protection(repo: string) {
+  protection({ repo }: RepoRef) {
     return this.c.request("GET", this.path(repo, "/protection"));
   }
 
-  protect(repo: string, rule: { pattern: string; remove?: boolean; no_force?: boolean; no_delete?: boolean }) {
-    return this.c.request("POST", this.path(repo, "/protection"), rule);
+  protect({ repo, pattern, remove, noForce, noDelete }: Protect) {
+    return this.c.request("POST", this.path(repo, "/protection"), {
+      pattern, remove, no_force: noForce, no_delete: noDelete,
+    });
   }
 
   // pull requests
-  pulls(repo: string, query?: { state?: string; limit?: number }) {
-    return this.c.request<unknown[]>("GET", this.path(repo, "/pulls"), undefined, query);
+  pulls({ repo, state, limit }: ListPulls) {
+    return this.c.request<unknown[]>("GET", this.path(repo, "/pulls"), undefined, { state, limit });
   }
 
-  pull(repo: string, number: number) {
+  pull({ repo, number }: PullRef) {
     return this.c.request("GET", this.path(repo, `/pulls/${number}`));
   }
 
   /**
-   * `head_repo` (another `"owner/name"`) makes it a cross-repo pull: `head` then
-   * names a branch of that fork, proposed onto this repo's `base`.
+   * `headRepo` (another `"owner/name"`) makes it a cross-repo pull: `head` then names a branch
+   * of that fork, proposed onto this repo's `base`.
    */
-  openPull(
-    repo: string,
-    opts: { title: string; head: string; base: string; description?: string; head_repo?: string },
-  ) {
-    if (opts.head_repo !== undefined) split(opts.head_repo);
-    return this.c.request("POST", this.path(repo, "/pulls"), { description: "", ...opts });
+  openPull({ repo, title, head, base, headRepo, description = "" }: OpenPull) {
+    if (headRepo !== undefined) split(headRepo);
+    return this.c.request("POST", this.path(repo, "/pulls"), {
+      description, title, head, base, head_repo: headRepo,
+    });
   }
 
-  comment(repo: string, number: number, body: string) {
+  comment({ repo, number, body }: PullRef & { body: string }) {
     return this.c.request("POST", this.path(repo, `/pulls/${number}/comments`), { body });
   }
 
   /** The merge is a job: the server answers 202 and the pull reports where it got to. */
-  merge(repo: string, number: number, strategy: "fast-forward" | "squash" | "merge" | "rebase" = "fast-forward") {
+  merge({ repo, number, strategy = "fast-forward" }: PullRef & { strategy?: MergeStrategy }) {
     return this.c.request("POST", this.path(repo, `/pulls/${number}/merge`), undefined, { strategy });
   }
 
-  close(repo: string, number: number) {
+  close({ repo, number }: PullRef) {
     return this.c.request("POST", this.path(repo, `/pulls/${number}/close`));
   }
 
   // commits
-  compare(repo: string, base: string, head: string) {
+  compare({ repo, base, head }: RepoRef & { base: string; head: string }) {
     return this.c.request("GET", this.path(repo, "/compare"), undefined, { base, head });
   }
 
   /** One commit of file changes; `expect` refuses the commit if the branch moved. */
-  commit(
-    repo: string,
-    opts: { branch: string; message: string; changes: FileChange[]; expect?: string; newBranch?: string },
-  ) {
-    return this.c.request<{ commit: string; branch: string }>("POST", this.path(repo, "/commits"), opts);
+  commit({ repo, branch, message, changes, expect, newBranch }: Commit) {
+    // The commit endpoint is camelCase on the wire (`newBranch`, `contentBase64`).
+    return this.c.request<{ commit: string; branch: string }>("POST", this.path(repo, "/commits"), {
+      branch, message, changes, expect, newBranch,
+    });
   }
 
-  signature(repo: string, sha: string) {
+  signature({ repo, sha }: RepoRef & { sha: string }) {
     return this.c.request("GET", this.path(repo, `/commits/${seg(sha)}/signature`));
   }
 }
 
+/** A workspace: `"name"` (the caller's own), `"team/name"` (theirs in a team), or its id. */
+export interface WorkspaceRef {
+  workspace: string;
+}
+
+export interface CreateWorkspace extends WorkspaceRef {
+  quotaGb: number;
+  image?: string;
+  /** A PLATFORM repo, `"owner/name"`, to seed from (with `branch`). */
+  repo?: string;
+  branch?: string;
+  /** nixpkgs attributes, optionally pinned (`attr@version`). */
+  packages?: string[];
+  region?: string;
+}
+
+export interface CloneWorkspace extends WorkspaceRef {
+  /** The new workspace's name. */
+  to: string;
+  task?: string;
+}
+
+export interface RestoreWorkspace {
+  /** The PUSHED snapshot to graft onto. */
+  snapshot: string;
+  /** The new workspace's name. */
+  to: string;
+  image?: string;
+  packages?: string[];
+  quotaGb?: number;
+}
+
 /**
- * Btrfs-backed dev workspaces, over `/v1/workspaces`. A workspace is named by its id (the `name`
- * given at create); pushes cut snapshots, kept on the workspace's VOLUME — see {@link Volumes}
- * for history, restore targets and deletion.
+ * Btrfs-backed dev workspaces, over `/v1/workspaces`. A workspace is named by ONE string —
+ * `"name"` for the caller's own, `"team/name"` for theirs in a team — or by its id; pushes cut
+ * snapshots, kept on the workspace's VOLUME — see {@link Volumes} for history, restore targets
+ * and deletion.
  */
 export class Workspaces {
   constructor(private readonly c: Kloudlite) {}
 
   /**
-   * `repo` seeds from a PLATFORM repo ("owner/name", with `branch`); `packages` are nixpkgs
-   * attributes, optionally pinned (`attr@version`). `region` matters only on a multi-region
-   * fleet — absent, the deployment's one region is used.
+   * `workspace` is split into the body's `name` and `team` (no team for a personal one). `repo`
+   * seeds from a PLATFORM repo ("owner/name", with `branch`); `packages` are nixpkgs attributes,
+   * optionally pinned (`attr@version`). `region` matters only on a multi-region fleet — absent,
+   * the deployment's one region is used.
    */
-  create(opts: {
-    name: string;
-    quota_gb: number;
-    region?: string;
-    team?: string;
-    image?: string;
-    repo?: string;
-    branch?: string;
-    packages?: string[];
-  }) {
-    return this.c.request("POST", "/v1/workspaces", { packages: [], ...opts });
+  create({ workspace, quotaGb, image, repo, branch, packages = [], region }: CreateWorkspace) {
+    const [team, name] = owned(workspace);
+    return this.c.request("POST", "/v1/workspaces", {
+      packages, name, team, quota_gb: quotaGb, region, image, repo, branch,
+    });
   }
 
   /** The caller's workspaces; `team` scopes to their workspaces in that team. */
-  list(team?: string) {
+  list({ team }: { team?: string } = {}) {
     return this.c.request<unknown[]>("GET", "/v1/workspaces", undefined, { team });
   }
 
-  get(id: string) {
-    return this.c.request("GET", `/v1/workspaces/${seg(id)}`);
+  get({ workspace }: WorkspaceRef) {
+    return this.at("GET", workspace);
   }
 
   /** Runs the worktree finalizer: the volume survives while a pushed snapshot references it. */
-  delete(id: string) {
-    return this.c.request("DELETE", `/v1/workspaces/${seg(id)}`);
+  delete({ workspace }: WorkspaceRef) {
+    return this.at("DELETE", workspace);
   }
 
-  start(id: string) {
-    return this.c.request("POST", `/v1/workspaces/${seg(id)}/start`);
+  start({ workspace }: WorkspaceRef) {
+    return this.at("POST", workspace, "/start");
   }
 
   /** A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica. */
-  stop(id: string) {
-    return this.c.request("POST", `/v1/workspaces/${seg(id)}/stop`);
+  stop({ workspace }: WorkspaceRef) {
+    return this.at("POST", workspace, "/stop");
   }
 
   /** Cut a SNAPSHOT of the working copy — the one durable, restorable state. */
-  push(id: string, message?: string) {
-    return this.c.request("POST", `/v1/workspaces/${seg(id)}/push`, message === undefined ? undefined : { message });
+  push({ workspace, message }: WorkspaceRef & { message?: string }) {
+    return this.at("POST", workspace, "/push", message === undefined ? undefined : { message });
   }
 
   /**
-   * A new workspace from this one's state, cut at the moment of the request; the answer's
+   * A new workspace `to` from this one's state, cut at the moment of the request; the answer's
    * `based_on` names exactly what it grafted onto.
    */
-  clone(id: string, name: string, task?: string) {
-    return this.c.request("POST", `/v1/workspaces/${seg(id)}/clone`, { name, task });
+  clone({ workspace, to, task }: CloneWorkspace) {
+    return this.at("POST", workspace, "/clone", { name: to, task });
   }
 
   /**
-   * A new workspace grafted onto a PUSHED snapshot — also one whose workspace is long gone.
-   * Absent overrides mean "whatever the snapshot froze".
+   * A new workspace `to` grafted onto a PUSHED `snapshot` — also one whose workspace is long
+   * gone. Absent overrides mean "whatever the snapshot froze".
    */
-  restore(opts: { name: string; snapshot_id: string; image?: string; packages?: string[]; quota_gb?: number }) {
-    return this.c.request("POST", "/v1/workspaces/restore", opts);
+  restore({ snapshot, to, image, packages, quotaGb }: RestoreWorkspace) {
+    return this.c.request("POST", "/v1/workspaces/restore", {
+      name: to, snapshot_id: snapshot, image, packages, quota_gb: quotaGb,
+    });
   }
 
   /** Replace the package list; pinned entries are locked before anything is written. */
-  setPackages(id: string, packages: string[]) {
-    return this.c.request("PATCH", `/v1/workspaces/${seg(id)}`, { packages });
+  setPackages({ workspace, packages }: WorkspaceRef & { packages: string[] }) {
+    return this.at("PATCH", workspace, "", { packages });
   }
 
   /** Re-resolve every pinned package — the only call that moves existing locks. */
-  updatePackages(id: string) {
-    return this.c.request("POST", `/v1/workspaces/${seg(id)}/packages/update`);
+  updatePackages({ workspace }: WorkspaceRef) {
+    return this.at("POST", workspace, "/packages/update");
   }
 
   /** The workspace's tool-server address and token — answered to the owner alone. */
-  tools(id: string) {
-    return this.c.request<{ address: string; token?: string }>("GET", `/v1/workspaces/${seg(id)}/tools`);
+  tools({ workspace }: WorkspaceRef) {
+    return this.at<{ address: string; token?: string }>("GET", workspace, "/tools");
   }
 
   /**
    * An {@link Ide} bound to this workspace's tool server. The address is a pod IP: reachable
    * from inside the fleet (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
-   * `new Ide("http://127.0.0.1:7788", token)` instead.
+   * `new Ide({ url: "http://127.0.0.1:7788", token })` instead.
    */
-  async ide(id: string): Promise<Ide> {
-    const doc = await this.tools(id);
-    return new Ide(`http://${doc.address}`, doc.token);
+  async ide({ workspace }: WorkspaceRef): Promise<Ide> {
+    const doc = await this.tools({ workspace });
+    return new Ide({ url: `http://${doc.address}`, token: doc.token });
+  }
+
+  /** `"team/name"` travels as segment `name` plus `?owner=team`, which the server folds back. */
+  private at<T = unknown>(method: string, workspace: string, tail = "", body?: unknown) {
+    const [owner, name] = owned(workspace);
+    return this.c.request<T>(method, `/v1/workspaces/${seg(name)}${tail}`, body, { owner });
   }
 }
 
 type ToolArgs = Record<string, unknown>;
 
+export interface IdeOptions {
+  /** The tool server's base URL, e.g. `http://127.0.0.1:7788` through a tunnel. */
+  url: string;
+  token?: string;
+  /** Per-call timeout in milliseconds. Default 630 000 — above the longest tool timeout. */
+  timeoutMs?: number;
+}
+
+export interface Grep {
+  pattern: string;
+  cwd?: string;
+  glob?: string;
+  mode?: "content" | "files" | "count";
+  context?: number;
+  ignoreCase?: boolean;
+  max?: number;
+}
+
+export interface Exec {
+  cmd: string | string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+  head?: number;
+  tail?: number;
+  quiet?: boolean;
+  /** Answer `{id}` at once — the `process` the process_* calls take. */
+  detach?: boolean;
+}
+
+export interface ContainerBuild {
+  tags: string[];
+  context?: string;
+  file?: string;
+  buildArgs?: string[];
+  platform?: string;
+  noCache?: boolean;
+  timeoutMs?: number;
+  head?: number;
+  tail?: number;
+}
+
 /**
  * A workspace's tool server (`kl ide serve`): the full tool set over plain HTTP — `GET /tools`
  * lists every tool with its schema, `POST /tools/{name}` runs one. The typed methods cover them
- * all; {@link call} takes anything the listing names. `undefined` arguments are dropped, so
- * every optional means "the tool's own default".
+ * all; {@link call} takes anything the listing names. `undefined` options are dropped, so every
+ * optional means "the tool's own default".
  */
 export class Ide {
   private readonly url: string;
+  private readonly token?: string;
+  private readonly timeoutMs: number;
 
-  constructor(
-    url: string,
-    private readonly token?: string,
-    private readonly timeoutMs = 630_000,
-  ) {
+  constructor({ url, token, timeoutMs = 630_000 }: IdeOptions) {
     this.url = url.replace(/\/+$/, "");
+    this.token = token;
+    this.timeoutMs = timeoutMs;
   }
 
   /** Every tool, with its JSON schema — the authority on arguments. */
@@ -413,77 +548,75 @@ export class Ide {
     return this.http("GET", "/tools");
   }
 
-  call<T = unknown>(name: string, args: ToolArgs = {}): Promise<T> {
-    return this.http<T>("POST", `/tools/${seg(name)}`, args);
+  /** Any tool by name; `args` are its own arguments, spelled exactly as its schema spells them. */
+  call<T = unknown>({ tool, args = {} }: { tool: string; args?: ToolArgs }): Promise<T> {
+    return this.http<T>("POST", `/tools/${seg(tool)}`, args);
+  }
+
+  private run(tool: string, args: ToolArgs = {}) {
+    return this.call({ tool, args });
   }
 
   // files
-  read(args: { path?: string; paths?: unknown[]; offset?: number; limit?: number }) {
-    return this.call("read", args);
+  read({ path, paths, offset, limit }: { path?: string; paths?: unknown[]; offset?: number; limit?: number } = {}) {
+    return this.run("read", { path, paths, offset, limit });
   }
-  write(path: string, content: string) {
-    return this.call("write", { path, content });
+  write({ path, content }: { path: string; content: string }) {
+    return this.run("write", { path, content });
   }
   /**
    * One file as `{path, edits}`, several as `{files: [{path, edits}]}`; each edit is
    * `{old, new, replace_all?}` and the whole call is atomic.
    */
-  edit(args: { path?: string; edits?: unknown[]; files?: unknown[] }) {
-    return this.call("edit", args);
+  edit({ path, edits, files }: { path?: string; edits?: unknown[]; files?: unknown[] }) {
+    return this.run("edit", { path, edits, files });
   }
-  patch(diff: string, cwd?: string) {
-    return this.call("patch", { diff, cwd });
+  patch({ diff, cwd }: { diff: string; cwd?: string }) {
+    return this.run("patch", { diff, cwd });
   }
-  glob(pattern: string, cwd?: string) {
-    return this.call("glob", { pattern, cwd });
+  glob({ pattern, cwd }: { pattern: string; cwd?: string }) {
+    return this.run("glob", { pattern, cwd });
   }
-  grep(
-    pattern: string,
-    opts?: { cwd?: string; glob?: string; mode?: "content" | "files" | "count"; context?: number; ignore_case?: boolean; max?: number },
-  ) {
-    return this.call("grep", { pattern, ...opts });
+  grep({ pattern, cwd, glob, mode, context, ignoreCase, max }: Grep) {
+    return this.run("grep", { pattern, cwd, glob, mode, context, ignore_case: ignoreCase, max });
   }
 
-  // commands and processes — `detach: true` answers `{id}` for the process_* calls
-  exec(
-    cmd: string | string[],
-    opts?: { cwd?: string; env?: Record<string, string>; timeout_ms?: number; head?: number; tail?: number; quiet?: boolean; detach?: boolean },
-  ) {
-    return this.call("exec", { cmd, ...opts });
+  // commands and processes — `detach: true` answers `{id}`, the `process` of the process_* calls
+  exec({ cmd, cwd, env, timeoutMs, head, tail, quiet, detach }: Exec) {
+    return this.run("exec", { cmd, cwd, env, timeout_ms: timeoutMs, head, tail, quiet, detach });
   }
   processList() {
-    return this.call("process_list");
+    return this.run("process_list");
   }
-  processOutput(id: string, opts?: { since?: number; since_err?: number }) {
-    return this.call("process_output", { id, ...opts });
+  processOutput({ process, since, sinceErr }: { process: string; since?: number; sinceErr?: number }) {
+    return this.run("process_output", { id: process, since, since_err: sinceErr });
   }
-  processWrite(id: string, data: string) {
-    return this.call("process_write", { id, data });
+  processWrite({ process, data }: { process: string; data: string }) {
+    return this.run("process_write", { id: process, data });
   }
-  processKill(id: string, signal?: "TERM" | "KILL") {
-    return this.call("process_kill", { id, signal });
+  processKill({ process, signal }: { process: string; signal?: "TERM" | "KILL" }) {
+    return this.run("process_kill", { id: process, signal });
   }
 
-  // watches
-  watch(args: { paths?: string[]; cmd?: string | string[]; pattern?: string; once?: boolean }) {
-    return this.call("watch", args);
+  // watches — `watch` answers `{id}`, the `watch` of watchPoll/watchStop
+  watch({ paths, cmd, pattern, once }: { paths?: string[]; cmd?: string | string[]; pattern?: string; once?: boolean } = {}) {
+    return this.run("watch", { paths, cmd, pattern, once });
   }
-  watchPoll(id: string, since?: number) {
-    return this.call("watch_poll", { id, since });
+  watchPoll({ watch, since }: { watch: string; since?: number }) {
+    return this.run("watch_poll", { id: watch, since });
   }
-  watchStop(id: string) {
-    return this.call("watch_stop", { id });
+  watchStop({ watch }: { watch: string }) {
+    return this.run("watch_stop", { id: watch });
   }
 
   // containers (the hidden per-owner builder)
-  containerBuild(
-    tags: string[],
-    opts?: { context?: string; file?: string; build_args?: string[]; platform?: string; no_cache?: boolean; timeout_ms?: number; head?: number; tail?: number },
-  ) {
-    return this.call("container_build", { tags, ...opts });
+  containerBuild({ tags, context, file, buildArgs, platform, noCache, timeoutMs, head, tail }: ContainerBuild) {
+    return this.run("container_build", {
+      tags, context, file, build_args: buildArgs, platform, no_cache: noCache, timeout_ms: timeoutMs, head, tail,
+    });
   }
-  containerPush(src: string, dst: string[]) {
-    return this.call("container_push", { src, dst });
+  containerPush({ src, dst }: { src: string; dst: string[] }) {
+    return this.run("container_push", { src, dst });
   }
 
   private async http<T = unknown>(method: string, path: string, body?: ToolArgs): Promise<T> {
@@ -504,10 +637,6 @@ export class Ide {
 }
 
 /**
- * The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
- * the two deletes — over `/v1/volumes`.
- */
-/**
  * A service of an environment: `name` and `image`, plus optional `ports`, `env`, `command` and
  * `mounts` (a folder of the environment's disk, mounted at `path`).
  */
@@ -520,6 +649,32 @@ export interface Service {
   mounts?: { folder: string; path: string }[];
 }
 
+/** An environment: `"name"` (the caller's own), `"team/name"` (a team's), or its id (`env-…`). */
+export interface EnvironmentRef {
+  environment: string;
+}
+
+export interface CreateEnvironment extends EnvironmentRef {
+  services?: Service[];
+  quotaGb?: number;
+  /** A pushed snapshot to grow it from. */
+  snapshot?: string;
+}
+
+export interface CloneEnvironment extends EnvironmentRef {
+  /** The new environment, `"name"` or `"team/name"`. */
+  to: string;
+  snapshot?: string;
+  services?: Service[];
+  quotaGb?: number;
+}
+
+export interface RestoreEnvironment extends EnvironmentRef {
+  snapshot: string;
+  /** Persistent services whose data the caller accepts losing. Default `[]`. */
+  discard?: string[];
+}
+
 /**
  * Multi-service environments, over `/v1/environments`: a set of containers sharing one disk. An
  * environment is named by ONE string — `"name"` for the caller's own, `"team/name"` for a
@@ -529,59 +684,59 @@ export class Environments {
   constructor(private readonly c: Kloudlite) {}
 
   /**
-   * `snapshot_id` grows it from a pushed snapshot — also one of a deleted environment — and then
+   * `snapshot` grows it from a pushed snapshot — also one of a deleted environment — and then
    * `services` default to the ones that snapshot froze.
    */
-  create(env: string, opts: { services?: Service[]; quota_gb?: number; snapshot_id?: string } = {}) {
-    const [owner, name] = owned(env);
+  create({ environment, services: list, quotaGb, snapshot }: CreateEnvironment) {
+    const [owner, name] = owned(environment);
     return this.c.request("POST", "/v1/environments", {
-      name, owner, quota_gb: opts.quota_gb, snapshot_id: opts.snapshot_id, services: services(opts.services),
+      name, owner, quota_gb: quotaGb, snapshot_id: snapshot, services: services(list),
     });
   }
 
   /** The caller's environments and their teams'; `owner` narrows to one handle or team. */
-  list(owner?: string) {
+  list({ owner }: { owner?: string } = {}) {
     return this.c.request<unknown[]>("GET", "/v1/environments", undefined, { owner });
   }
 
-  get(env: string) {
-    return this.at("GET", env);
+  get({ environment }: EnvironmentRef) {
+    return this.at("GET", environment);
   }
 
   /** Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its data. */
-  setServices(env: string, list: Service[]) {
-    return this.at("PATCH", env, "", { services: services(list) });
+  setServices({ environment, services: list }: EnvironmentRef & { services: Service[] }) {
+    return this.at("PATCH", environment, "", { services: services(list) });
   }
 
-  start(env: string) {
-    return this.at("POST", env, "/start");
+  start({ environment }: EnvironmentRef) {
+    return this.at("POST", environment, "/start");
   }
 
-  stop(env: string) {
-    return this.at("POST", env, "/stop");
+  stop({ environment }: EnvironmentRef) {
+    return this.at("POST", environment, "/stop");
   }
 
   /** Reset the idle clock — call it periodically while something depends on the services. */
-  hold(env: string) {
-    return this.at("POST", env, "/hold");
+  hold({ environment }: EnvironmentRef) {
+    return this.at("POST", environment, "/hold");
   }
 
   /** The volume survives while a pushed snapshot references it. */
-  delete(env: string) {
-    return this.at("DELETE", env);
+  delete({ environment }: EnvironmentRef) {
+    return this.at("DELETE", environment);
   }
 
   /** Cut a SNAPSHOT of every service's data — the one durable, restorable state. */
-  push(env: string, message?: string) {
-    return this.at("POST", env, "/push", message === undefined ? undefined : { message });
+  push({ environment, message }: EnvironmentRef & { message?: string }) {
+    return this.at("POST", environment, "/push", message === undefined ? undefined : { message });
   }
 
-  /** A new environment `to` ("name" or "team/name"): the live disk, or with `snapshot_id` one of this one's snapshots. */
-  clone(env: string, to: string, opts: { snapshot_id?: string; services?: Service[]; quota_gb?: number } = {}) {
+  /** A new environment `to` ("name" or "team/name"): the live disk, or with `snapshot` one of this one's snapshots. */
+  clone({ environment, to, snapshot, services: list, quotaGb }: CloneEnvironment) {
     const [owner, name] = owned(to);
-    return this.at("POST", env, "/clone", {
-      name, owner, snapshot_id: opts.snapshot_id, quota_gb: opts.quota_gb,
-      services: opts.services ? services(opts.services) : undefined,
+    return this.at("POST", environment, "/clone", {
+      name, owner, snapshot_id: snapshot, quota_gb: quotaGb,
+      services: list ? services(list) : undefined,
     });
   }
 
@@ -589,12 +744,12 @@ export class Environments {
    * Put THIS environment back to one of its own snapshots, services and data (202). A persistent
    * service the snapshot lacks is a 409 naming it; list it in `discard` to accept losing its data.
    */
-  restore(env: string, snapshot_id: string, discard: string[] = []) {
-    return this.at("POST", env, "/restore", { snapshot_id, discard });
+  restore({ environment, snapshot, discard = [] }: RestoreEnvironment) {
+    return this.at("POST", environment, "/restore", { snapshot_id: snapshot, discard });
   }
 
-  private at(method: string, env: string, tail = "", body?: unknown) {
-    const [owner, name] = owned(env);
+  private at(method: string, environment: string, tail = "", body?: unknown) {
+    const [owner, name] = owned(environment);
     return this.c.request(method, `/v1/environments/${seg(name)}${tail}`, body, { owner });
   }
 }
@@ -614,6 +769,19 @@ function services(list: Service[] = []) {
   return list.map((sv) => ({ command: [], env: {}, mounts: [], ports: [], ...sv }));
 }
 
+/** A session: `"name"` (personal), `"team/name"`, or its id (`ses-…`). */
+export interface SessionRef {
+  session: string;
+}
+
+export interface Intercept extends SessionRef {
+  service: string;
+  /** A member workspace: its id, name or `"team/name"`, sent verbatim. */
+  workspace: string;
+  /** Each service port → the workspace port that answers it (`{ 8080: 3000 }`). */
+  ports?: Record<number, number>;
+}
+
 /**
  * Working sessions, over `/v1/sessions`: some of YOUR workspaces in one team, connected to one
  * environment. Many people's sessions connect to the same environment and collaborate through it;
@@ -621,38 +789,38 @@ function services(list: Service[] = []) {
  * it, and removing the workspace or deleting the session releases it.
  *
  * A session is named like an environment — `"name"` (personal) or `"team/name"` — or by its id
- * (`ses-…`); a workspace by its id, name or `"team/name"`.
+ * (`ses-…`); a workspace by its id, name or `"team/name"`, sent verbatim.
  */
 export class Sessions {
   constructor(private readonly c: Kloudlite) {}
 
   /** `environment` must be the session's team's: an id, a name or `"team/name"`. */
-  create(session: string, environment: string) {
+  create({ session, environment }: SessionRef & { environment: string }) {
     const [team, name] = owned(session);
     return this.c.request("POST", "/v1/sessions", { name, team, environment });
   }
 
-  list(team?: string) {
+  list({ team }: { team?: string } = {}) {
     return this.c.request<unknown[]>("GET", "/v1/sessions", undefined, { team });
   }
 
   /** The session with its `workspaces` and the `intercepts` it holds. */
-  get(session: string) {
+  get({ session }: SessionRef) {
     return this.at("GET", session);
   }
 
   /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
-  delete(session: string) {
+  delete({ session }: SessionRef) {
     return this.at("DELETE", session);
   }
 
   /** A workspace is in at most one session; while in one it resolves that session's environment. */
-  add(session: string, workspace: string) {
+  add({ session, workspace }: SessionRef & WorkspaceRef) {
     return this.at("POST", session, "/workspaces", { workspace });
   }
 
   /** Releases whatever the workspace intercepts in this session first. */
-  remove(session: string, workspace: string) {
+  remove({ session, workspace }: SessionRef & WorkspaceRef) {
     return this.at("DELETE", session, `/workspaces/${seg(workspace)}`);
   }
 
@@ -660,7 +828,7 @@ export class Sessions {
    * Send everything that calls `service` in the environment to `workspace` (a member), `ports`
    * mapping each service port to the workspace port that answers it (`{ 8080: 3000 }`).
    */
-  intercept(session: string, service: string, workspace: string, ports: Record<number, number> = {}) {
+  intercept({ session, service, workspace, ports = {} }: Intercept) {
     return this.at("POST", session, "/intercepts", {
       service,
       workspace,
@@ -668,7 +836,7 @@ export class Sessions {
     });
   }
 
-  release(session: string, service: string) {
+  release({ session, service }: SessionRef & { service: string }) {
     return this.at("DELETE", session, `/intercepts/${seg(service)}`);
   }
 
@@ -678,34 +846,43 @@ export class Sessions {
   }
 }
 
+/** A btrfs volume, by its name. */
+export interface VolumeRef {
+  volume: string;
+}
+
+/**
+ * The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
+ * the two deletes — over `/v1/volumes`.
+ */
 export class Volumes {
   constructor(private readonly c: Kloudlite) {}
 
   /** `kind` is `workspace` or `environment`; `owner` a handle or team slug. */
-  list(query?: { kind?: "workspace" | "environment"; owner?: string }) {
-    return this.c.request<unknown[]>("GET", "/v1/volumes", undefined, query);
+  list({ kind, owner }: { kind?: "workspace" | "environment"; owner?: string } = {}) {
+    return this.c.request<unknown[]>("GET", "/v1/volumes", undefined, { kind, owner });
   }
 
   /** The chain of PUSHED snapshots, newest first — each row a restore target. */
-  history(name: string) {
-    return this.c.request("GET", `/v1/volumes/${seg(name)}/history`);
+  history({ volume }: VolumeRef) {
+    return this.c.request("GET", `/v1/volumes/${seg(volume)}/history`);
   }
 
-  refs(name: string) {
-    return this.c.request("GET", `/v1/volumes/${seg(name)}/refs`);
+  refs({ volume }: VolumeRef) {
+    return this.c.request("GET", `/v1/volumes/${seg(volume)}/refs`);
   }
 
   /**
    * Refused (409) for a sync point or a running worktree's base; deleting a detached volume's
    * last snapshot deletes the volume.
    */
-  deleteSnapshot(name: string, snapshotId: string) {
-    return this.c.request("DELETE", `/v1/volumes/${seg(name)}/snapshots/${seg(snapshotId)}`);
+  deleteSnapshot({ volume, snapshot }: VolumeRef & { snapshot: string }) {
+    return this.c.request("DELETE", `/v1/volumes/${seg(volume)}/snapshots/${seg(snapshot)}`);
   }
 
   /** Takes a DETACHED volume with all its snapshots; refused while a working copy remains. */
-  delete(name: string) {
-    return this.c.request("DELETE", `/v1/volumes/${seg(name)}`);
+  delete({ volume }: VolumeRef) {
+    return this.c.request("DELETE", `/v1/volumes/${seg(volume)}`);
   }
 }
 
@@ -735,39 +912,39 @@ export class HubRepos {
     return `/api/${this.plural}/${seg(owner)}/${seg(name)}${tail}`;
   }
 
-  /** `private` is sent explicitly rather than trusting a server default. */
-  create(repo: string, opts?: { private?: boolean }) {
-    return this.c.hubRequest("POST", "/api/repos/create", this.body(repo, { private: opts?.private ?? true }));
+  /** `private` (default `true`) is sent explicitly rather than trusting a server default. */
+  create({ repo, private: isPrivate = true }: RepoRef & { private?: boolean }) {
+    return this.c.hubRequest("POST", "/api/repos/create", this.body(repo, { private: isPrivate }));
   }
 
-  get(repo: string) {
+  get({ repo }: RepoRef) {
     return this.c.hubRequest("GET", this.path(repo));
   }
 
   /** Branches and tags, as the hub spells them. */
-  refs(repo: string) {
+  refs({ repo }: RepoRef) {
     return this.c.hubRequest("GET", this.path(repo, "/refs"));
   }
 
-  setPrivate(repo: string, isPrivate: boolean) {
+  setPrivate({ repo, private: isPrivate }: RepoRef & { private: boolean }) {
     return this.c.hubRequest("PUT", this.path(repo, "/settings"), { private: isPrivate });
   }
 
-  delete(repo: string) {
+  delete({ repo }: RepoRef) {
     return this.c.hubRequest("DELETE", "/api/repos/delete", this.body(repo));
   }
 
   /**
    * A new repo whose contents — large files included, through git-lfs — are fetched from a
-   * PUBLIC git remote; `git` is a strict `https://` URL (the Hugging Face Hub is one host among
+   * PUBLIC git remote; `url` is a strict `https://` URL (the Hugging Face Hub is one host among
    * any). Answers 202; poll {@link importStatus}.
    */
-  importGit(repo: string, git: string, opts?: { private?: boolean }) {
-    return this.c.hubRequest("POST", this.path(repo, "/import"), { from: git, private: opts?.private ?? true });
+  importGit({ repo, url, private: isPrivate = true }: RepoRef & { url: string; private?: boolean }) {
+    return this.c.hubRequest("POST", this.path(repo, "/import"), { from: url, private: isPrivate });
   }
 
   /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */
-  importStatus(repo: string) {
+  importStatus({ repo }: RepoRef) {
     return this.c.hubRequest("GET", this.path(repo, "/import"));
   }
 }
