@@ -15,13 +15,16 @@ import (
 )
 
 func main() {
-	kl := kloudlite.New(os.Getenv("KLOUDLITE_URL"), os.Getenv("KLOUDLITE_TOKEN"))
+	kl := kloudlite.New(kloudlite.Options{
+		BaseURL: os.Getenv("KLOUDLITE_URL"),
+		Token:   os.Getenv("KLOUDLITE_TOKEN"),
+	})
 
 	upstream := "acme/payments" // the repo being contributed to
 	myFork := "dev/payments"    // where the fork lands (a handle or a team slug)
 
 	// 1. Fork: objects and refs, never the upstream's pull requests or settings.
-	fork, err := kl.CodeRepos.Fork(upstream, myFork, kloudlite.RepoOpts{})
+	fork, err := kl.CodeRepos.Fork(kloudlite.ForkRepo{Repo: upstream, To: myFork})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,7 +32,8 @@ func main() {
 
 	// 2. Commit a change onto a NEW branch of the fork (the fork's main stays put).
 	content := base64.StdEncoding.EncodeToString([]byte("# Payments\n\nFixed rounding.\n"))
-	out, err := kl.CodeRepos.Commit(myFork, kloudlite.NewCommit{
+	out, err := kl.CodeRepos.Commit(kloudlite.CommitChanges{
+		Repo:      myFork,
 		Branch:    "main",
 		NewBranch: "fix-rounding",
 		Message:   "Fix rounding in invoice totals",
@@ -41,7 +45,8 @@ func main() {
 	fmt.Println("committed", out["commit"], "on", out["branch"])
 
 	// 3. Propose it back: head names the FORK's branch, HeadRepo says where it lives.
-	pr, err := kl.CodeRepos.OpenPull(upstream, kloudlite.NewPull{
+	pr, err := kl.CodeRepos.OpenPull(kloudlite.OpenPull{
+		Repo:     upstream,
 		Title:    "Fix rounding in invoice totals",
 		Head:     "fix-rounding",
 		Base:     "main",
@@ -54,17 +59,21 @@ func main() {
 	fmt.Println("opened", pr["_id"])
 
 	// 4. The diff upstream reviews is the mirror: pull/{n}/head.
-	if _, err := kl.CodeRepos.Compare(upstream, "main", fmt.Sprintf("pull/%d/head", number)); err != nil {
+	if _, err := kl.CodeRepos.Compare(kloudlite.CompareRefs{
+		Repo: upstream,
+		Base: "main",
+		Head: fmt.Sprintf("pull/%d/head", number),
+	}); err != nil {
 		log.Fatal(err)
 	}
-	_ = kl.CodeRepos.Comment(upstream, number, "Ready for review")
+	_ = kl.CodeRepos.Comment(kloudlite.CommentOnPull{Repo: upstream, Number: number, Body: "Ready for review"})
 
 	// 5. Merge. 202 — a job; the pull reports where it got to.
-	if err := kl.CodeRepos.Merge(upstream, number, "squash"); err != nil {
+	if err := kl.CodeRepos.Merge(kloudlite.MergePull{Repo: upstream, Number: number, Strategy: "squash"}); err != nil {
 		log.Fatal(err)
 	}
 	for i := 0; i < 30; i++ {
-		got, err := kl.CodeRepos.Pull(upstream, number)
+		got, err := kl.CodeRepos.Pull(kloudlite.GetPull{Repo: upstream, Number: number})
 		if err != nil {
 			log.Fatal(err)
 		}
