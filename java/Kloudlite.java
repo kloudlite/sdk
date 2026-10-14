@@ -1539,7 +1539,7 @@ public class Kloudlite {
 
         public String id() { return text(doc.get("id")); }
         public String phase() { return text(doc.get("phase")); }
-        /** Terminated, Timeout, Idle, Exited, Failed, Unplaceable, SourceGone or Lost; null until terminated. */
+        /** Terminated, Timeout, Idle, Exited, Failed, Unplaceable, SourceGone, Lost or EnvironmentGone; null until terminated. */
         public String reason() { return text(doc.get("reason")); }
         public String message() { return text(doc.get("message")); }
         /** The doc's raw JSON, as the server last answered it. */
@@ -1894,7 +1894,7 @@ public class Kloudlite {
      * {@code fromWorkspace} is an id, a name or "team/name"; {@code fromSnapshot} a snapshot id.
      */
     public static final class CreateSandbox {
-        private String image, fromWorkspace, fromSnapshot, team, region, network;
+        private String image, fromWorkspace, fromSnapshot, team, region, network, environment;
         private List<String> packages;
         private Duration timeout, idleTimeout;
         private Map<String, String> env;
@@ -1917,6 +1917,12 @@ public class Kloudlite {
         public CreateSandbox cpu(int cores) { cpu = (long) cores; return this; }
         public CreateSandbox memoryGb(int v) { memoryGb = (long) v; return this; }
         public CreateSandbox diskGb(int v) { diskGb = (long) v; return this; }
+        /**
+         * Connect it to an environment its owner ({@code team}, else you) owns — an id, a name or
+         * "owner/name": the environment's services resolve by bare name inside it, and an
+         * idle-stopped environment is started.
+         */
+        public CreateSandbox environment(String v) { environment = v; return this; }
 
         String body() {
             return new Json()
@@ -1933,6 +1939,7 @@ public class Kloudlite {
                 .num("cpu", cpu)
                 .num("memory_gb", memoryGb)
                 .num("disk_gb", diskGb)
+                .str("environment", environment)
                 .toString();
         }
     }
@@ -1980,6 +1987,7 @@ public class Kloudlite {
         public RunSandbox cpu(int cores) { create.cpu(cores); return this; }
         public RunSandbox memoryGb(int v) { create.memoryGb(v); return this; }
         public RunSandbox diskGb(int v) { create.diskGb(v); return this; }
+        public RunSandbox environment(String v) { create.environment(v); return this; }
     }
 
     /** What {@link Sandboxes#run} answers; {@link #toString} is its JSON. */

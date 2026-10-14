@@ -221,11 +221,33 @@ kl.sandboxes.run(cmd="cargo test", from_workspace="acme/api-dev", timeout_s=900)
 
 `create` takes `image`, `packages`, `from_workspace` or `from_snapshot`, `team`,
 `timeout_s` (default 300), `idle_timeout_s`, `network` (`"internet"`, the default —
-never the cluster — or `"none"`), `env`, `cpu`, `memory_gb` and `disk_gb`. A sandbox
-also has `read(path=…)` and `write(path=…, content=…)` for files under
-`~/workspace`; read anything you want to keep before terminating. A terminated
-sandbox's record (`get`, `list`) says why it ended (`Terminated`, `Timeout`,
-`Idle`, `Exited`, `Failed`, `Unplaceable`, `SourceGone`, `Lost`) for a day.
+never the cluster — or `"none"`), `env`, `cpu`, `memory_gb`, `disk_gb` and
+`environment`. A sandbox also has `read(path=…)` and `write(path=…, content=…)` for
+files under `~/workspace`; read anything you want to keep before terminating. A
+terminated sandbox's record (`get`, `list`) says why it ended (`Terminated`,
+`Timeout`, `Idle`, `Exited`, `Failed`, `Unplaceable`, `SourceGone`, `Lost`,
+`EnvironmentGone`) for a day.
+
+`environment` connects a sandbox to an environment its owner owns — `team`'s for a
+team sandbox, yours otherwise — by id, name or `"owner/name"`: the environment's
+services resolve by bare name inside it (`postgres:5432`), ahead of anything else,
+and an idle-stopped environment is started. It holds the environment up until it
+ends; deleting the environment terminates it, and one whose environment disappears
+ends `EnvironmentGone`. A `network="none"` sandbox in an environment reaches the
+environment and DNS, and nothing else:
+
+```python
+sb = kl.sandboxes.create(team="acme", environment="acme/staging", network="none")
+sb.exec(cmd="psql -h postgres -c 'select 1'").wait()
+```
+
+| | `environment` on create |
+|---|---|
+| Python | `environment="acme/staging"` |
+| TypeScript | `{ environment: "acme/staging" }` |
+| Go | `CreateSandbox{Environment: "acme/staging"}` |
+| Ruby | `environment: "acme/staging"` |
+| Java | `new CreateSandbox().environment("acme/staging")` |
 
 Per language: TypeScript is promise-based (`for await (const line of
 p.stdout)`); Go has `Process.Stdin` as an `io.Writer` with `WriteEOF()`, and
