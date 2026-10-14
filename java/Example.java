@@ -11,39 +11,49 @@ import java.util.Base64;
 
 public class Example {
     public static void main(String[] args) throws Exception {
-        Kloudlite kl = new Kloudlite(System.getenv("KLOUDLITE_URL"), System.getenv("KLOUDLITE_TOKEN"));
+        Kloudlite kl = new Kloudlite(new Kloudlite.Options()
+            .baseUrl(System.getenv("KLOUDLITE_URL"))
+            .token(System.getenv("KLOUDLITE_TOKEN")));
 
         String upstream = "acme/payments"; // the repo being contributed to
         String myFork = "dev/payments";    // where the fork lands (a handle or a team slug)
 
         try {
             // 1. Fork: objects and refs, never the upstream's pull requests or settings.
-            String fork = kl.codeRepos().fork(upstream, myFork, null, null);
+            String fork = kl.codeRepos().fork(new Kloudlite.ForkRepo().repo(upstream).to(myFork));
             System.out.println("forked: " + fork);
 
             // 2. Commit a change onto a NEW branch of the fork (the fork's main stays put).
             String content = Base64.getEncoder()
                 .encodeToString("# Payments\n\nFixed rounding.\n".getBytes());
-            String committed = kl.codeRepos().commit(myFork, """
-                {"branch":"main","newBranch":"fix-rounding",
-                 "message":"Fix rounding in invoice totals",
-                 "changes":[{"path":"README.md","contentBase64":"%s"}]}""".formatted(content));
+            String committed = kl.codeRepos().commit(new Kloudlite.CommitChanges()
+                .repo(myFork)
+                .branch("main")
+                .newBranch("fix-rounding")
+                .message("Fix rounding in invoice totals")
+                .changes("[{\"path\":\"README.md\",\"contentBase64\":\"" + content + "\"}]"));
             System.out.println("committed: " + committed);
 
             // 3. Propose it back: head names the FORK's branch, headRepo says where it lives.
-            String pr = kl.codeRepos().openPull(upstream,
-                "Fix rounding in invoice totals", "fix-rounding", "main", "", myFork);
+            String pr = kl.codeRepos().openPull(new Kloudlite.OpenPull()
+                .repo(upstream)
+                .title("Fix rounding in invoice totals")
+                .head("fix-rounding")
+                .base("main")
+                .headRepo(myFork));
             long number = numberOf(pr);
             System.out.println("opened #" + number);
 
             // 4. The diff upstream reviews is the mirror: pull/{n}/head.
-            kl.codeRepos().compare(upstream, "main", "pull/" + number + "/head");
-            kl.codeRepos().comment(upstream, number, "Ready for review");
+            kl.codeRepos().compare(new Kloudlite.CompareRefs()
+                .repo(upstream).base("main").head("pull/" + number + "/head"));
+            kl.codeRepos().comment(new Kloudlite.CommentPull()
+                .repo(upstream).number(number).body("Ready for review"));
 
             // 5. Merge. 202 — a job; the pull reports where it got to.
-            kl.codeRepos().merge(upstream, number, "squash");
+            kl.codeRepos().merge(new Kloudlite.MergePull().repo(upstream).number(number).strategy("squash"));
             for (int i = 0; i < 30; i++) {
-                String got = kl.codeRepos().pull(upstream, number);
+                String got = kl.codeRepos().pull(new Kloudlite.GetPull().repo(upstream).number(number));
                 if (!got.contains("\"state\":\"open\"")) {
                     System.out.println("pull is no longer open");
                     break;
