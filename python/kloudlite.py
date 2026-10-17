@@ -265,15 +265,17 @@ class Workspaces:
 
     def create(self, *, workspace: str, quota_gb: int, image: str | None = None,
                repo: str | None = None, branch: str | None = None,
-               packages: list | None = None, region: str | None = None):
-        """``workspace`` is ``"name"`` or ``"team/name"``. ``repo`` seeds from a PLATFORM repo
+               packages: list | None = None, region: str | None = None,
+               ttl_secs: int | None = None):
+        """``workspace`` is ``"name"`` or ``"team/name"``. ``ttl_secs`` (600..=2592000) deletes it
+        after that long unused; absent, never. ``repo`` seeds from a PLATFORM repo
         ("owner/name", with ``branch``); ``packages`` are nixpkgs attributes, optionally pinned
         (``attr@version``). ``region`` matters only on a multi-region fleet — absent, the
         deployment's one region is used."""
         team, name = _owned(workspace)
         body = {"name": name, "region": region, "quota_gb": quota_gb,
                 "team": team, "repo": repo, "branch": branch,
-                "packages": packages or []}
+                "packages": packages or [], "ttl_secs": ttl_secs}
         if image is not None:
             body["image"] = image
         return self._c.request("POST", "/v1/workspaces", body=body)
@@ -318,6 +320,11 @@ class Workspaces:
     def set_packages(self, *, workspace: str, packages: list):
         """Replace the package list; pinned entries are locked before anything is written."""
         return self._at("PATCH", workspace, body={"packages": packages})
+
+    def set_ttl(self, *, workspace: str, ttl_secs: int | None):
+        """Seconds unused before the workspace is deleted (600..=2592000); ``None`` clears it. Not
+        for a sandbox or a bench."""
+        return self._at("PUT", workspace, "/ttl", body={"ttl_secs": ttl_secs})
 
     def update_packages(self, *, workspace: str):
         """Re-resolve every pinned package — the only call that moves existing locks."""
@@ -544,12 +551,18 @@ class Sessions:
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def create(self, *, session: str, environment: str | None = None):
+    def create(self, *, session: str, environment: str | None = None, ttl_secs: int | None = None):
         """``environment``, when given, must be the session's team's: an id, a name or
-        ``"team/name"``; without one the session connects to nothing until ``connect``."""
+        ``"team/name"``; without one the session connects to nothing until ``connect``.
+        ``ttl_secs`` (600..=2592000) deletes the session after that long unused."""
         team, name = _owned(session)
         return self._c.request("POST", "/v1/sessions",
-                               body={"name": name, "team": team, "environment": environment})
+                               body={"name": name, "team": team, "environment": environment,
+                                     "ttl_secs": ttl_secs})
+
+    def set_ttl(self, *, session: str, ttl_secs: int | None):
+        """Seconds unused before the session is deleted (600..=2592000); ``None`` clears it."""
+        return self._at("PUT", session, "/ttl", body={"ttl_secs": ttl_secs})
 
     def list(self, *, team: str | None = None):
         return self._c.request("GET", "/v1/sessions", query={"team": team})

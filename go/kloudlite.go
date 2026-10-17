@@ -757,6 +757,9 @@ type CreateWorkspace struct {
 	Branch    string
 	Packages  []string
 	Region    string
+	// TtlSecs (600..=2592000) deletes the workspace after that many seconds
+	// unused; 0 is never.
+	TtlSecs int64
 }
 
 type PushWorkspace struct {
@@ -805,9 +808,18 @@ func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 		Repo     string   `json:"repo,omitempty"`
 		Branch   string   `json:"branch,omitempty"`
 		Packages []string `json:"packages"`
-	}{name, req.Region, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages}
+		TtlSecs  int64    `json:"ttl_secs,omitempty"`
+	}{name, req.Region, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages, req.TtlSecs}
 	var out map[string]any
 	err = w.c.call("POST", "/v1/workspaces", nil, body, &out)
+	return out, err
+}
+
+// SetTTL sets the seconds the workspace may sit unused before it is deleted
+// (600..=2592000); nil clears it. Not for a sandbox or a bench.
+func (w *Workspaces) SetTTL(workspace string, ttlSecs *int64) (map[string]any, error) {
+	var out map[string]any
+	err := w.at("PUT", workspace, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
 	return out, err
 }
 
@@ -1483,6 +1495,9 @@ type Sessions struct{ c *Client }
 type CreateSession struct {
 	Session     string
 	Environment string
+	// TtlSecs (600..=2592000) deletes the session after that many seconds
+	// unused; 0 is never.
+	TtlSecs int64
 }
 
 // AddToSession puts Workspace in Session. A workspace is in at most one
@@ -1518,15 +1533,26 @@ func (s *Sessions) Create(req CreateSession) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	body := map[string]string{"name": name}
+	body := map[string]any{"name": name}
 	if req.Environment != "" {
 		body["environment"] = req.Environment
+	}
+	if req.TtlSecs != 0 {
+		body["ttl_secs"] = req.TtlSecs
 	}
 	if team != "" {
 		body["team"] = team
 	}
 	var out map[string]any
 	err = s.c.call("POST", "/v1/sessions", nil, body, &out)
+	return out, err
+}
+
+// SetTTL sets the seconds the session may sit unused before it is deleted
+// (600..=2592000); nil clears it.
+func (s *Sessions) SetTTL(session string, ttlSecs *int64) (map[string]any, error) {
+	var out map[string]any
+	err := s.at("PUT", session, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
 	return out, err
 }
 
