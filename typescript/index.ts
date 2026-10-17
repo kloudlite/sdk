@@ -416,6 +416,8 @@ export interface CreateWorkspace extends WorkspaceRef {
   /** nixpkgs attributes, optionally pinned (`attr@version`). */
   packages?: string[];
   region?: string;
+  /** Seconds unused (600..=2592000) before the workspace is deleted; absent, never. */
+  ttlSecs?: number;
 }
 
 export interface CloneWorkspace extends WorkspaceRef {
@@ -449,11 +451,16 @@ export class Workspaces {
    * optionally pinned (`attr@version`). `region` matters only on a multi-region fleet — absent,
    * the deployment's one region is used.
    */
-  create({ workspace, quotaGb, image, repo, branch, packages = [], region }: CreateWorkspace) {
+  create({ workspace, quotaGb, image, repo, branch, packages = [], region, ttlSecs }: CreateWorkspace) {
     const [team, name] = owned(workspace);
     return this.c.request("POST", "/v1/workspaces", {
-      packages, name, team, quota_gb: quotaGb, region, image, repo, branch,
+      packages, name, team, quota_gb: quotaGb, region, image, repo, branch, ttl_secs: ttlSecs,
     });
+  }
+
+  /** Seconds unused before the workspace is deleted (600..=2592000); `null` clears it. Not for a sandbox or a bench. */
+  setTtl({ workspace, ttlSecs }: WorkspaceRef & { ttlSecs: number | null }) {
+    return this.at("PUT", workspace, "/ttl", { ttl_secs: ttlSecs });
   }
 
   /** The caller's workspaces; `team` scopes to their workspaces in that team. */
@@ -847,10 +854,16 @@ export class Sessions {
   constructor(private readonly c: Kloudlite) {}
 
   /** `environment`, when given, must be the session's team's: an id, a name or `"team/name"`;
-   * without one the session connects to nothing until `connect`. */
-  create({ session, environment }: SessionRef & { environment?: string }) {
+   * without one the session connects to nothing until `connect`. `ttlSecs` (600..=2592000) deletes
+   * the session after that long unused. */
+  create({ session, environment, ttlSecs }: SessionRef & { environment?: string; ttlSecs?: number }) {
     const [team, name] = owned(session);
-    return this.c.request("POST", "/v1/sessions", { name, team, environment });
+    return this.c.request("POST", "/v1/sessions", { name, team, environment, ttl_secs: ttlSecs });
+  }
+
+  /** Seconds unused before the session is deleted (600..=2592000); `null` clears it. */
+  setTtl({ session, ttlSecs }: SessionRef & { ttlSecs: number | null }) {
+    return this.at("PUT", session, "/ttl", { ttl_secs: ttlSecs });
   }
 
   list({ team }: { team?: string } = {}) {

@@ -325,11 +325,12 @@ module Kloudlite
     # +workspace+ ("name" or "team/name") is split into the body's name and team. +repo+ seeds
     # from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs attributes,
     # optionally pinned ("attr@version"). +region+ matters only on a multi-region fleet —
-    # absent, the deployment's one region is used.
-    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], region: nil)
+    # absent, the deployment's one region is used. +ttl_secs+ (600..=2592000) deletes it after that
+    # long unused; absent, never.
+    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], region: nil, ttl_secs: nil)
       team, name = owned(workspace)
       body = { name: name, region: region, quota_gb: quota_gb,
-               team: team, repo: repo, branch: branch, packages: packages }
+               team: team, repo: repo, branch: branch, packages: packages, ttl_secs: ttl_secs }
       body[:image] = image unless image.nil?
       @c.request("POST", "/v1/workspaces", body: body)
     end
@@ -379,6 +380,12 @@ module Kloudlite
     # Replace the package list; pinned entries are locked before anything is written.
     def set_packages(workspace:, packages:)
       at("PATCH", workspace, body: { packages: packages })
+    end
+
+    # Seconds unused before the workspace is deleted (600..=2592000); nil clears it. Not for a
+    # sandbox or a bench.
+    def set_ttl(workspace:, ttl_secs:)
+      at("PUT", workspace, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
     # Re-resolve every pinned package — the only call that moves existing locks.
@@ -624,10 +631,16 @@ module Kloudlite
     end
 
     # +environment+, when given, must be the session's team's: an id, a name or "team/name";
-    # without one the session connects to nothing until +connect+.
-    def create(session:, environment: nil)
+    # without one the session connects to nothing until +connect+. +ttl_secs+ (600..=2592000)
+    # deletes the session after that long unused.
+    def create(session:, environment: nil, ttl_secs: nil)
       team, name = owned(session)
-      @c.request("POST", "/v1/sessions", body: { name: name, team: team, environment: environment })
+      @c.request("POST", "/v1/sessions", body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs })
+    end
+
+    # Seconds unused before the session is deleted (600..=2592000); nil clears it.
+    def set_ttl(session:, ttl_secs:)
+      at("PUT", session, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
     def list(team: nil)
