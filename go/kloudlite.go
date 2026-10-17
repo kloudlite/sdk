@@ -52,6 +52,7 @@ type Client struct {
 	Environments *Environments
 	Sessions     *Sessions
 	Volumes      *Volumes
+	Secrets      *Secrets
 	Sandboxes    *Sandboxes
 	Pipelines    *Pipelines
 
@@ -90,6 +91,7 @@ func New(opts Options) *Client {
 	c.Environments = &Environments{c}
 	c.Sessions = &Sessions{c}
 	c.Volumes = &Volumes{c}
+	c.Secrets = &Secrets{c}
 	c.Sandboxes = &Sandboxes{c}
 	c.Pipelines = &Pipelines{c}
 	return c
@@ -758,6 +760,8 @@ type CreateWorkspace struct {
 	// TtlSecs (600..=2592000) deletes the workspace after that many seconds
 	// unused; 0 is never.
 	TtlSecs int64
+	// Env maps a variable to a literal value or a "secret:NAME" reference.
+	Env map[string]string
 }
 
 type PushWorkspace struct {
@@ -798,15 +802,16 @@ func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 		packages = []string{}
 	}
 	body := struct {
-		Name     string   `json:"name"`
-		QuotaGb  int64    `json:"quota_gb"`
-		Team     string   `json:"team,omitempty"`
-		Image    string   `json:"image,omitempty"`
-		Repo     string   `json:"repo,omitempty"`
-		Branch   string   `json:"branch,omitempty"`
-		Packages []string `json:"packages"`
-		TtlSecs  int64    `json:"ttl_secs,omitempty"`
-	}{name, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages, req.TtlSecs}
+		Name     string            `json:"name"`
+		QuotaGb  int64             `json:"quota_gb"`
+		Team     string            `json:"team,omitempty"`
+		Image    string            `json:"image,omitempty"`
+		Repo     string            `json:"repo,omitempty"`
+		Branch   string            `json:"branch,omitempty"`
+		Packages []string          `json:"packages"`
+		TtlSecs  int64             `json:"ttl_secs,omitempty"`
+		Env      map[string]string `json:"env,omitempty"`
+	}{name, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages, req.TtlSecs, req.Env}
 	var out map[string]any
 	err = w.c.call("POST", "/v1/workspaces", nil, body, &out)
 	return out, err
@@ -817,6 +822,14 @@ func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 func (w *Workspaces) SetTTL(workspace string, ttlSecs *int64) (map[string]any, error) {
 	var out map[string]any
 	err := w.at("PUT", workspace, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
+	return out, err
+}
+
+// SetEnv replaces the whole env (literals or "secret:NAME" references); it
+// takes effect on the next start.
+func (w *Workspaces) SetEnv(workspace string, env map[string]string) (map[string]any, error) {
+	var out map[string]any
+	err := w.at("PUT", workspace, "/env", map[string]map[string]string{"env": env}, &out)
 	return out, err
 }
 

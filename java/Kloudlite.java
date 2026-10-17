@@ -81,6 +81,7 @@ public class Kloudlite {
     private final Environments environments = new Environments();
     private final Sessions sessions = new Sessions();
     private final Volumes volumes = new Volumes();
+    private final Secrets secrets = new Secrets();
     private final Sandboxes sandboxes = new Sandboxes();
     private final Pipelines pipelines = new Pipelines();
 
@@ -119,6 +120,11 @@ public class Kloudlite {
     /** Working sessions: {@code /v1/sessions}. */
     public Sessions sessions() {
         return sessions;
+    }
+
+    /** An owner's named secrets: {@code /v1/secrets}. */
+    public Secrets secrets() {
+        return secrets;
     }
 
     /** The volumes behind workspaces and environments: {@code /v1/volumes}. */
@@ -636,7 +642,13 @@ public class Kloudlite {
                 .str("branch", p.branch)
                 .raw("packages", strings(p.packages == null ? List.of() : p.packages))
                 .num("ttl_secs", p.ttlSecs)
+                .raw("env", p.env == null ? null : stringMap(p.env))
                 .toString());
+        }
+
+        /** Replace the whole env (literals or {@code "secret:NAME"}); takes effect on the next start. */
+        public String setEnv(String workspace, Map<String, String> env) throws IOException, InterruptedException {
+            return api("PUT", path(need(workspace, "workspace"), "/env"), "{\"env\":" + stringMap(env) + "}");
         }
 
         /** Seconds unused before the workspace is deleted (600..=2592000); {@code null} clears it. Not for a sandbox or a bench. */
@@ -740,6 +752,7 @@ public class Kloudlite {
         private String workspace, image, repo, branch;
         private Long quotaGb, ttlSecs;
         private List<String> packages;
+        private Map<String, String> env;
 
         public CreateWorkspace workspace(String v) { workspace = v; return this; }
         public CreateWorkspace quotaGb(long v) { quotaGb = v; return this; }
@@ -750,6 +763,8 @@ public class Kloudlite {
         public CreateWorkspace packages(String... v) { packages = Arrays.asList(v); return this; }
         /** Seconds unused (600..=2592000) before the workspace is deleted; unset, never. */
         public CreateWorkspace ttlSecs(long v) { ttlSecs = v; return this; }
+        /** Variable to a literal value or a {@code "secret:NAME"} reference to the owner's secrets. */
+        public CreateWorkspace env(Map<String, String> v) { env = v; return this; }
     }
 
     public static final class PushWorkspace {
@@ -1426,6 +1441,27 @@ public class Kloudlite {
 
         public ReleaseService session(String v) { session = v; return this; }
         public ReleaseService service(String v) { service = v; return this; }
+    }
+
+    /**
+     * An owner's named secrets, over {@code /v1/secrets}. A value goes in and never comes back:
+     * {@code list} answers names with who and when. Reference one from a workspace env as
+     * {@code "secret:NAME"}.
+     */
+    public class Secrets {
+        public void set(String owner, String name, String value) throws IOException, InterruptedException {
+            api("PUT", "/v1/secrets/" + seg(need(owner, "owner")) + "/" + seg(need(name, "name")),
+                "{\"value\":" + quote(need(value, "value")) + "}");
+        }
+
+        public String list(String owner) throws IOException, InterruptedException {
+            return api("GET", "/v1/secrets/" + seg(need(owner, "owner")), null);
+        }
+
+        /** A 409 while a workspace or environment still references it; the body names them. */
+        public void delete(String owner, String name) throws IOException, InterruptedException {
+            api("DELETE", "/v1/secrets/" + seg(need(owner, "owner")) + "/" + seg(need(name, "name")), null);
+        }
     }
 
     /**
