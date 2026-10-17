@@ -61,11 +61,10 @@ type CreateSandbox struct {
 	Cpu      int
 	MemoryGb int
 	DiskGb   int
-	// Environment connects the sandbox to an environment its owner (Team,
-	// else you) owns — an id, "name" or "owner/name": the environment's
-	// services resolve by bare name inside it, and an idle-stopped one is
-	// started.
-	Environment string
+	// Session makes the sandbox a member of one of your sessions in Team — an
+	// id, "name" or "team/name": the session's environment is the only way a
+	// sandbox reaches one, and its services resolve by bare name.
+	Session string
 }
 
 // RunSandbox is Run's input: Cmd ("shell string" or []string argv) with Cwd
@@ -120,7 +119,7 @@ type SandboxDoc struct {
 	MemoryGb        int64             `json:"memory_gb"`
 	DiskGb          int64             `json:"disk_gb"`
 	From            map[string]string `json:"from"`
-	Environment     string            `json:"environment"`
+	Session         string            `json:"session"`
 }
 
 // Sandbox is a handle on one sandbox; its doc is the last one read (Refresh
@@ -147,7 +146,7 @@ func (s *Sandboxes) Create(req CreateSandbox) (*Sandbox, error) {
 		num("timeout_secs", secs(req.Timeout)).num("idle_timeout_secs", secs(req.IdleTimeout)).
 		str("network", req.Network).val("env", req.Env, req.Env != nil).
 		num("cpu", int64(req.Cpu)).num("memory_gb", int64(req.MemoryGb)).num("disk_gb", int64(req.DiskGb)).
-		str("environment", req.Environment)
+		str("session", req.Session)
 	sb := &Sandbox{c: s.c}
 	if err := s.c.call("POST", "/v1/sandboxes", nil, map[string]any(a), &sb.SandboxDoc); err != nil {
 		return nil, err
