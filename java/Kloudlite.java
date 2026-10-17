@@ -623,8 +623,7 @@ public class Kloudlite {
     public class Workspaces {
         /**
          * {@code workspace} is split into the body's {@code name} and {@code team}; {@code repo}
-         * seeds it from a PLATFORM repo (with {@code branch}); {@code region} matters only on a
-         * multi-region fleet — absent, the deployment's one is used.
+         * seeds it from a PLATFORM repo (with {@code branch}).
          */
         public String create(CreateWorkspace p) throws IOException, InterruptedException {
             String[] on = owned(need(p.workspace, "workspace"));
@@ -636,7 +635,6 @@ public class Kloudlite {
                 .str("repo", p.repo)
                 .str("branch", p.branch)
                 .raw("packages", strings(p.packages == null ? List.of() : p.packages))
-                .str("region", p.region)
                 .num("ttl_secs", p.ttlSecs)
                 .toString());
         }
@@ -739,7 +737,7 @@ public class Kloudlite {
 
     /** {@link Workspaces#create}: {@code workspace} and {@code quotaGb} are required. */
     public static final class CreateWorkspace {
-        private String workspace, image, repo, branch, region;
+        private String workspace, image, repo, branch;
         private Long quotaGb, ttlSecs;
         private List<String> packages;
 
@@ -750,7 +748,6 @@ public class Kloudlite {
         public CreateWorkspace branch(String v) { branch = v; return this; }
         /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
         public CreateWorkspace packages(String... v) { packages = Arrays.asList(v); return this; }
-        public CreateWorkspace region(String v) { region = v; return this; }
         /** Seconds unused (600..=2592000) before the workspace is deleted; unset, never. */
         public CreateWorkspace ttlSecs(long v) { ttlSecs = v; return this; }
     }
@@ -1161,7 +1158,7 @@ public class Kloudlite {
          */
         public String create(CreateEnvironment p) throws IOException, InterruptedException {
             return api("POST", "/v1/environments",
-                body(need(p.environment, "environment"), p.quotaGb, p.snapshot, p.services, true));
+                body(need(p.environment, "environment"), p.quotaGb, p.snapshot, p.services, true, p.ttlSecs));
         }
 
         /** The caller's environments and their teams'; a non-null owner narrows to one handle or team. */
@@ -1187,9 +1184,9 @@ public class Kloudlite {
             return api("POST", path(environment, "/stop"), null);
         }
 
-        /** Reset the idle clock — call it periodically while something depends on the services. */
-        public String hold(String environment) throws IOException, InterruptedException {
-            return api("POST", path(environment, "/hold"), null);
+        /** Seconds unused before the environment is deleted (600..=2592000); {@code null} clears it. */
+        public String setTtl(String environment, Long ttlSecs) throws IOException, InterruptedException {
+            return api("PUT", path(need(environment, "environment"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
         }
 
         /** The volume survives while a pushed snapshot references it. */
@@ -1209,7 +1206,7 @@ public class Kloudlite {
          */
         public String clone(CloneEnvironment p) throws IOException, InterruptedException {
             String env = need(p.environment, "environment");
-            return api("POST", path(env, "/clone"), body(need(p.to, "to"), p.quotaGb, p.snapshot, p.services, false));
+            return api("POST", path(env, "/clone"), body(need(p.to, "to"), p.quotaGb, p.snapshot, p.services, false, null));
         }
 
         /**
@@ -1227,12 +1224,13 @@ public class Kloudlite {
             return at("/v1/environments/", environment, tail);
         }
 
-        private String body(String env, Long quotaGb, String snapshot, List<Service> services, boolean always) {
+        private String body(String env, Long quotaGb, String snapshot, List<Service> services, boolean always, Long ttlSecs) {
             String[] on = owned(env);
             String b = obj("name", on[1], "owner", on[0], "snapshot_id", snapshot);
             StringBuilder out = new StringBuilder(b.substring(0, b.length() - 1));
             if (quotaGb != null) out.append(",\"quota_gb\":").append(quotaGb);
             if (always || !services.isEmpty()) out.append(",\"services\":").append(array(services));
+            if (ttlSecs != null) out.append(",\"ttl_secs\":").append(ttlSecs);
             return out.append('}').toString();
         }
 
@@ -1247,6 +1245,7 @@ public class Kloudlite {
 
     public static final class CreateEnvironment {
         private String environment, snapshot;
+        private Long ttlSecs;
         private List<Service> services = List.of();
         private Long quotaGb;
 
@@ -1254,6 +1253,8 @@ public class Kloudlite {
         public CreateEnvironment services(Service... v) { services = Arrays.asList(v); return this; }
         public CreateEnvironment quotaGb(long v) { quotaGb = v; return this; }
         public CreateEnvironment snapshot(String v) { snapshot = v; return this; }
+        /** Seconds unused (600..=2592000) before the environment is deleted; unset, never. */
+        public CreateEnvironment ttlSecs(long v) { ttlSecs = v; return this; }
     }
 
     /** {@link Environments#setServices}: {@code services()} with none empties the environment. */
@@ -1930,7 +1931,7 @@ public class Kloudlite {
      * {@code fromWorkspace} is an id, a name or "team/name"; {@code fromSnapshot} a snapshot id.
      */
     public static final class CreateSandbox {
-        private String image, fromWorkspace, fromSnapshot, team, region, network, environment;
+        private String image, fromWorkspace, fromSnapshot, team, region, network, session;
         private List<String> packages;
         private Duration timeout, idleTimeout;
         private Map<String, String> env;
@@ -1954,11 +1955,10 @@ public class Kloudlite {
         public CreateSandbox memoryGb(int v) { memoryGb = (long) v; return this; }
         public CreateSandbox diskGb(int v) { diskGb = (long) v; return this; }
         /**
-         * Connect it to an environment its owner ({@code team}, else you) owns — an id, a name or
-         * "owner/name": the environment's services resolve by bare name inside it, and an
-         * idle-stopped environment is started.
+         * Make it a member of one of your sessions in {@code team} from birth — an id, a name or
+         * "team/name"; the session's environment is the only way a sandbox reaches one.
          */
-        public CreateSandbox environment(String v) { environment = v; return this; }
+        public CreateSandbox session(String v) { session = v; return this; }
 
         String body() {
             return new Json()
@@ -1975,7 +1975,7 @@ public class Kloudlite {
                 .num("cpu", cpu)
                 .num("memory_gb", memoryGb)
                 .num("disk_gb", diskGb)
-                .str("environment", environment)
+                .str("session", session)
                 .toString();
         }
     }
@@ -2023,7 +2023,7 @@ public class Kloudlite {
         public RunSandbox cpu(int cores) { create.cpu(cores); return this; }
         public RunSandbox memoryGb(int v) { create.memoryGb(v); return this; }
         public RunSandbox diskGb(int v) { create.diskGb(v); return this; }
-        public RunSandbox environment(String v) { create.environment(v); return this; }
+        public RunSandbox session(String v) { create.session(v); return this; }
     }
 
     /** What {@link Sandboxes#run} answers; {@link #toString} is its JSON. */

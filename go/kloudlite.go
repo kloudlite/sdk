@@ -747,8 +747,7 @@ type Workspaces struct{ c *Client }
 // CreateWorkspace carries what a create takes. Workspace is "name" or
 // "team/name"; Repo seeds from a PLATFORM repo ("owner/name", with Branch);
 // Packages are nixpkgs attributes, optionally pinned ("attr@version"). An
-// empty Image means the platform default; an empty Region the deployment's
-// one active region (it matters only on a multi-region fleet).
+// empty Image means the platform default.
 type CreateWorkspace struct {
 	Workspace string
 	QuotaGb   int64
@@ -756,7 +755,6 @@ type CreateWorkspace struct {
 	Repo      string
 	Branch    string
 	Packages  []string
-	Region    string
 	// TtlSecs (600..=2592000) deletes the workspace after that many seconds
 	// unused; 0 is never.
 	TtlSecs int64
@@ -801,7 +799,6 @@ func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 	}
 	body := struct {
 		Name     string   `json:"name"`
-		Region   string   `json:"region,omitempty"`
 		QuotaGb  int64    `json:"quota_gb"`
 		Team     string   `json:"team,omitempty"`
 		Image    string   `json:"image,omitempty"`
@@ -809,7 +806,7 @@ func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 		Branch   string   `json:"branch,omitempty"`
 		Packages []string `json:"packages"`
 		TtlSecs  int64    `json:"ttl_secs,omitempty"`
-	}{name, req.Region, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages, req.TtlSecs}
+	}{name, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages, req.TtlSecs}
 	var out map[string]any
 	err = w.c.call("POST", "/v1/workspaces", nil, body, &out)
 	return out, err
@@ -1286,6 +1283,9 @@ type CreateEnvironment struct {
 	Services    []Service
 	QuotaGb     int64
 	Snapshot    string
+	// TtlSecs (600..=2592000) deletes the environment after that many seconds
+	// unused; 0 is never.
+	TtlSecs int64
 }
 
 type SetServices struct {
@@ -1321,6 +1321,9 @@ func (e *Environments) Create(req CreateEnvironment) (map[string]any, error) {
 	body, err := envBody(req.Environment, req.Services, req.QuotaGb, req.Snapshot)
 	if err != nil {
 		return nil, err
+	}
+	if req.TtlSecs != 0 {
+		body["ttl_secs"] = req.TtlSecs
 	}
 	if body["services"] == nil {
 		body["services"] = []Service{}
@@ -1362,10 +1365,12 @@ func (e *Environments) Stop(environment string) error {
 	return e.at("POST", environment, "/stop", nil, nil)
 }
 
-// Hold resets the idle clock — call it periodically while something depends
-// on the services.
-func (e *Environments) Hold(environment string) error {
-	return e.at("POST", environment, "/hold", nil, nil)
+// SetTTL sets the seconds the environment may sit unused before it is
+// deleted (600..=2592000); nil clears it.
+func (e *Environments) SetTTL(environment string, ttlSecs *int64) (map[string]any, error) {
+	var out map[string]any
+	err := e.at("PUT", environment, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
+	return out, err
 }
 
 // Delete keeps the volume while a pushed snapshot references it.

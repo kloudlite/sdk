@@ -324,12 +324,11 @@ module Kloudlite
 
     # +workspace+ ("name" or "team/name") is split into the body's name and team. +repo+ seeds
     # from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs attributes,
-    # optionally pinned ("attr@version"). +region+ matters only on a multi-region fleet —
-    # absent, the deployment's one region is used. +ttl_secs+ (600..=2592000) deletes it after that
+    # optionally pinned ("attr@version"). +ttl_secs+ (600..=2592000) deletes it after that
     # long unused; absent, never.
-    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], region: nil, ttl_secs: nil)
+    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], ttl_secs: nil)
       team, name = owned(workspace)
-      body = { name: name, region: region, quota_gb: quota_gb,
+      body = { name: name, quota_gb: quota_gb,
                team: team, repo: repo, branch: branch, packages: packages, ttl_secs: ttl_secs }
       body[:image] = image unless image.nil?
       @c.request("POST", "/v1/workspaces", body: body)
@@ -542,12 +541,13 @@ module Kloudlite
     end
 
     # +snapshot+ grows it from a pushed snapshot — also one of a deleted environment — and
-    # then +services+ default to the ones that snapshot froze.
-    def create(environment:, services: [], quota_gb: nil, snapshot: nil)
+    # then +services+ default to the ones that snapshot froze. +ttl_secs+ (600..=2592000) deletes
+    # it after that long unused; absent, never.
+    def create(environment:, services: [], quota_gb: nil, snapshot: nil, ttl_secs: nil)
       owner, name = owned(environment)
       @c.request("POST", "/v1/environments",
                  body: { name: name, owner: owner, services: fill(services),
-                         quota_gb: quota_gb, snapshot_id: snapshot })
+                         quota_gb: quota_gb, snapshot_id: snapshot, ttl_secs: ttl_secs })
     end
 
     # The caller's environments and their teams'; +owner+ narrows to one handle or team.
@@ -572,9 +572,9 @@ module Kloudlite
       at("POST", environment, "/stop")
     end
 
-    # Reset the idle clock — call it periodically while something depends on the services.
-    def hold(environment:)
-      at("POST", environment, "/hold")
+    # Seconds the environment may sit unused (600..=2592000) before it is deleted; nil clears.
+    def set_ttl(environment:, ttl_secs:)
+      at("PUT", environment, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
     # The volume survives while a pushed snapshot references it.
@@ -749,18 +749,18 @@ module Kloudlite
     # Returns at once, before the sandbox runs (Sandbox#exec waits for that). +from_workspace+
     # ("name", "team/name" or an id) starts from a copy of that workspace's disk, +from_snapshot+
     # from a pushed snapshot; +network+ is "internet" (default) or "none"; +cpu+ cores and the
-    # *_gb sizes are integers. +environment+ (an id, "name" or "owner/name" of an environment the
-    # sandbox's owner -- +team+, else you -- owns) connects it: the environment's services resolve
-    # by bare name inside it, and an idle-stopped one is started. Unset keywords are omitted, so
-    # the server's defaults apply.
+    # *_gb sizes are integers. +session+ (an id, "name" or "team/name" of your session in the
+    # sandbox's team) makes it a member from birth -- the only way it reaches an environment, whose
+    # services then resolve by bare name inside it. Unset keywords are omitted, so the server's
+    # defaults apply.
     def create(image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil, region: nil,
                timeout_s: nil, idle_timeout_s: nil, network: nil, env: nil, cpu: nil, memory_gb: nil,
-               disk_gb: nil, environment: nil)
+               disk_gb: nil, session: nil)
       body = { team: team, region: region, image: image, packages: packages,
                from_workspace: from_workspace, from_snapshot: from_snapshot,
                timeout_secs: timeout_s, idle_timeout_secs: idle_timeout_s, network: network,
                env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb,
-               environment: environment }.compact
+               session: session }.compact
       Sandbox.new(@c, @c.request("POST", "/v1/sandboxes", body: body))
     end
 

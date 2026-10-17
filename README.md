@@ -158,6 +158,7 @@ kl.environments.clone(environment="acme/staging", to="acme/staging-2")     # a c
 snaps = kl.volumes.history(volume=kl.environments.get(environment="acme/staging")["volume"])
 kl.environments.restore(environment="acme/staging", snapshot=snaps[0]["id"])   # in place
 kl.environments.create(environment="acme/staging-old", snapshot=snaps[0]["id"])  # a new one from it
+kl.environments.set_ttl(environment="acme/staging", ttl_secs=86400)        # delete after a day unused; None clears
 kl.environments.delete(environment="acme/staging")                         # snapshots survive
 ```
 
@@ -189,7 +190,7 @@ kl.sessions.set_ttl(session="acme/fix-login", ttl_secs=86400)           # delete
 kl.sessions.delete(session="acme/fix-login")                            # releases; deletes no workspace
 ```
 
-`workspaces.create` and `sessions.create` also take `ttl_secs` (600 to 2592000).
+`workspaces.create`, `environments.create` and `sessions.create` also take `ttl_secs` (600 to 2592000).
 An awake session, and a workspace that wants a pod, is never deleted by its TTL.
 
 A workspace is in at most one session; adding one that is in another session
@@ -228,7 +229,7 @@ kl.sandboxes.run(cmd="cargo test", from_workspace="acme/api-dev", timeout_s=900)
 ```
 
 `create` takes `image`, `packages`, `from_workspace` or `from_snapshot`, `team`,
-`timeout_s` (default 300), `idle_timeout_s`, `network` (`"internet"`, the default —
+`session`, `timeout_s` (default 300), `idle_timeout_s`, `network` (`"internet"`, the default —
 never the cluster — or `"none"`), `env`, `cpu`, `memory_gb` and `disk_gb`. A sandbox
 also has `read(path=…)` and `write(path=…, content=…)` for files under `~/workspace`;
 read anything you want to keep before terminating. A terminated sandbox's record
