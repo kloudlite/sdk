@@ -1295,11 +1295,11 @@ public class Kloudlite {
      * workspace by its id, name or {@code "team/name"}, sent verbatim.
      */
     public class Sessions {
-        /** {@code environment} must be the session's team's: an id, a name or "team/name". */
+        /** {@code environment}, when set, must be the session's team's: an id, a name or "team/name"; without one the session connects to nothing until {@link #connect}. */
         public String create(CreateSession p) throws IOException, InterruptedException {
             String[] on = owned(need(p.session, "session"));
             return api("POST", "/v1/sessions",
-                obj("name", on[1], "team", on[0], "environment", need(p.environment, "environment")));
+                obj("name", on[1], "team", on[0], "environment", p.environment));
         }
 
         public String list(String team) throws IOException, InterruptedException {
@@ -1314,6 +1314,16 @@ public class Kloudlite {
         /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
         public String delete(String session) throws IOException, InterruptedException {
             return api("DELETE", path(session, ""), null);
+        }
+
+        /**
+         * Sets or switches the session's environment (an id, a name or "team/name"); {@code null}
+         * clears it. Its intercepts in the old environment are released first; deleting an
+         * environment disconnects its sessions the same way.
+         */
+        public String connect(String session, String environment) throws IOException, InterruptedException {
+            return api("PUT", path(need(session, "session"), "/environment"),
+                environment == null ? "{\"environment\":null}" : obj("environment", environment));
         }
 
         /** A workspace is in at most one session; while in one it resolves that session's environment. */
