@@ -637,7 +637,13 @@ public class Kloudlite {
                 .str("branch", p.branch)
                 .raw("packages", strings(p.packages == null ? List.of() : p.packages))
                 .str("region", p.region)
+                .num("ttl_secs", p.ttlSecs)
                 .toString());
+        }
+
+        /** Seconds unused before the workspace is deleted (600..=2592000); {@code null} clears it. Not for a sandbox or a bench. */
+        public String setTtl(String workspace, Long ttlSecs) throws IOException, InterruptedException {
+            return api("PUT", path(need(workspace, "workspace"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
         }
 
         /** The caller's workspaces; a non-null team scopes to their workspaces in that team. */
@@ -734,7 +740,7 @@ public class Kloudlite {
     /** {@link Workspaces#create}: {@code workspace} and {@code quotaGb} are required. */
     public static final class CreateWorkspace {
         private String workspace, image, repo, branch, region;
-        private Long quotaGb;
+        private Long quotaGb, ttlSecs;
         private List<String> packages;
 
         public CreateWorkspace workspace(String v) { workspace = v; return this; }
@@ -745,6 +751,8 @@ public class Kloudlite {
         /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
         public CreateWorkspace packages(String... v) { packages = Arrays.asList(v); return this; }
         public CreateWorkspace region(String v) { region = v; return this; }
+        /** Seconds unused (600..=2592000) before the workspace is deleted; unset, never. */
+        public CreateWorkspace ttlSecs(long v) { ttlSecs = v; return this; }
     }
 
     public static final class PushWorkspace {
@@ -1298,8 +1306,17 @@ public class Kloudlite {
         /** {@code environment}, when set, must be the session's team's: an id, a name or "team/name"; without one the session connects to nothing until {@link #connect}. */
         public String create(CreateSession p) throws IOException, InterruptedException {
             String[] on = owned(need(p.session, "session"));
-            return api("POST", "/v1/sessions",
-                obj("name", on[1], "team", on[0], "environment", p.environment));
+            return api("POST", "/v1/sessions", new Json()
+                .str("name", on[1])
+                .str("team", on[0])
+                .str("environment", p.environment)
+                .num("ttl_secs", p.ttlSecs)
+                .toString());
+        }
+
+        /** Seconds unused before the session is deleted (600..=2592000); {@code null} clears it. */
+        public String setTtl(String session, Long ttlSecs) throws IOException, InterruptedException {
+            return api("PUT", path(need(session, "session"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
         }
 
         public String list(String team) throws IOException, InterruptedException {
@@ -1370,9 +1387,12 @@ public class Kloudlite {
 
     public static final class CreateSession {
         private String session, environment;
+        private Long ttlSecs;
 
         public CreateSession session(String v) { session = v; return this; }
         public CreateSession environment(String v) { environment = v; return this; }
+        /** Seconds unused (600..=2592000) before the session is deleted; unset, never. */
+        public CreateSession ttlSecs(long v) { ttlSecs = v; return this; }
     }
 
     public static final class AddToSession {
