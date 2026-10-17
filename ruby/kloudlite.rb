@@ -623,8 +623,9 @@ module Kloudlite
       @c = client
     end
 
-    # +environment+ must be the session's team's: an id, a name or "team/name".
-    def create(session:, environment:)
+    # +environment+, when given, must be the session's team's: an id, a name or "team/name";
+    # without one the session connects to nothing until +connect+.
+    def create(session:, environment: nil)
       team, name = owned(session)
       @c.request("POST", "/v1/sessions", body: { name: name, team: team, environment: environment })
     end
@@ -641,6 +642,12 @@ module Kloudlite
     # Releases its intercepts and lets its workspaces go — never deletes a workspace.
     def delete(session:)
       at("DELETE", session)
+    end
+
+    # Sets, switches or (nil) clears the session's environment. Its intercepts in the old
+    # environment are released first; deleting an environment disconnects its sessions the same way.
+    def connect(session:, environment:)
+      at("PUT", session, "/environment", body: { environment: environment })
     end
 
     # A workspace is in at most one session; while in one it resolves that session's environment.

@@ -846,8 +846,9 @@ export interface Intercept extends SessionRef {
 export class Sessions {
   constructor(private readonly c: Kloudlite) {}
 
-  /** `environment` must be the session's team's: an id, a name or `"team/name"`. */
-  create({ session, environment }: SessionRef & { environment: string }) {
+  /** `environment`, when given, must be the session's team's: an id, a name or `"team/name"`;
+   * without one the session connects to nothing until `connect`. */
+  create({ session, environment }: SessionRef & { environment?: string }) {
     const [team, name] = owned(session);
     return this.c.request("POST", "/v1/sessions", { name, team, environment });
   }
@@ -864,6 +865,14 @@ export class Sessions {
   /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
   delete({ session }: SessionRef) {
     return this.at("DELETE", session);
+  }
+
+  /**
+   * Sets, switches or (`null`) clears the session's environment. Its intercepts in the old
+   * environment are released first; deleting an environment disconnects its sessions the same way.
+   */
+  connect({ session, environment }: SessionRef & { environment: string | null }) {
+    return this.at("PUT", session, "/environment", { environment });
   }
 
   /** A workspace is in at most one session; while in one it resolves that session's environment. */

@@ -544,8 +544,9 @@ class Sessions:
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def create(self, *, session: str, environment: str):
-        """``environment`` must be the session's team's: an id, a name or ``"team/name"``."""
+    def create(self, *, session: str, environment: str | None = None):
+        """``environment``, when given, must be the session's team's: an id, a name or
+        ``"team/name"``; without one the session connects to nothing until ``connect``."""
         team, name = _owned(session)
         return self._c.request("POST", "/v1/sessions",
                                body={"name": name, "team": team, "environment": environment})
@@ -560,6 +561,12 @@ class Sessions:
     def delete(self, *, session: str):
         """Releases its intercepts and lets its workspaces go — never deletes a workspace."""
         return self._at("DELETE", session)
+
+    def connect(self, *, session: str, environment: str | None):
+        """Sets, switches or (``None``) clears the session's environment. Its intercepts in the old
+        environment are released first; deleting an environment disconnects its sessions the same
+        way."""
+        return self._at("PUT", session, "/environment", body={"environment": environment})
 
     def add(self, *, session: str, workspace: str):
         """A workspace is in at most one session; while in one it resolves that session's

@@ -181,6 +181,7 @@ kl.sessions.add(session="acme/fix-login", workspace="acme/api-dev")    # resolve
 kl.sessions.add(session="acme/fix-login", workspace="acme/web-dev")
 kl.sessions.intercept(session="acme/fix-login", service="api",
                       workspace="acme/api-dev", ports={8080: 3000})
+kl.sessions.connect(session="acme/fix-login", environment="acme/qa")    # switch; None disconnects
 kl.sessions.get(session="acme/fix-login")                               # its workspaces and intercepts
 kl.sessions.release(session="acme/fix-login", service="api")
 kl.sessions.remove(session="acme/fix-login", workspace="acme/web-dev")  # back to the team's choice
@@ -188,7 +189,9 @@ kl.sessions.delete(session="acme/fix-login")                            # releas
 ```
 
 A workspace is in at most one session; adding one that is in another session
-is refused naming it.
+is refused naming it. A session's environment is optional (`create` without
+one, `connect` later); switching or disconnecting releases its intercepts in
+the old one first, and deleting an environment disconnects its sessions.
 
 ## `sandboxes`
 
