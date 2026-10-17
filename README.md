@@ -134,6 +134,24 @@ kl.workspaces.delete(workspace="acme/dev")                # snapshots survive on
 kl.volumes.delete_snapshot(volume=vol, snapshot=snaps[0]["id"])
 ```
 
+## `secrets`
+
+Named secrets per owner (a handle or a team slug) over `/v1/secrets`. A value
+goes in and never comes back; `list` answers names, who and when. A workspace
+reads one as an env entry `"secret:NAME"`; delete is a 409 naming the
+referrers while any still uses it:
+
+```python
+kl.secrets.set(owner="acme", name="DB_URL", value="postgres://...")
+kl.secrets.list(owner="acme")                    # [{name, updated_at, updated_by}]
+kl.workspaces.create(workspace="acme/dev", quota_gb=40, env={"DATABASE_URL": "secret:DB_URL", "MODE": "dev"})
+kl.workspaces.set_env(workspace="acme/dev", env={"DATABASE_URL": "secret:DB_URL"})   # replaces the whole env
+kl.secrets.delete(owner="acme", name="DB_URL")
+```
+
+The laptop CLI: `printf %s "$V" | kl-connect secret set DB_URL --team acme`
+(value from stdin only), `secret list`, `secret delete DB_URL`.
+
 ## `environments`
 
 Multi-service environments over `/v1/environments`: a set of containers sharing

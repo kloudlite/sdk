@@ -56,6 +56,7 @@ class Kloudlite:
         self.environments = Environments(self)
         self.sessions = Sessions(self)
         self.volumes = Volumes(self)
+        self.secrets = Secrets(self)
         self.sandboxes = Sandboxes(self)
         self.pipelines = Pipelines(self)
 
@@ -266,8 +267,9 @@ class Workspaces:
     def create(self, *, workspace: str, quota_gb: int, image: str | None = None,
                repo: str | None = None, branch: str | None = None,
                packages: list | None = None,
-               ttl_secs: int | None = None):
-        """``workspace`` is ``"name"`` or ``"team/name"``. ``ttl_secs`` (600..=2592000) deletes it
+               ttl_secs: int | None = None, env: dict | None = None):
+        """``workspace`` is ``"name"`` or ``"team/name"``. ``env`` maps variable names to literal
+        values or ``"secret:NAME"`` references to the owner's secrets. ``ttl_secs`` (600..=2592000) deletes it
         after that long unused; absent, never. ``repo`` seeds from a PLATFORM repo
         ("owner/name", with ``branch``); ``packages`` are nixpkgs attributes, optionally pinned
         (``attr@version``)."""
@@ -277,6 +279,8 @@ class Workspaces:
                 "packages": packages or [], "ttl_secs": ttl_secs}
         if image is not None:
             body["image"] = image
+        if env is not None:
+            body["env"] = env
         return self._c.request("POST", "/v1/workspaces", body=body)
 
     def list(self, *, team: str | None = None):
@@ -324,6 +328,11 @@ class Workspaces:
         """Seconds unused before the workspace is deleted (600..=2592000); ``None`` clears it. Not
         for a sandbox or a bench."""
         return self._at("PUT", workspace, "/ttl", body={"ttl_secs": ttl_secs})
+
+    def set_env(self, *, workspace: str, env: dict):
+        """Replace the whole env: literals or ``"secret:NAME"`` references. Takes effect on the
+        next start."""
+        return self._at("PUT", workspace, "/env", body={"env": env})
 
     def update_packages(self, *, workspace: str):
         """Re-resolve every pinned package — the only call that moves existing locks."""
@@ -607,6 +616,25 @@ class Sessions:
         team, name = _owned(session)
         return self._c.request(method, f"/v1/sessions/{_seg(name)}{tail}", body=body,
                                query={"owner": team})
+
+
+class Secrets:
+    """An owner's named secrets, over ``/v1/secrets``. A value goes in and never comes back:
+    ``list`` returns names with who and when. Reference one from a workspace env as
+    ``"secret:NAME"``."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    def set(self, *, owner: str, name: str, value: str) -> None:
+        self._c.request("PUT", f"/v1/secrets/{_seg(owner)}/{_seg(name)}", body={"value": value})
+
+    def list(self, *, owner: str):
+        return self._c.request("GET", f"/v1/secrets/{_seg(owner)}")
+
+    def delete(self, *, owner: str, name: str) -> None:
+        """409 while a workspace or environment still references it; the body names them."""
+        self._c.request("DELETE", f"/v1/secrets/{_seg(owner)}/{_seg(name)}")
 
 
 class Volumes:

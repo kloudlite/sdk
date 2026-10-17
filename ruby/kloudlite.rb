@@ -79,7 +79,7 @@ module Kloudlite
 
   class Client
     attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :sessions, :volumes,
-                :sandboxes, :pipelines
+                :secrets, :sandboxes, :pipelines
 
     def initialize(base_url:, token: nil, hub_url: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
@@ -93,6 +93,7 @@ module Kloudlite
       @environments = Environments.new(self)
       @sessions = Sessions.new(self)
       @volumes = Volumes.new(self)
+      @secrets = Secrets.new(self)
       @sandboxes = Sandboxes.new(self)
       @pipelines = Pipelines.new(self)
     end
@@ -325,12 +326,14 @@ module Kloudlite
     # +workspace+ ("name" or "team/name") is split into the body's name and team. +repo+ seeds
     # from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs attributes,
     # optionally pinned ("attr@version"). +ttl_secs+ (600..=2592000) deletes it after that
-    # long unused; absent, never.
-    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], ttl_secs: nil)
+    # long unused; absent, never. +env+ maps variables to literals or "secret:NAME" references.
+    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], ttl_secs: nil,
+               env: nil)
       team, name = owned(workspace)
       body = { name: name, quota_gb: quota_gb,
                team: team, repo: repo, branch: branch, packages: packages, ttl_secs: ttl_secs }
       body[:image] = image unless image.nil?
+      body[:env] = env unless env.nil?
       @c.request("POST", "/v1/workspaces", body: body)
     end
 
@@ -385,6 +388,11 @@ module Kloudlite
     # sandbox or a bench.
     def set_ttl(workspace:, ttl_secs:)
       at("PUT", workspace, "/ttl", body: { ttl_secs: ttl_secs })
+    end
+
+    # Replace the whole env (literals or "secret:NAME" references); takes effect on next start.
+    def set_env(workspace:, env:)
+      at("PUT", workspace, "/env", body: { env: env })
     end
 
     # Re-resolve every pinned package — the only call that moves existing locks.
@@ -690,6 +698,31 @@ module Kloudlite
     def at(method, session, tail = "", body: nil)
       owner, name = owned(session)
       @c.request(method, "/v1/sessions/#{seg(name)}#{tail}", body: body, query: { owner: owner })
+    end
+  end
+
+  # An owner's named secrets, over /v1/secrets. A value goes in and never comes back: +list+
+  # answers names with who and when. Reference one from a workspace env as "secret:NAME".
+  class Secrets
+    include Names
+
+    def initialize(client)
+      @c = client
+    end
+
+    def set(owner:, name:, value:)
+      @c.request("PUT", "/v1/secrets/#{seg(owner)}/#{seg(name)}", body: { value: value })
+      nil
+    end
+
+    def list(owner:)
+      @c.request("GET", "/v1/secrets/#{seg(owner)}")
+    end
+
+    # 409 while a workspace or environment still references it; the body names them.
+    def delete(owner:, name:)
+      @c.request("DELETE", "/v1/secrets/#{seg(owner)}/#{seg(name)}")
+      nil
     end
   end
 
