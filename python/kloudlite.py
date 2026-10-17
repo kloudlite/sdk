@@ -265,15 +265,14 @@ class Workspaces:
 
     def create(self, *, workspace: str, quota_gb: int, image: str | None = None,
                repo: str | None = None, branch: str | None = None,
-               packages: list | None = None, region: str | None = None,
+               packages: list | None = None,
                ttl_secs: int | None = None):
         """``workspace`` is ``"name"`` or ``"team/name"``. ``ttl_secs`` (600..=2592000) deletes it
         after that long unused; absent, never. ``repo`` seeds from a PLATFORM repo
         ("owner/name", with ``branch``); ``packages`` are nixpkgs attributes, optionally pinned
-        (``attr@version``). ``region`` matters only on a multi-region fleet — absent, the
-        deployment's one region is used."""
+        (``attr@version``)."""
         team, name = _owned(workspace)
-        body = {"name": name, "region": region, "quota_gb": quota_gb,
+        body = {"name": name, "quota_gb": quota_gb,
                 "team": team, "repo": repo, "branch": branch,
                 "packages": packages or [], "ttl_secs": ttl_secs}
         if image is not None:
@@ -463,13 +462,15 @@ class Environments:
         self._c = client
 
     def create(self, *, environment: str, services: list | None = None,
-               quota_gb: int | None = None, snapshot: str | None = None):
+               quota_gb: int | None = None, snapshot: str | None = None,
+               ttl_secs: int | None = None):
         """``snapshot`` grows it from a pushed snapshot — also one of a deleted environment —
-        and then ``services`` default to the ones that snapshot froze."""
+        and then ``services`` default to the ones that snapshot froze. ``ttl_secs``
+        (600..=2592000) deletes it after that long unused; absent, never."""
         owner, name = _owned(environment)
         return self._c.request("POST", "/v1/environments", body={
             "name": name, "owner": owner, "services": _services(services),
-            "quota_gb": quota_gb, "snapshot_id": snapshot,
+            "quota_gb": quota_gb, "snapshot_id": snapshot, "ttl_secs": ttl_secs,
         })
 
     def list(self, *, owner: str | None = None):
@@ -490,9 +491,9 @@ class Environments:
     def stop(self, *, environment: str):
         return self._at("POST", environment, "/stop")
 
-    def hold(self, *, environment: str):
-        """Reset the idle clock — call it periodically while something depends on the services."""
-        return self._at("POST", environment, "/hold")
+    def set_ttl(self, *, environment: str, ttl_secs: int | None):
+        """Seconds the environment may sit unused before it is deleted (600..=2592000); None clears."""
+        return self._at("PUT", environment, "/ttl", body={"ttl_secs": ttl_secs})
 
     def delete(self, *, environment: str):
         """The volume survives while a pushed snapshot references it."""
@@ -712,19 +713,19 @@ class Sandboxes:
                timeout_s: int | None = None, idle_timeout_s: int | None = None,
                network: str | None = None, env: dict | None = None, cpu: int | None = None,
                memory_gb: int | None = None, disk_gb: int | None = None,
-               environment: str | None = None) -> "Sandbox":
+               session: str | None = None) -> "Sandbox":
         """Ask for a sandbox and return at once (202) — it is usually still ``starting``;
         :meth:`Sandbox.exec` waits for it. ``from_workspace`` is an id, ``"name"`` or
         ``"team/name"``; ``network`` is ``internet`` or ``none``; ``cpu`` in cores.
-        ``environment`` (an id, ``"name"`` or ``"owner/name"`` of an environment the sandbox's
-        owner — ``team``, else you — owns) connects it: the environment's services resolve by
-        bare name inside it, and an idle-stopped environment is started. Unset arguments are
+        ``session`` (an id, ``"name"`` or ``"team/name"`` of your session in the sandbox's team)
+        makes it a member from birth — the only way it reaches an environment, whose services
+        then resolve by bare name inside it. Unset arguments are
         left to the server's defaults and the owner's quota."""
         body = {"image": image, "packages": packages, "from_workspace": from_workspace,
                 "from_snapshot": from_snapshot, "team": team, "region": region,
                 "timeout_secs": timeout_s, "idle_timeout_secs": idle_timeout_s,
                 "network": network, "env": env, "cpu": cpu, "memory_gb": memory_gb,
-                "disk_gb": disk_gb, "environment": environment}
+                "disk_gb": disk_gb, "session": session}
         doc = self._c.request("POST", "/v1/sandboxes",
                               body={k: v for k, v in body.items() if v is not None})
         return Sandbox(self._c, doc)
@@ -746,7 +747,7 @@ class Sandboxes:
             from_snapshot: str | None = None, team: str | None = None,
             region: str | None = None, idle_timeout_s: int | None = None,
             network: str | None = None, cpu: int | None = None, memory_gb: int | None = None,
-            disk_gb: int | None = None, environment: str | None = None) -> dict:
+            disk_gb: int | None = None, session: str | None = None) -> dict:
         """One command in a fresh sandbox: create, exec, wait, read every byte of output, and
         terminate — ALWAYS, also when anything before it raised. Answers
         ``{"exit_code", "stdout", "stderr", "sandbox"}``. ``env`` and ``cwd`` are the command's;
@@ -757,7 +758,7 @@ class Sandboxes:
                          from_snapshot=from_snapshot, team=team, region=region,
                          timeout_s=lifetime, idle_timeout_s=idle_timeout_s, network=network,
                          cpu=cpu, memory_gb=memory_gb, disk_gb=disk_gb,
-                         environment=environment)
+                         session=session)
         try:
             p = sb.exec(cmd=cmd, cwd=cwd, env=env)
             code = p.wait(timeout_s=timeout_s)

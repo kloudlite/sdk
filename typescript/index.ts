@@ -415,7 +415,6 @@ export interface CreateWorkspace extends WorkspaceRef {
   branch?: string;
   /** nixpkgs attributes, optionally pinned (`attr@version`). */
   packages?: string[];
-  region?: string;
   /** Seconds unused (600..=2592000) before the workspace is deleted; absent, never. */
   ttlSecs?: number;
 }
@@ -448,13 +447,12 @@ export class Workspaces {
   /**
    * `workspace` is split into the body's `name` and `team` (no team for a personal one). `repo`
    * seeds from a PLATFORM repo ("owner/name", with `branch`); `packages` are nixpkgs attributes,
-   * optionally pinned (`attr@version`). `region` matters only on a multi-region fleet — absent,
-   * the deployment's one region is used.
+   * optionally pinned (`attr@version`).
    */
-  create({ workspace, quotaGb, image, repo, branch, packages = [], region, ttlSecs }: CreateWorkspace) {
+  create({ workspace, quotaGb, image, repo, branch, packages = [], ttlSecs }: CreateWorkspace) {
     const [team, name] = owned(workspace);
     return this.c.request("POST", "/v1/workspaces", {
-      packages, name, team, quota_gb: quotaGb, region, image, repo, branch, ttl_secs: ttlSecs,
+      packages, name, team, quota_gb: quotaGb, image, repo, branch, ttl_secs: ttlSecs,
     });
   }
 
@@ -718,6 +716,8 @@ export interface CreateEnvironment extends EnvironmentRef {
   quotaGb?: number;
   /** A pushed snapshot to grow it from. */
   snapshot?: string;
+  /** Seconds unused (600..=2592000) before the environment is deleted; absent, never. */
+  ttlSecs?: number;
 }
 
 export interface CloneEnvironment extends EnvironmentRef {
@@ -746,10 +746,10 @@ export class Environments {
    * `snapshot` grows it from a pushed snapshot — also one of a deleted environment — and then
    * `services` default to the ones that snapshot froze.
    */
-  create({ environment, services: list, quotaGb, snapshot }: CreateEnvironment) {
+  create({ environment, services: list, quotaGb, snapshot, ttlSecs }: CreateEnvironment) {
     const [owner, name] = owned(environment);
     return this.c.request("POST", "/v1/environments", {
-      name, owner, quota_gb: quotaGb, snapshot_id: snapshot, services: services(list),
+      name, owner, quota_gb: quotaGb, snapshot_id: snapshot, services: services(list), ttl_secs: ttlSecs,
     });
   }
 
@@ -775,9 +775,9 @@ export class Environments {
     return this.at("POST", environment, "/stop");
   }
 
-  /** Reset the idle clock — call it periodically while something depends on the services. */
-  hold({ environment }: EnvironmentRef) {
-    return this.at("POST", environment, "/hold");
+  /** Seconds the environment may sit unused (600..=2592000) before it is deleted; null clears. */
+  setTtl({ environment, ttlSecs }: EnvironmentRef & { ttlSecs: number | null }) {
+    return this.at("PUT", environment, "/ttl", { ttl_secs: ttlSecs });
   }
 
   /** The volume survives while a pushed snapshot references it. */
@@ -988,8 +988,8 @@ export interface SandboxDoc {
   memory_gb: number;
   disk_gb: number;
   from: { workspace: string } | { snapshot: string } | null;
-  /** The environment id it is connected to, or null. */
-  environment: string | null;
+  /** The session it is a member of, or null. */
+  session: string | null;
 }
 
 /** Every field optional: absent means the server's default. */
@@ -1014,11 +1014,10 @@ export interface CreateSandbox {
   memoryGb?: number;
   diskGb?: number;
   /**
-   * Connect it to an environment its owner (`team`, else you) owns — an id, `"name"` or
-   * `"owner/name"`: the environment's services resolve by bare name inside it, and an
-   * idle-stopped environment is started.
+   * Make it a member of one of your sessions in `team` from birth — an id, `"name"` or
+   * `"team/name"`; the session's environment is the only way a sandbox reaches one.
    */
-  environment?: string;
+  session?: string;
 }
 
 export interface ExecSandbox {
@@ -1144,7 +1143,7 @@ function createBody(o: CreateSandbox) {
     from_workspace: o.fromWorkspace, from_snapshot: o.fromSnapshot,
     timeout_secs: o.timeoutS, idle_timeout_secs: o.idleTimeoutS,
     network: o.network, env: o.env, cpu: o.cpu, memory_gb: o.memoryGb, disk_gb: o.diskGb,
-    environment: o.environment,
+    session: o.session,
   };
 }
 
