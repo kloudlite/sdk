@@ -52,7 +52,6 @@ type CreateSandbox struct {
 	FromWorkspace string
 	FromSnapshot  string
 	Team          string
-	Region        string
 	Timeout       time.Duration
 	IdleTimeout   time.Duration
 	// Network is "internet" or "none".
@@ -140,7 +139,7 @@ func secs(d time.Duration) int64 {
 // Create asks for a sandbox and returns at once (202) — it does not wait for
 // it to run; Exec does, or WaitRunning.
 func (s *Sandboxes) Create(req CreateSandbox) (*Sandbox, error) {
-	a := toolArgs{}.str("team", req.Team).str("region", req.Region).str("image", req.Image).
+	a := toolArgs{}.str("team", req.Team).str("image", req.Image).
 		val("packages", req.Packages, req.Packages != nil).
 		str("from_workspace", req.FromWorkspace).str("from_snapshot", req.FromSnapshot).
 		num("timeout_secs", secs(req.Timeout)).num("idle_timeout_secs", secs(req.IdleTimeout)).

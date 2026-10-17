@@ -1002,7 +1002,6 @@ export interface CreateSandbox {
   /** Start from a snapshot id the caller may read. */
   fromSnapshot?: string;
   team?: string;
-  region?: string;
   /** Lifetime in seconds from the moment it runs (server default 300, 10..=86 400). */
   timeoutS?: number;
   /** Terminate after this many seconds with no tool call (10..=86 400). */
@@ -1139,7 +1138,7 @@ export class Sandboxes {
 function createBody(o: CreateSandbox) {
   // JSON.stringify drops undefined, so an unset option is absent from the body.
   return {
-    team: o.team, region: o.region, image: o.image, packages: o.packages,
+    team: o.team, image: o.image, packages: o.packages,
     from_workspace: o.fromWorkspace, from_snapshot: o.fromSnapshot,
     timeout_secs: o.timeoutS, idle_timeout_secs: o.idleTimeoutS,
     network: o.network, env: o.env, cpu: o.cpu, memory_gb: o.memoryGb, disk_gb: o.diskGb,
