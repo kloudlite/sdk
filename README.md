@@ -102,6 +102,7 @@ kl.workspaces.create(workspace="acme/dev", quota_gb=40,
                      repo="acme/payments", branch="main",
                      packages=["nodejs@22", "ripgrep"])
 kl.workspaces.list(team="acme")
+kl.workspaces.set_ttl(workspace="acme/dev", ttl_secs=86400)   # delete after a day unused; None clears
 kl.workspaces.stop(workspace="acme/dev")
 kl.workspaces.start(workspace="acme/dev")
 
@@ -151,7 +152,6 @@ kl.environments.get(environment="acme/staging")
 kl.environments.set_services(environment="acme/staging", services=[...])   # the whole list; data stays
 kl.environments.stop(environment="acme/staging")
 kl.environments.start(environment="acme/staging")
-kl.environments.hold(environment="acme/staging")                            # reset the idle clock
 
 kl.environments.push(environment="acme/staging", message="seeded")         # a kept snapshot
 kl.environments.clone(environment="acme/staging", to="acme/staging-2")     # a copy of the live disk
@@ -176,7 +176,7 @@ deleting the session releases it. Workspaces are created with `workspaces` and
 then added:
 
 ```python
-kl.sessions.create(session="acme/fix-login", environment="acme/staging")
+kl.sessions.create(session="acme/fix-login", environment="acme/staging")  # environment is optional
 kl.sessions.add(session="acme/fix-login", workspace="acme/api-dev")    # resolves staging by bare name
 kl.sessions.add(session="acme/fix-login", workspace="acme/web-dev")
 kl.sessions.intercept(session="acme/fix-login", service="api",
@@ -185,8 +185,12 @@ kl.sessions.connect(session="acme/fix-login", environment="acme/qa")    # switch
 kl.sessions.get(session="acme/fix-login")                               # its workspaces and intercepts
 kl.sessions.release(session="acme/fix-login", service="api")
 kl.sessions.remove(session="acme/fix-login", workspace="acme/web-dev")  # back to the team's choice
+kl.sessions.set_ttl(session="acme/fix-login", ttl_secs=86400)           # delete after a day unused; None clears
 kl.sessions.delete(session="acme/fix-login")                            # releases; deletes no workspace
 ```
+
+`workspaces.create` and `sessions.create` also take `ttl_secs` (600 to 2592000).
+An awake session, and a workspace that wants a pod, is never deleted by its TTL.
 
 A workspace is in at most one session; adding one that is in another session
 is refused naming it. A session's environment is optional (`create` without
@@ -225,33 +229,15 @@ kl.sandboxes.run(cmd="cargo test", from_workspace="acme/api-dev", timeout_s=900)
 
 `create` takes `image`, `packages`, `from_workspace` or `from_snapshot`, `team`,
 `timeout_s` (default 300), `idle_timeout_s`, `network` (`"internet"`, the default —
-never the cluster — or `"none"`), `env`, `cpu`, `memory_gb`, `disk_gb` and
-`environment`. A sandbox also has `read(path=…)` and `write(path=…, content=…)` for
-files under `~/workspace`; read anything you want to keep before terminating. A
-terminated sandbox's record (`get`, `list`) says why it ended (`Terminated`,
-`Timeout`, `Idle`, `Exited`, `Failed`, `Unplaceable`, `SourceGone`, `Lost`,
-`EnvironmentGone`) for a day.
+never the cluster — or `"none"`), `env`, `cpu`, `memory_gb` and `disk_gb`. A sandbox
+also has `read(path=…)` and `write(path=…, content=…)` for files under `~/workspace`;
+read anything you want to keep before terminating. A terminated sandbox's record
+(`get`, `list`) says why it ended (`Terminated`, `Timeout`, `Idle`, `Exited`,
+`Failed`, `Unplaceable`, `SourceGone`, `Lost`, `EnvironmentGone`) for 90 days.
 
-`environment` connects a sandbox to an environment its owner owns — `team`'s for a
-team sandbox, yours otherwise — by id, name or `"owner/name"`: the environment's
-services resolve by bare name inside it (`postgres:5432`), ahead of anything else,
-and an idle-stopped environment is started. It holds the environment up until it
-ends; deleting the environment terminates it, and one whose environment disappears
-ends `EnvironmentGone`. A `network="none"` sandbox in an environment reaches the
-environment and DNS, and nothing else:
-
-```python
-sb = kl.sandboxes.create(team="acme", environment="acme/staging", network="none")
-sb.exec(cmd="psql -h postgres -c 'select 1'").wait()
-```
-
-| | `environment` on create |
-|---|---|
-| Python | `environment="acme/staging"` |
-| TypeScript | `{ environment: "acme/staging" }` |
-| Go | `CreateSandbox{Environment: "acme/staging"}` |
-| Ruby | `environment: "acme/staging"` |
-| Java | `new CreateSandbox().environment("acme/staging")` |
+A sandbox is a workspace, and like any workspace it reaches an environment only
+through a session: `POST /v1/sandboxes` takes a `session` of yours, and a copy made
+with `from_workspace` inherits none.
 
 Per language: TypeScript is promise-based (`for await (const line of
 p.stdout)`); Go has `Process.Stdin` as an `io.Writer` with `WriteEOF()`, and
