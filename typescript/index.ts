@@ -52,6 +52,7 @@ export class Kloudlite {
   readonly environments: Environments;
   readonly sessions: Sessions;
   readonly volumes: Volumes;
+  readonly secrets: Secrets;
   readonly sandboxes: Sandboxes;
   readonly pipelines: Pipelines;
   private readonly baseUrl: string;
@@ -71,6 +72,7 @@ export class Kloudlite {
     this.environments = new Environments(this);
     this.sessions = new Sessions(this);
     this.volumes = new Volumes(this);
+    this.secrets = new Secrets(this);
     this.sandboxes = new Sandboxes(this);
     this.pipelines = new Pipelines(this);
   }
@@ -417,6 +419,8 @@ export interface CreateWorkspace extends WorkspaceRef {
   packages?: string[];
   /** Seconds unused (600..=2592000) before the workspace is deleted; absent, never. */
   ttlSecs?: number;
+  /** Variable name to a literal value or a `"secret:NAME"` reference to the owner's secrets. */
+  env?: Record<string, string>;
 }
 
 export interface CloneWorkspace extends WorkspaceRef {
@@ -449,16 +453,21 @@ export class Workspaces {
    * seeds from a PLATFORM repo ("owner/name", with `branch`); `packages` are nixpkgs attributes,
    * optionally pinned (`attr@version`).
    */
-  create({ workspace, quotaGb, image, repo, branch, packages = [], ttlSecs }: CreateWorkspace) {
+  create({ workspace, quotaGb, image, repo, branch, packages = [], ttlSecs, env }: CreateWorkspace) {
     const [team, name] = owned(workspace);
     return this.c.request("POST", "/v1/workspaces", {
-      packages, name, team, quota_gb: quotaGb, image, repo, branch, ttl_secs: ttlSecs,
+      packages, name, team, quota_gb: quotaGb, image, repo, branch, ttl_secs: ttlSecs, env,
     });
   }
 
   /** Seconds unused before the workspace is deleted (600..=2592000); `null` clears it. Not for a sandbox or a bench. */
   setTtl({ workspace, ttlSecs }: WorkspaceRef & { ttlSecs: number | null }) {
     return this.at("PUT", workspace, "/ttl", { ttl_secs: ttlSecs });
+  }
+
+  /** Replace the whole env (literals or `"secret:NAME"`); takes effect on the next start. */
+  setEnv({ workspace, env }: WorkspaceRef & { env: Record<string, string> }) {
+    return this.at("PUT", workspace, "/env", { env });
   }
 
   /** The caller's workspaces; `team` scopes to their workspaces in that team. */
@@ -923,6 +932,28 @@ export class Sessions {
 /** A btrfs volume, by its name. */
 export interface VolumeRef {
   volume: string;
+}
+
+/**
+ * An owner's named secrets, over `/v1/secrets`. A value goes in and never comes back: `list`
+ * returns names with who and when. Reference one from a workspace env as `"secret:NAME"`.
+ */
+export class Secrets {
+  constructor(private readonly c: Kloudlite) {}
+
+  async set({ owner, name, value }: { owner: string; name: string; value: string }): Promise<void> {
+    await this.c.request("PUT", `/v1/secrets/${seg(owner)}/${seg(name)}`, { value });
+  }
+
+  list({ owner }: { owner: string }) {
+    return this.c.request<{ name: string; updated_at: string; updated_by: string }[]>(
+      "GET", `/v1/secrets/${seg(owner)}`);
+  }
+
+  /** 409 while a workspace or environment still references it; the body names them. */
+  async delete({ owner, name }: { owner: string; name: string }): Promise<void> {
+    await this.c.request("DELETE", `/v1/secrets/${seg(owner)}/${seg(name)}`);
+  }
 }
 
 /**
