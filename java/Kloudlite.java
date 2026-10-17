@@ -1931,7 +1931,7 @@ public class Kloudlite {
      * {@code fromWorkspace} is an id, a name or "team/name"; {@code fromSnapshot} a snapshot id.
      */
     public static final class CreateSandbox {
-        private String image, fromWorkspace, fromSnapshot, team, region, network, session;
+        private String image, fromWorkspace, fromSnapshot, team, network, session;
         private List<String> packages;
         private Duration timeout, idleTimeout;
         private Map<String, String> env;
@@ -1943,7 +1943,6 @@ public class Kloudlite {
         public CreateSandbox fromWorkspace(String v) { fromWorkspace = v; return this; }
         public CreateSandbox fromSnapshot(String v) { fromSnapshot = v; return this; }
         public CreateSandbox team(String v) { team = v; return this; }
-        public CreateSandbox region(String v) { region = v; return this; }
         /** The sandbox's whole lifetime, sent in whole seconds (rounded up). */
         public CreateSandbox timeout(Duration v) { timeout = v; return this; }
         /** Terminate once nothing has touched it for this long. */
@@ -1963,7 +1962,6 @@ public class Kloudlite {
         String body() {
             return new Json()
                 .str("team", team)
-                .str("region", region)
                 .str("image", image)
                 .raw("packages", packages == null ? null : strings(packages))
                 .str("from_workspace", fromWorkspace)
@@ -2017,7 +2015,6 @@ public class Kloudlite {
         public RunSandbox fromWorkspace(String v) { create.fromWorkspace(v); return this; }
         public RunSandbox fromSnapshot(String v) { create.fromSnapshot(v); return this; }
         public RunSandbox team(String v) { create.team(v); return this; }
-        public RunSandbox region(String v) { create.region(v); return this; }
         public RunSandbox idleTimeout(Duration v) { create.idleTimeout(v); return this; }
         public RunSandbox network(String v) { create.network(v); return this; }
         public RunSandbox cpu(int cores) { create.cpu(cores); return this; }

@@ -709,7 +709,7 @@ class Sandboxes:
     @_aio
     def create(self, *, image: str | None = None, packages: list | None = None,
                from_workspace: str | None = None, from_snapshot: str | None = None,
-               team: str | None = None, region: str | None = None,
+               team: str | None = None,
                timeout_s: int | None = None, idle_timeout_s: int | None = None,
                network: str | None = None, env: dict | None = None, cpu: int | None = None,
                memory_gb: int | None = None, disk_gb: int | None = None,
@@ -722,7 +722,7 @@ class Sandboxes:
         then resolve by bare name inside it. Unset arguments are
         left to the server's defaults and the owner's quota."""
         body = {"image": image, "packages": packages, "from_workspace": from_workspace,
-                "from_snapshot": from_snapshot, "team": team, "region": region,
+                "from_snapshot": from_snapshot, "team": team,
                 "timeout_secs": timeout_s, "idle_timeout_secs": idle_timeout_s,
                 "network": network, "env": env, "cpu": cpu, "memory_gb": memory_gb,
                 "disk_gb": disk_gb, "session": session}
@@ -745,7 +745,7 @@ class Sandboxes:
             timeout_s: float | None = None, image: str | None = None,
             packages: list | None = None, from_workspace: str | None = None,
             from_snapshot: str | None = None, team: str | None = None,
-            region: str | None = None, idle_timeout_s: int | None = None,
+            idle_timeout_s: int | None = None,
             network: str | None = None, cpu: int | None = None, memory_gb: int | None = None,
             disk_gb: int | None = None, session: str | None = None) -> dict:
         """One command in a fresh sandbox: create, exec, wait, read every byte of output, and
@@ -755,7 +755,7 @@ class Sandboxes:
         the sandbox's own lifetime to cover it plus a minute to start."""
         lifetime = None if timeout_s is None else min(86_400, max(10, math.ceil(timeout_s) + 60))
         sb = self.create(image=image, packages=packages, from_workspace=from_workspace,
-                         from_snapshot=from_snapshot, team=team, region=region,
+                         from_snapshot=from_snapshot, team=team,
                          timeout_s=lifetime, idle_timeout_s=idle_timeout_s, network=network,
                          cpu=cpu, memory_gb=memory_gb, disk_gb=disk_gb,
                          session=session)

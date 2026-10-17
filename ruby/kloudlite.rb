@@ -753,10 +753,10 @@ module Kloudlite
     # sandbox's team) makes it a member from birth -- the only way it reaches an environment, whose
     # services then resolve by bare name inside it. Unset keywords are omitted, so the server's
     # defaults apply.
-    def create(image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil, region: nil,
+    def create(image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil,
                timeout_s: nil, idle_timeout_s: nil, network: nil, env: nil, cpu: nil, memory_gb: nil,
                disk_gb: nil, session: nil)
-      body = { team: team, region: region, image: image, packages: packages,
+      body = { team: team, image: image, packages: packages,
                from_workspace: from_workspace, from_snapshot: from_snapshot,
                timeout_secs: timeout_s, idle_timeout_secs: idle_timeout_s, network: network,
                env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb,
