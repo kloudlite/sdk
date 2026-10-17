@@ -1477,8 +1477,9 @@ func fillServices(in []Service) []Service {
 // verbatim.
 type Sessions struct{ c *Client }
 
-// CreateSession connects a new Session to Environment, which must be the
-// session's team's: an id, a name or "team/name".
+// CreateSession makes a new Session. Environment, when given, must be the
+// session's team's: an id, a name or "team/name"; empty makes a session with
+// none, to connect later.
 type CreateSession struct {
 	Session     string
 	Environment string
@@ -1517,7 +1518,10 @@ func (s *Sessions) Create(req CreateSession) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	body := map[string]string{"name": name, "environment": req.Environment}
+	body := map[string]string{"name": name}
+	if req.Environment != "" {
+		body["environment"] = req.Environment
+	}
 	if team != "" {
 		body["team"] = team
 	}
@@ -1546,6 +1550,16 @@ func (s *Sessions) Get(session string) (map[string]any, error) {
 // Delete releases its intercepts and lets its workspaces go — never deletes a
 // workspace.
 func (s *Sessions) Delete(session string) error { return s.at("DELETE", session, "", nil, nil) }
+
+// Connect sets, switches (environment non-nil: an id, a name or "team/name")
+// or clears (nil) the session's environment. Its intercepts in the old
+// environment are released first; deleting an environment disconnects its
+// sessions the same way.
+func (s *Sessions) Connect(session string, environment *string) (map[string]any, error) {
+	var out map[string]any
+	err := s.at("PUT", session, "/environment", map[string]*string{"environment": environment}, &out)
+	return out, err
+}
 
 func (s *Sessions) Add(req AddToSession) (map[string]any, error) {
 	var out map[string]any
