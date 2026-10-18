@@ -861,7 +861,7 @@ func (w *Workspaces) Start(workspace string) error {
 	return w.at("POST", workspace, "/start", nil, nil)
 }
 
-// Stop cuts a sync point and tears the pod down — seconds, never waiting on a
+// Stop cuts a sync point and tears the workspace down — seconds, never waiting on a
 // replica.
 func (w *Workspaces) Stop(workspace string) error {
 	return w.at("POST", workspace, "/stop", nil, nil)
@@ -924,7 +924,7 @@ func (w *Workspaces) Tools(workspace string) (map[string]any, error) {
 }
 
 // Ide answers an *Ide bound to this workspace's tool server. The address is a
-// pod IP: reachable from inside the fleet (a bench); from a laptop, tunnel
+// private IP: reachable from inside the fleet (a bench); from a laptop, tunnel
 // with `kl-connect ws ide` and use
 // NewIde(IdeOptions{URL: "http://127.0.0.1:7788", Token: token}) instead.
 func (w *Workspaces) Ide(workspace string) (*Ide, error) {
