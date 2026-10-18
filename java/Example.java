@@ -2,7 +2,7 @@
 // fork, propose it back upstream as a cross-repo pull request, and merge it.
 //
 //   javac Kloudlite.java Example.java
-//   KLOUDLITE_URL=https://api.example.com KLOUDLITE_TOKEN=… java Example
+//   KLOUDLITE_URL=https://dev.kloudlite.io KLOUDLITE_TOKEN=… java Example
 //
 // The client returns raw JSON strings; parse with the mapper of your choice —
 // here a crude scan keeps the example dependency-free.

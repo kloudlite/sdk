@@ -33,7 +33,7 @@ List a repository's pull requests.
 Go
 
 ```go
-kl := kloudlite.New(kloudlite.Options{BaseURL: "https://api.example.com", Token: "…"})
+kl := kloudlite.New(kloudlite.Options{BaseURL: "https://dev.kloudlite.io", Token: "…"})
 pulls, err := kl.CodeRepos.Pulls(kloudlite.ListPulls{Repo: "acme/payments", State: "open"})
 ```
 
@@ -41,7 +41,7 @@ Python
 
 ```python
 from kloudlite import Kloudlite
-kl = Kloudlite(base_url="https://api.example.com", token="…")
+kl = Kloudlite(base_url="https://dev.kloudlite.io", token="…")
 pulls = kl.code_repos.pulls(repo="acme/payments", state="open")
 ```
 
@@ -49,7 +49,7 @@ TypeScript
 
 ```ts
 import { Kloudlite } from "./index.ts";
-const kl = new Kloudlite({ baseUrl: "https://api.example.com", token: "…" });
+const kl = new Kloudlite({ baseUrl: "https://dev.kloudlite.io", token: "…" });
 const pulls = await kl.codeRepos.pulls({ repo: "acme/payments", state: "open" });
 ```
 
@@ -57,14 +57,14 @@ Ruby
 
 ```ruby
 require_relative "kloudlite"
-kl = Kloudlite::Client.new(base_url: "https://api.example.com", token: "…")
+kl = Kloudlite::Client.new(base_url: "https://dev.kloudlite.io", token: "…")
 pulls = kl.code_repos.pulls(repo: "acme/payments", state: "open")
 ```
 
 Java
 
 ```java
-Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://api.example.com").token("…"));
+Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudlite.io").token("…"));
 String pulls = kl.codeRepos().pulls(new Kloudlite.ListPulls().repo("acme/payments").state("open"));
 ```
 
