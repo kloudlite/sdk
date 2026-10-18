@@ -1276,6 +1276,16 @@ type Service struct {
 	Env     map[string]string `json:"env"`
 	Command []string          `json:"command"`
 	Mounts  []Mount           `json:"mounts"`
+	// Resources overrides the environment's default pod size for this service.
+	Resources *PodResources `json:"resources,omitempty"`
+}
+
+// PodResources are Kubernetes quantity strings ("500m", "1Gi").
+type PodResources struct {
+	CpuRequest    string `json:"cpuRequest"`
+	CpuLimit      string `json:"cpuLimit"`
+	MemoryRequest string `json:"memoryRequest"`
+	MemoryLimit   string `json:"memoryLimit"`
 }
 
 type Mount struct {
