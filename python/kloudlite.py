@@ -221,7 +221,7 @@ class CodeRepos:
         if head_repo is not None:
             _split(head_repo)  # same shape rule as every other repo reference
         return self._c.request("POST", self._path(repo, "/pulls"), body={
-            "title": title, "head": head, "base": base, "description": description,
+            "title": title, "head": head, "base": base, "body": description,
             "head_repo": head_repo,
         })
 
@@ -231,8 +231,11 @@ class CodeRepos:
 
     def merge(self, *, repo: str, number: int, strategy: str = "fast-forward"):
         """strategy: fast-forward, squash, merge or rebase. Answers 202 — the merge is a job."""
-        return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/merge"),
-                               query={"strategy": strategy})
+        try:
+            return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/merge"),
+                                   query={"strategy": strategy})
+        except json.JSONDecodeError:
+            return None  # 2xx with the plain-text body "merging"; non-2xx raised ApiError already
 
     def close(self, *, repo: str, number: int):
         return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/close"))

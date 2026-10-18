@@ -369,7 +369,7 @@ export class CodeRepos {
   openPull({ repo, title, head, base, headRepo, description = "" }: OpenPull) {
     if (headRepo !== undefined) split(headRepo);
     return this.c.request("POST", this.path(repo, "/pulls"), {
-      description, title, head, base, head_repo: headRepo,
+      body: description, title, head, base, head_repo: headRepo,
     });
   }
 
@@ -378,8 +378,13 @@ export class CodeRepos {
   }
 
   /** The merge is a job: the server answers 202 and the pull reports where it got to. */
-  merge({ repo, number, strategy = "fast-forward" }: PullRef & { strategy?: MergeStrategy }) {
-    return this.c.request("POST", this.path(repo, `/pulls/${number}/merge`), undefined, { strategy });
+  async merge({ repo, number, strategy = "fast-forward" }: PullRef & { strategy?: MergeStrategy }) {
+    try {
+      return await this.c.request("POST", this.path(repo, `/pulls/${number}/merge`), undefined, { strategy });
+    } catch (e) {
+      if (e instanceof SyntaxError) return null; // 2xx with the plain-text body "merging"
+      throw e;
+    }
   }
 
   close({ repo, number }: PullRef) {

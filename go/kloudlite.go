@@ -542,7 +542,7 @@ func (r *CodeRepos) OpenPull(req OpenPull) (map[string]any, error) {
 		Head        string `json:"head"`
 		Base        string `json:"base"`
 		HeadRepo    string `json:"head_repo,omitempty"`
-		Description string `json:"description"`
+		Description string `json:"body"`
 	}{req.Title, req.Head, req.Base, req.HeadRepo, req.Description}
 	var out map[string]any
 	err = r.c.call("POST", p, nil, body, &out)
