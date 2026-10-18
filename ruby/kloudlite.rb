@@ -271,7 +271,7 @@ module Kloudlite
     def open_pull(repo:, title:, head:, base:, description: "", head_repo: nil)
       split(head_repo) unless head_repo.nil?
       @c.request("POST", path(repo, "/pulls"),
-                 body: { title: title, head: head, base: base, description: description,
+                 body: { title: title, head: head, base: base, body: description,
                          head_repo: head_repo })
     end
 
@@ -282,6 +282,8 @@ module Kloudlite
     # strategy: fast-forward, squash, merge or rebase. Answers 202 — the merge is a job.
     def merge(repo:, number:, strategy: "fast-forward")
       @c.request("POST", path(repo, "/pulls/#{number.to_i}/merge"), query: { strategy: strategy })
+    rescue JSON::ParserError
+      nil # 2xx with the plain-text body "merging"; non-2xx raised ApiError already
     end
 
     def close(repo:, number:)

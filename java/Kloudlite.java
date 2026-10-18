@@ -328,7 +328,7 @@ public class Kloudlite {
             if (p.headRepo != null) split(p.headRepo);
             return api("POST", path(repo, "/pulls"), obj(
                 "title", title, "head", head, "base", base,
-                "description", or(p.description, ""),
+                "body", or(p.description, ""),
                 "head_repo", p.headRepo));
         }
 
