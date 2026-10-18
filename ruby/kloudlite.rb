@@ -355,7 +355,7 @@ module Kloudlite
       at("POST", workspace, "/start")
     end
 
-    # A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica.
+    # A stop cuts a sync point and tears the workspace down — seconds, never waiting on a replica.
     def stop(workspace:)
       at("POST", workspace, "/stop")
     end
@@ -405,7 +405,7 @@ module Kloudlite
       at("GET", workspace, "/tools")
     end
 
-    # An Ide bound to this workspace's tool server. The address is a pod IP: reachable from
+    # An Ide bound to this workspace's tool server. The address is a private IP: reachable from
     # inside the fleet (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
     # Ide.new(url: "http://127.0.0.1:7788", token: token) instead.
     def ide(workspace:)

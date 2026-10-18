@@ -674,7 +674,7 @@ public class Kloudlite {
             return api("POST", path(workspace, "/start"), null);
         }
 
-        /** A stop cuts a sync point and tears the pod down — seconds, never waiting on a replica. */
+        /** A stop cuts a sync point and tears the workspace down — seconds, never waiting on a replica. */
         public String stop(String workspace) throws IOException, InterruptedException {
             return api("POST", path(workspace, "/stop"), null);
         }
@@ -726,7 +726,7 @@ public class Kloudlite {
         }
 
         /**
-         * An {@link Ide} bound to this workspace's tool server. The address is a pod IP:
+         * An {@link Ide} bound to this workspace's tool server. The address is a private IP:
          * reachable from inside the fleet (a bench); from a laptop, tunnel with
          * {@code kl-connect ws ide} and use
          * {@code new Ide(new IdeOptions().url("http://127.0.0.1:7788").token(token))}.
@@ -1515,7 +1515,7 @@ public class Kloudlite {
     }
 
     /**
-     * Throwaway sandboxes, over {@code /v1/sandboxes}: one pod under gVisor running a tool server,
+     * Throwaway sandboxes, over {@code /v1/sandboxes}: one isolated machine running a tool server,
      * gone when the caller terminates it or its own timeout passes. A sandbox is named by its id.
      * Unlike every other module these calls hand back handles — {@link SandboxHandle} and
      * {@link SandboxProcess} — because a process is driven, not read once; each still exposes
