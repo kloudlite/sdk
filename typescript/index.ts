@@ -7,7 +7,7 @@
  * options object, so no caller ever has to remember argument order:
  *
  *     import { Kloudlite } from "@kloudlite/sdk";
- *     const kl = new Kloudlite({ baseUrl: "https://api.example.com", token: "…" });
+ *     const kl = new Kloudlite({ baseUrl: "https://dev.kloudlite.io", token: "…" });
  *     const repo = await kl.codeRepos.create({ repo: "acme/payments" });
  *
  * Option names are camelCase everywhere (`headRepo`, `quotaGb`, `snapshot`, `timeoutMs`); the
@@ -533,7 +533,7 @@ export class Workspaces {
 
   /**
    * An {@link Ide} bound to this workspace's tool server. The address is a private IP: reachable
-   * from inside the fleet (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
+   * from inside Kloudlite (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
    * `new Ide({ url: "http://127.0.0.1:7788", token })` instead.
    */
   async ide({ workspace }: WorkspaceRef): Promise<Ide> {

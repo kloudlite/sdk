@@ -1,7 +1,7 @@
 """The fork workflow, end to end: fork a repo, commit onto a new branch of the
 fork, propose it back upstream as a cross-repo pull request, and merge it.
 
-    KLOUDLITE_URL=https://api.example.com KLOUDLITE_TOKEN=… python3 example.py
+    KLOUDLITE_URL=https://dev.kloudlite.io KLOUDLITE_TOKEN=… python3 example.py
 """
 
 import base64

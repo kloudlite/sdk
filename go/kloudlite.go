@@ -8,7 +8,7 @@
 // resource itself takes that one string (Get(repo)); everything else takes ONE
 // request struct named for the call, so every argument is spelled by name:
 //
-//	kl := kloudlite.New(kloudlite.Options{BaseURL: "https://api.example.com", Token: "…"})
+//	kl := kloudlite.New(kloudlite.Options{BaseURL: "https://dev.kloudlite.io", Token: "…"})
 //	repo, err := kl.CodeRepos.Create(kloudlite.CreateRepo{Repo: "acme/payments"})
 //
 // The structs are the caller's vocabulary, not the wire's: the SDK builds the
@@ -924,7 +924,7 @@ func (w *Workspaces) Tools(workspace string) (map[string]any, error) {
 }
 
 // Ide answers an *Ide bound to this workspace's tool server. The address is a
-// private IP: reachable from inside the fleet (a bench); from a laptop, tunnel
+// private IP: reachable from inside Kloudlite (a bench); from a laptop, tunnel
 // with `kl-connect ws ide` and use
 // NewIde(IdeOptions{URL: "http://127.0.0.1:7788", Token: token}) instead.
 func (w *Workspaces) Ide(workspace string) (*Ide, error) {

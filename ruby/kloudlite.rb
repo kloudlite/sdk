@@ -5,7 +5,7 @@
 # owner half being a person's handle or a team slug:
 #
 #   require_relative "kloudlite"
-#   kl = Kloudlite::Client.new(base_url: "https://api.example.com", token: "…")
+#   kl = Kloudlite::Client.new(base_url: "https://dev.kloudlite.io", token: "…")
 #   repo = kl.code_repos.create(repo: "acme/payments")
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
@@ -406,7 +406,7 @@ module Kloudlite
     end
 
     # An Ide bound to this workspace's tool server. The address is a private IP: reachable from
-    # inside the fleet (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
+    # inside Kloudlite (a bench); from a laptop, tunnel with `kl-connect ws ide` and use
     # Ide.new(url: "http://127.0.0.1:7788", token: token) instead.
     def ide(workspace:)
       doc = tools(workspace: workspace)

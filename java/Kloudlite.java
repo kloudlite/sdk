@@ -11,7 +11,7 @@
 // field. A missing required field is an IllegalArgumentException("<field> is
 // required") before anything is sent.
 //
-//   Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://api.example.com").token("…"));
+//   Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudlite.io").token("…"));
 //   String repo = kl.codeRepos().create(new Kloudlite.CreateRepo().repo("acme/payments"));
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper. The two
@@ -727,7 +727,7 @@ public class Kloudlite {
 
         /**
          * An {@link Ide} bound to this workspace's tool server. The address is a private IP:
-         * reachable from inside the fleet (a bench); from a laptop, tunnel with
+         * reachable from inside Kloudlite (a bench); from a laptop, tunnel with
          * {@code kl-connect ws ide} and use
          * {@code new Ide(new IdeOptions().url("http://127.0.0.1:7788").token(token))}.
          */

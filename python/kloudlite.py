@@ -6,7 +6,7 @@ half being a person's handle or a team slug::
 
     from kloudlite import Kloudlite
 
-    kl = Kloudlite(base_url="https://api.example.com", token="…")
+    kl = Kloudlite(base_url="https://dev.kloudlite.io", token="…")
     repo = kl.code_repos.create(repo="acme/payments")
 
 Every public call takes its inputs BY NAME (keyword-only), so no caller ever has to remember
@@ -344,7 +344,7 @@ class Workspaces:
 
     def ide(self, *, workspace: str) -> "Ide":
         """An :class:`Ide` bound to this workspace's tool server. The address is a private IP:
-        reachable from inside the fleet (a bench); from a laptop, tunnel with
+        reachable from inside Kloudlite (a bench); from a laptop, tunnel with
         ``kl-connect ws ide`` and use ``Ide(url="http://127.0.0.1:7788", token=…)`` instead."""
         doc = self.tools(workspace=workspace)
         return Ide(url=f"http://{doc['address']}", token=doc.get("token"))
