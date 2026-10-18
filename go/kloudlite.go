@@ -760,7 +760,7 @@ type CreateWorkspace struct {
 	// TtlSecs (600..=2592000) deletes the workspace after that many seconds
 	// unused; 0 is never.
 	TtlSecs int64
-	// Env maps a variable to a literal value or a "secret:NAME" reference.
+	// Env maps a variable to a literal value or a "${{ secrets.NAME }}" reference.
 	Env map[string]string
 }
 
@@ -825,7 +825,7 @@ func (w *Workspaces) SetTTL(workspace string, ttlSecs *int64) (map[string]any, e
 	return out, err
 }
 
-// SetEnv replaces the whole env (literals or "secret:NAME" references); it
+// SetEnv replaces the whole env (literals or "${{ secrets.NAME }}" references); it
 // takes effect on the next start.
 func (w *Workspaces) SetEnv(workspace string, env map[string]string) (map[string]any, error) {
 	var out map[string]any

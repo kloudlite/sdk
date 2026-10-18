@@ -269,7 +269,7 @@ class Workspaces:
                packages: list | None = None,
                ttl_secs: int | None = None, env: dict | None = None):
         """``workspace`` is ``"name"`` or ``"team/name"``. ``env`` maps variable names to literal
-        values or ``"secret:NAME"`` references to the owner's secrets. ``ttl_secs`` (600..=2592000) deletes it
+        values or ``"${{ secrets.NAME }}"`` references to the owner's secrets. ``ttl_secs`` (600..=2592000) deletes it
         after that long unused; absent, never. ``repo`` seeds from a PLATFORM repo
         ("owner/name", with ``branch``); ``packages`` are nixpkgs attributes, optionally pinned
         (``attr@version``)."""
@@ -330,7 +330,7 @@ class Workspaces:
         return self._at("PUT", workspace, "/ttl", body={"ttl_secs": ttl_secs})
 
     def set_env(self, *, workspace: str, env: dict):
-        """Replace the whole env: literals or ``"secret:NAME"`` references. Takes effect on the
+        """Replace the whole env: literals or ``"${{ secrets.NAME }}"`` references. Takes effect on the
         next start."""
         return self._at("PUT", workspace, "/env", body={"env": env})
 
@@ -621,7 +621,7 @@ class Sessions:
 class Secrets:
     """An owner's named secrets, over ``/v1/secrets``. A value goes in and never comes back:
     ``list`` returns names with who and when. Reference one from a workspace env as
-    ``"secret:NAME"``."""
+    ``"${{ secrets.NAME }}"``."""
 
     def __init__(self, client: Kloudlite):
         self._c = client

@@ -646,7 +646,7 @@ public class Kloudlite {
                 .toString());
         }
 
-        /** Replace the whole env (literals or {@code "secret:NAME"}); takes effect on the next start. */
+        /** Replace the whole env (literals or {@code "${{ secrets.NAME }}"}); takes effect on the next start. */
         public String setEnv(String workspace, Map<String, String> env) throws IOException, InterruptedException {
             return api("PUT", path(need(workspace, "workspace"), "/env"), "{\"env\":" + stringMap(env) + "}");
         }
@@ -763,7 +763,7 @@ public class Kloudlite {
         public CreateWorkspace packages(String... v) { packages = Arrays.asList(v); return this; }
         /** Seconds unused (600..=2592000) before the workspace is deleted; unset, never. */
         public CreateWorkspace ttlSecs(long v) { ttlSecs = v; return this; }
-        /** Variable to a literal value or a {@code "secret:NAME"} reference to the owner's secrets. */
+        /** Variable to a literal value or a {@code "${{ secrets.NAME }}"} reference to the owner's secrets. */
         public CreateWorkspace env(Map<String, String> v) { env = v; return this; }
     }
 
@@ -1446,7 +1446,7 @@ public class Kloudlite {
     /**
      * An owner's named secrets, over {@code /v1/secrets}. A value goes in and never comes back:
      * {@code list} answers names with who and when. Reference one from a workspace env as
-     * {@code "secret:NAME"}.
+     * {@code "${{ secrets.NAME }}"}.
      */
     public class Secrets {
         public void set(String owner, String name, String value) throws IOException, InterruptedException {

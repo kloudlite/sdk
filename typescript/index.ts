@@ -419,7 +419,7 @@ export interface CreateWorkspace extends WorkspaceRef {
   packages?: string[];
   /** Seconds unused (600..=2592000) before the workspace is deleted; absent, never. */
   ttlSecs?: number;
-  /** Variable name to a literal value or a `"secret:NAME"` reference to the owner's secrets. */
+  /** Variable name to a literal value or a `"${{ secrets.NAME }}"` reference to the owner's secrets. */
   env?: Record<string, string>;
 }
 
@@ -465,7 +465,7 @@ export class Workspaces {
     return this.at("PUT", workspace, "/ttl", { ttl_secs: ttlSecs });
   }
 
-  /** Replace the whole env (literals or `"secret:NAME"`); takes effect on the next start. */
+  /** Replace the whole env (literals or `"${{ secrets.NAME }}"`); takes effect on the next start. */
   setEnv({ workspace, env }: WorkspaceRef & { env: Record<string, string> }) {
     return this.at("PUT", workspace, "/env", { env });
   }
@@ -936,7 +936,7 @@ export interface VolumeRef {
 
 /**
  * An owner's named secrets, over `/v1/secrets`. A value goes in and never comes back: `list`
- * returns names with who and when. Reference one from a workspace env as `"secret:NAME"`.
+ * returns names with who and when. Reference one from a workspace env as `"${{ secrets.NAME }}"`.
  */
 export class Secrets {
   constructor(private readonly c: Kloudlite) {}
