@@ -1,3 +1,3 @@
-module github.com/kloudlite/rustic-git/sdk/go
+module github.com/kloudlite/sdk/go
 
 go 1.24

@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	kloudlite "github.com/kloudlite/rustic-git/sdk/go"
+	kloudlite "github.com/kloudlite/sdk/go"
 )
 
 func main() {
