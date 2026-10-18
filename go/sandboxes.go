@@ -1,6 +1,6 @@
 package kloudlite
 
-// Sandboxes: short-lived, isolated pods for running code, over /v1/sandboxes —
+// Sandboxes: short-lived, isolated machines for running code, over /v1/sandboxes —
 // Modal-shaped. Create returns at once; Exec starts a process and answers a
 // *Process whose Stdin is an io.Writer and whose Stdout/Stderr follow the
 // process's NDJSON stream until it exits:
