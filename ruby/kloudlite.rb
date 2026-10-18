@@ -326,7 +326,7 @@ module Kloudlite
     # +workspace+ ("name" or "team/name") is split into the body's name and team. +repo+ seeds
     # from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs attributes,
     # optionally pinned ("attr@version"). +ttl_secs+ (600..=2592000) deletes it after that
-    # long unused; absent, never. +env+ maps variables to literals or "secret:NAME" references.
+    # long unused; absent, never. +env+ maps variables to literals or "${{ secrets.NAME }}" references.
     def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], ttl_secs: nil,
                env: nil)
       team, name = owned(workspace)
@@ -390,7 +390,7 @@ module Kloudlite
       at("PUT", workspace, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
-    # Replace the whole env (literals or "secret:NAME" references); takes effect on next start.
+    # Replace the whole env (literals or "${{ secrets.NAME }}" references); takes effect on next start.
     def set_env(workspace:, env:)
       at("PUT", workspace, "/env", body: { env: env })
     end
@@ -702,7 +702,7 @@ module Kloudlite
   end
 
   # An owner's named secrets, over /v1/secrets. A value goes in and never comes back: +list+
-  # answers names with who and when. Reference one from a workspace env as "secret:NAME".
+  # answers names with who and when. Reference one from a workspace env as "${{ secrets.NAME }}".
   class Secrets
     include Names
 

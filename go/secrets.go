@@ -4,7 +4,7 @@ import "net/url"
 
 // Secrets is an owner's named secrets, over /v1/secrets. A value goes in and
 // never comes back: List answers names with who and when. Reference one from
-// a workspace env as "secret:NAME".
+// a workspace env as "${{ secrets.NAME }}".
 type Secrets struct{ c *Client }
 
 func (s *Secrets) Set(owner, name, value string) error {
