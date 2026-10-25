@@ -54,6 +54,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           packages-dir: python/dist/
+          skip-existing: true
           password: ${{ secrets.PYPI_TOKEN || '' }} # empty falls back to trusted publishing
 
   npm:
@@ -89,6 +90,11 @@ jobs:
   rubygems:
     needs: version
     runs-on: ubuntu-latest
+    # Trusted publishing: RubyGems trusts this repository and workflow through GitHub's OIDC token, so no
+    # API key is stored and no one-time code is asked for (the gemspec requires MFA for pushes).
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
@@ -103,15 +109,11 @@ jobs:
           path: ruby/*.gem
       - name: publish
         if: env.PUBLISH == 'true'
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+      - name: push
+        if: env.PUBLISH == 'true'
         working-directory: ruby
-        env:
-          RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
-        run: |
-          mkdir -p ~/.gem
-          umask 077
-          printf -- '---\n:rubygems_api_key: %s\n' "$RUBYGEMS_API_KEY" > ~/.gem/credentials
-          chmod 0600 ~/.gem/credentials
-          gem push kloudlite-sdk-*.gem
+        run: gem push kloudlite-sdk-*.gem
 
   java:
     needs: version
@@ -142,5 +144,6 @@ jobs:
       - name: tag go/v${{ needs.version.outputs.version }}
         if: env.PUBLISH == 'true'
         run: |
+          git ls-remote --exit-code --tags origin "refs/tags/go/v${{ needs.version.outputs.version }}" >/dev/null 2>&1 && { echo "tag exists"; exit 0; }
           git tag "go/v${{ needs.version.outputs.version }}" "$GITHUB_SHA"
           git push origin "go/v${{ needs.version.outputs.version }}"
