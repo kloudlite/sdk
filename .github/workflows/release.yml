@@ -83,7 +83,10 @@ jobs:
       - name: publish
         if: env.PUBLISH == 'true'
         working-directory: typescript
-        run: npm publish --provenance --access public
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          if [ -n "$(npm view "@kloudlite/sdk@$v" version 2>/dev/null)" ]; then echo "@kloudlite/sdk@$v is already published"; exit 0; fi
+          npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
