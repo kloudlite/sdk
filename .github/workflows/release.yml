@@ -123,14 +123,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # setup-java writes the Central Portal credentials into settings.xml (server id `central`) and imports
+      # the signing key, so the release profile signs the jars and uploads them to Central.
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: "17"
+          server-id: central
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
       - run: sed -i '0,/<version>[^<]*<\/version>/s//<version>${{ needs.version.outputs.version }}<\/version>/' java/pom.xml
-      # Build and package only; publishing to Maven Central needs the verified io.kloudlite
-      # namespace and a GPG key (see java/pom.xml), so it stays a manual `mvn -Prelease deploy`.
-      - run: mvn -B -q -f java/pom.xml package
+      # A dry run still builds and signs (`verify`), so a bad key or pom fails before a release; only `deploy` uploads.
+      - name: build and sign
+        if: env.PUBLISH != 'true'
+        run: mvn -B -q -f java/pom.xml -Prelease verify
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      - name: publish
+        if: env.PUBLISH == 'true'
+        run: mvn -B -f java/pom.xml -Prelease deploy
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: java-jars
