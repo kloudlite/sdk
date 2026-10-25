@@ -1,15 +1,23 @@
-# Kloudlite SDK for Ruby — stdlib only (net/http + json).
+# Kloudlite SDK for Ruby — stdlib only (net/http + json). Needs Ruby 3.0 or later (endless
+# methods); an older Ruby stops at the first such method with a SyntaxError.
 #
-# Auth is a Bearer token (a session or CLI token). Every module hangs off the
-# one client:
+# Auth is a Bearer token (a CLI token). Every module hangs off the one client:
 #
 #   require_relative "kloudlite"
-#   kl = Kloudlite::Client.new(base_url: "https://dev.kloudlite.io", token: "…")
+#   kl = Kloudlite::Client.new   # the login of `kloudlite`; see "Discovery" below
 #   workspaces = kl.workspaces.list
 #
+# Discovery: the API origin and the token each come from the first source that has one:
+# 1. the keywords base_url: / token:; 2. the environment KLOUDLITE_URL / KLOUDLITE_TOKEN;
+# 3. "api" / "token" in config.json in KLOUDLITE_CONFIG_DIR, else ~/.config/kloudlite. "/v1" is
+# added to the origin. With no token the constructor raises RuntimeError carrying the sentence
+# "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login".
+#
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
-# resource is always the keyword named after it (repo:, workspace:, environment:, session:,
+# resource is always the keyword named after it (workspace:, environment:, session:,
 # volume:, snapshot:, sandbox:, run:), and a new object made from an existing one is to:.
+
+raise LoadError, "kloudlite.rb needs Ruby 3.0 or later, found #{RUBY_VERSION}" if RUBY_VERSION < "3.0"
 
 require "json"
 require "net/http"
@@ -17,8 +25,9 @@ require "timeout"
 require "uri"
 
 module Kloudlite
-  VERSION = "0.1.0"
+  VERSION = "0.2.0"
   USER_AGENT = "kloudlite-sdk-ruby/#{VERSION}".freeze
+  NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 
   # A non-2xx answer. +status+ is the HTTP code, +message+ the server's text.
   class ApiError < StandardError
@@ -62,17 +71,28 @@ module Kloudlite
       [owner, name]
     end
 
+    # Ruby 3.0 has no URI.encode_uri_component (3.2); this is the same escape.
     def seg(s)
-      URI.encode_uri_component(s.to_s)
+      URI.encode_www_form_component(s.to_s).gsub("+", "%20")
     end
   end
 
   class Client
     attr_reader :workspaces, :environments, :sessions, :volumes,
-                :secrets, :sandboxes, :pipelines
+                :secrets, :connectors, :sandboxes, :pipelines
 
-    def initialize(base_url:, token: nil, timeout: 30)
-      @base_url = base_url.sub(%r{/+\z}, "")
+    def initialize(base_url: nil, token: nil, timeout: 30)
+      base_url = presence(base_url) || presence(ENV["KLOUDLITE_URL"])
+      token = presence(token) || presence(ENV["KLOUDLITE_TOKEN"])
+      if base_url.nil? || token.nil?
+        cfg = login
+        base_url ||= presence(cfg["api"])
+        token ||= presence(cfg["token"])
+      end
+      raise RuntimeError, NO_LOGIN if token.nil?
+      raise RuntimeError, "no Kloudlite API URL: pass base_url=, set KLOUDLITE_URL, or run kloudlite login" if base_url.nil?
+
+      @base_url = base_url.sub(%r{/+\z}, "").sub(%r{/v1\z}, "") # paths carry /v1
       @token = token
       @timeout = timeout
       @workspaces = Workspaces.new(self)
@@ -80,6 +100,7 @@ module Kloudlite
       @sessions = Sessions.new(self)
       @volumes = Volumes.new(self)
       @secrets = Secrets.new(self)
+      @connectors = Connectors.new(self)
       @sandboxes = Sandboxes.new(self)
       @pipelines = Pipelines.new(self)
     end
@@ -92,7 +113,8 @@ module Kloudlite
     # One HTTP round trip. Returns parsed JSON (or nil on an empty body);
     # raises ApiError on any non-2xx status.
     def request(method, path, body: nil, query: nil)
-      send_to(@base_url, method, path, body: body, query: query)
+      text = perform(method, path, body, query, "application/json", @timeout).body
+      text.nil? || text.empty? ? nil : JSON.parse(text)
     end
 
     # The server answers errors as {"error": …} or plain text; take either. Shared with Ide.
@@ -109,56 +131,37 @@ module Kloudlite
 
     private
 
-    def send_to(base, method, path, body: nil, query: nil)
-      uri, req = build(base, method, path, body: body, query: query)
-      resp = Net::HTTP.start(uri.hostname, uri.port,
-                             use_ssl: uri.scheme == "https",
-                             open_timeout: @timeout, read_timeout: @timeout) { |http| http.request(req) }
-      raise ApiError.new(resp.code.to_i, self.class.error_text(resp.body)) unless resp.is_a?(Net::HTTPSuccess)
-      resp.body.nil? || resp.body.empty? ? nil : JSON.parse(resp.body)
+    def presence(v)
+      v.nil? || v.to_s.empty? ? nil : v.to_s
     end
 
-    def build(base, method, path, body: nil, query: nil)
-      uri = URI.parse(base + path)
-      if query
-        q = query.compact
-        uri.query = URI.encode_www_form(q) unless q.empty?
-      end
+    # config.json of the `kloudlite` login; {} when it is absent or unreadable.
+    def login
+      dir = presence(ENV["KLOUDLITE_CONFIG_DIR"]) || File.join(Dir.home, ".config", "kloudlite")
+      doc = JSON.parse(File.read(File.join(dir, "config.json")))
+      doc.is_a?(Hash) ? doc : {}
+    rescue SystemCallError, IOError, JSON::ParserError, ArgumentError
+      {}
+    end
+
+    # The raw Net::HTTP response of a 2xx; ApiError otherwise. The text, header-reading and
+    # no-timeout (+read_timeout+ nil) callers reach it through __send__ — not public surface.
+    def perform(method, path, body, query, accept, read_timeout)
+      uri = URI.parse(@base_url + path)
+      q = (query || {}).compact
+      uri.query = URI.encode_www_form(q) unless q.empty?
       req = Net::HTTP.const_get(method.capitalize).new(uri)
       req["User-Agent"] = USER_AGENT
-      req["Accept"] = "application/json"
-      req["Authorization"] = "Bearer #{@token}" if @token
-      if body
+      req["Accept"] = accept
+      req["Authorization"] = "Bearer #{@token}"
+      unless body.nil?
         req["Content-Type"] = "application/json"
         req.body = JSON.generate(body)
       end
-      [uri, req]
-    end
-
-    # GET an NDJSON stream, yielding each line parsed. No read timeout: a process may be silent
-    # for longer than any bound we could pick, and the server ends the body after the exit frame.
-    # Chunks split lines anywhere, so bytes are buffered until a whole line is in hand. Reached
-    # by Sandbox and SandboxProcess through __send__ — it is not part of the public surface.
-    def stream_ndjson(path, query: nil)
-      uri, req = build(@base_url, "GET", path, query: query)
-      req["Accept"] = "application/x-ndjson"
-      Net::HTTP.start(uri.hostname, uri.port,
-                      use_ssl: uri.scheme == "https",
-                      open_timeout: @timeout, read_timeout: nil) do |http|
-        http.request(req) do |resp|
-          raise ApiError.new(resp.code.to_i, self.class.error_text(resp.read_body)) unless resp.is_a?(Net::HTTPSuccess)
-          buf = String.new(encoding: Encoding::BINARY)
-          resp.read_body do |chunk|
-            buf << chunk.b
-            while (i = buf.index("\n"))
-              line = buf.slice!(0, i + 1).strip
-              yield JSON.parse(line.force_encoding(Encoding::UTF_8)) unless line.empty?
-            end
-          end
-          tail = buf.strip
-          yield JSON.parse(tail.force_encoding(Encoding::UTF_8)) unless tail.empty?
-        end
-      end
+      resp = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https",
+                             open_timeout: @timeout, read_timeout: read_timeout) { |http| http.request(req) }
+      raise ApiError.new(resp.code.to_i, self.class.error_text(resp.body)) unless resp.is_a?(Net::HTTPSuccess)
+      resp
     end
   end
 
@@ -172,18 +175,15 @@ module Kloudlite
       @c = client
     end
 
-    # +workspace+ ("name" or "team/name") is split into the body's name and team. +repo+ seeds
-    # from a PLATFORM repo ("owner/name", with +branch+); +packages+ are nixpkgs attributes,
-    # optionally pinned ("attr@version"). +ttl_secs+ (600..=2592000) deletes it after that
-    # long unused; absent, never. +env+ maps variables to literals or "${{ secrets.NAME }}" references.
-    def create(workspace:, quota_gb:, image: nil, repo: nil, branch: nil, packages: [], ttl_secs: nil,
-               env: nil)
+    # +workspace+ ("name" or "team/name") is split into the body's name and team. +packages+ are
+    # nixpkgs attributes, optionally pinned ("attr@version"). +ttl_secs+ (600..=2592000) deletes
+    # it after that long unused; absent, never. +env+ maps variables to literals or
+    # "${{ secrets.NAME }}" references. Unset keywords are omitted (202).
+    def create(workspace:, quota_gb:, image: nil, packages: nil, ttl_secs: nil, env: nil)
       team, name = owned(workspace)
-      body = { name: name, quota_gb: quota_gb,
-               team: team, repo: repo, branch: branch, packages: packages, ttl_secs: ttl_secs }
-      body[:image] = image unless image.nil?
-      body[:env] = env unless env.nil?
-      @c.request("POST", "/v1/workspaces", body: body)
+      @c.request("POST", "/v1/workspaces",
+                 body: { name: name, quota_gb: quota_gb, team: team, image: image,
+                         packages: packages, ttl_secs: ttl_secs, env: env }.compact)
     end
 
     # The caller's workspaces; +team+ scopes to their workspaces in that team.
@@ -209,10 +209,19 @@ module Kloudlite
       at("POST", workspace, "/stop")
     end
 
-    # Cut a SNAPSHOT of the working copy — the one durable, restorable state.
-    def push(workspace:, message: nil)
-      at("POST", workspace, "/push", body: message.nil? ? nil : { message: message })
+    # Restart a running workspace so it gets the current env (202); 409 when not running.
+    def restart(workspace:)
+      at("POST", workspace, "/restart")
     end
+
+    # Push a SNAPSHOT of the working copy — the one durable, restorable state (202). +volume+
+    # names the volume and is required on its first push; +ttl_secs+ (3600..=31536000) or
+    # never: true set its expiry. +push+ is the old name.
+    def take_snapshot(workspace:, message: nil, volume: nil, ttl_secs: nil, never: nil)
+      at("POST", workspace, "/snapshots",
+         body: { message: message, volume: volume, ttl_secs: ttl_secs, never: never }.compact)
+    end
+    alias_method :push, :take_snapshot
 
     # A new workspace +to+ from this one's state, cut at the moment of the request; the
     # answer's +based_on+ names exactly what it grafted onto.
@@ -220,12 +229,14 @@ module Kloudlite
       at("POST", workspace, "/clone", body: { name: to, task: task })
     end
 
-    # A new workspace +to+ grafted onto a PUSHED +snapshot+ — also one whose workspace is long
-    # gone. Absent overrides mean "whatever the snapshot froze".
-    def restore(snapshot:, to:, image: nil, packages: nil, quota_gb: nil)
+    # A new workspace +to+ grafted onto a PUSHED +snapshot+ (a volume name, "name@N" or a snapshot
+    # id) — also one whose workspace is long gone. +team+ (or to: "team/name") is required for a
+    # team's volume. Absent overrides mean "whatever the snapshot froze".
+    def restore(snapshot:, to:, team: nil, image: nil, packages: nil, quota_gb: nil)
+      owner, name = owned(to)
       @c.request("POST", "/v1/workspaces/restore",
-                 body: { name: to, snapshot_id: snapshot,
-                         image: image, packages: packages, quota_gb: quota_gb })
+                 body: { name: name, snapshot_id: snapshot, team: team || owner,
+                         image: image, packages: packages, quota_gb: quota_gb }.compact)
     end
 
     # Replace the package list; pinned entries are locked before anything is written.
@@ -239,9 +250,11 @@ module Kloudlite
       at("PUT", workspace, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
-    # Replace the whole env (literals or "${{ secrets.NAME }}" references); takes effect on next start.
-    def set_env(workspace:, env:)
-      at("PUT", workspace, "/env", body: { env: env })
+    # Replace the whole env (literals or "${{ secrets.NAME }}" references); takes effect on the
+    # next start. A running workspace is only marked restart_required unless
+    # restart_on_env_change: true.
+    def set_env(workspace:, env:, restart_on_env_change: nil)
+      at("PUT", workspace, "/env", body: { env: env, restartOnEnvChange: restart_on_env_change }.compact)
     end
 
     # Re-resolve every pinned package — the only call that moves existing locks.
@@ -288,7 +301,7 @@ module Kloudlite
     # +tool+ names it; every other keyword is the tool's own argument, sent as given.
     def call(tool:, **args)
       body = args.compact.transform_keys(&:to_s)
-      http("POST", "/tools/#{URI.encode_uri_component(tool)}", body)
+      http("POST", "/tools/#{URI.encode_www_form_component(tool.to_s).gsub("+", "%20")}", body)
     end
 
     # files
@@ -400,11 +413,12 @@ module Kloudlite
     # +snapshot+ grows it from a pushed snapshot — also one of a deleted environment — and
     # then +services+ default to the ones that snapshot froze. +ttl_secs+ (600..=2592000) deletes
     # it after that long unused; absent, never.
-    def create(environment:, services: [], quota_gb: nil, snapshot: nil, ttl_secs: nil)
+    def create(environment:, services: nil, quota_gb: nil, snapshot: nil, ttl_secs: nil)
       owner, name = owned(environment)
       @c.request("POST", "/v1/environments",
-                 body: { name: name, owner: owner, services: fill(services),
-                         quota_gb: quota_gb, snapshot_id: snapshot, ttl_secs: ttl_secs })
+                 body: { name: name, owner: owner,
+                         services: services.nil? || services.empty? ? nil : fill(services),
+                         quota_gb: quota_gb, snapshot_id: snapshot, ttl_secs: ttl_secs }.compact)
     end
 
     # The caller's environments and their teams'; +owner+ narrows to one handle or team.
@@ -416,9 +430,12 @@ module Kloudlite
       at("GET", environment)
     end
 
-    # Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its data.
-    def set_services(environment:, services:)
-      at("PATCH", environment, body: { services: fill(services) })
+    # Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its
+    # data. A changed env only marks a running service restartRequired unless
+    # restart_on_env_change: true.
+    def set_services(environment:, services:, restart_on_env_change: nil)
+      at("PATCH", environment,
+         body: { services: fill(services), restartOnEnvChange: restart_on_env_change }.compact)
     end
 
     def start(environment:)
@@ -427,6 +444,11 @@ module Kloudlite
 
     def stop(environment:)
       at("POST", environment, "/stop")
+    end
+
+    # Restart one service so it gets the current env (202); 409 when the environment is not running.
+    def restart(environment:, service:)
+      at("POST", environment, "/services/#{seg(service)}/restart")
     end
 
     # Seconds the environment may sit unused (600..=2592000) before it is deleted; nil clears.
@@ -439,25 +461,30 @@ module Kloudlite
       at("DELETE", environment)
     end
 
-    # Cut a SNAPSHOT of every service's data — the one durable, restorable state.
-    def push(environment:, message: nil)
-      at("POST", environment, "/push", body: message.nil? ? nil : { message: message })
+    # Push a SNAPSHOT of every service's data and the service list (202). +volume+ names the
+    # volume and is required on its first push. +push+ is the old name.
+    def take_snapshot(environment:, message: nil, volume: nil, ttl_secs: nil, never: nil)
+      at("POST", environment, "/snapshots",
+         body: { message: message, volume: volume, ttl_secs: ttl_secs, never: never }.compact)
     end
+    alias_method :push, :take_snapshot
 
-    # A new environment +to+ ("name" or "team/name"): a copy of the live disk, or with
-    # +snapshot+ of one of this environment's snapshots.
-    def clone(environment:, to:, snapshot: nil, services: nil, quota_gb: nil)
+    # A new environment +to+ ("name"; "team/name" only with +snapshot+): a copy of the live disk,
+    # or with +snapshot+ of one of this environment's snapshots. +services+ and +quota_gb+ apply
+    # only with +snapshot+.
+    def clone(environment:, to:, snapshot: nil, services: nil, quota_gb: nil, ttl_secs: nil)
       owner, name = owned(to)
       at("POST", environment, "/clone",
          body: { name: name, owner: owner, snapshot_id: snapshot,
-                 services: services && fill(services), quota_gb: quota_gb })
+                 services: services.nil? || services.empty? ? nil : fill(services),
+                 quota_gb: quota_gb, ttl_secs: ttl_secs }.compact)
     end
 
     # Put THIS environment back to one of its own snapshots, services and data (202). A
     # persistent service the snapshot lacks is a 409 naming it; list it in +discard+ to accept
     # losing its data.
-    def restore(environment:, snapshot:, discard: [])
-      at("POST", environment, "/restore", body: { snapshot_id: snapshot, discard: discard })
+    def restore(environment:, snapshot:, discard: nil)
+      at("POST", environment, "/restore", body: { snapshot_id: snapshot, discard: discard }.compact)
     end
 
     private
@@ -520,22 +547,38 @@ module Kloudlite
       at("PUT", session, "/environment", body: { environment: environment })
     end
 
-    # A workspace is in at most one session; while in one it resolves that session's environment.
-    def add(session:, workspace:)
-      at("POST", session, "/workspaces", body: { workspace: workspace })
+    # Stop the session and every workspace in it (202, {"stopped" => [ids]}); sandboxes and the
+    # environment are untouched.
+    def stop(session:)
+      at("POST", session, "/stop")
     end
 
-    # Releases whatever the workspace intercepts in this session first.
-    def remove(session:, workspace:)
+    # Create a workspace +workspace+ (a bare name) managed by the session, in its team (201). The
+    # session controls it from then on; it takes the inputs of Workspaces#create.
+    def create_workspace(session:, workspace:, quota_gb:, image: nil, packages: nil, ttl_secs: nil, env: nil)
+      at("POST", session, "/workspaces",
+         body: { name: workspace, quota_gb: quota_gb, image: image, packages: packages,
+                 ttl_secs: ttl_secs, env: env }.compact)
+    end
+
+    # Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay.
+    def delete_workspace(session:, workspace:)
       at("DELETE", session, "/workspaces/#{seg(workspace)}")
     end
 
+    # Create a sandbox managed by the session (202), in its team and reaching its environment.
+    # Same inputs as Sandboxes#create (+team+ must be the session's).
+    def create_sandbox(session:, cmd:, **options)
+      Sandbox.new(@c, at("POST", session, "/sandboxes", body: Sandboxes.body(cmd: cmd, **options)))
+    end
+
     # Send everything that calls +service+ in the environment to +workspace+ (a member), +ports+
-    # mapping each service port to the workspace port that answers it ({ 8080 => 3000 }).
-    def intercept(session:, service:, workspace:, ports: {})
+    # mapping each service port to the workspace port that answers it ({ 8080 => 3000 }); an
+    # unmapped port answers on the same number.
+    def intercept(session:, service:, workspace:, ports: nil)
       at("POST", session, "/intercepts",
          body: { service: service, workspace: workspace,
-                 ports: ports.map { |s, w| { service: Integer(s), workspace: Integer(w) } } })
+                 ports: (ports || {}).map { |s, w| { service: Integer(s), workspace: Integer(w) } } })
     end
 
     def release(session:, service:)
@@ -552,6 +595,8 @@ module Kloudlite
 
   # An owner's named secrets, over /v1/secrets. A value goes in and never comes back: +list+
   # answers names with who and when. Reference one from a workspace env as "${{ secrets.NAME }}".
+  # +scope+ "mine" (default) is your own secret in the team +owner+ (for your own handle, your
+  # personal one); "team" is the team's shared secret and needs an admin.
   class Secrets
     include Names
 
@@ -559,24 +604,52 @@ module Kloudlite
       @c = client
     end
 
-    def set(owner:, name:, value:)
-      @c.request("PUT", "/v1/secrets/#{seg(owner)}/#{seg(name)}", body: { value: value })
+    def set(owner:, name:, value:, scope: "mine")
+      @c.request("PUT", path(owner, scope, name), body: { value: value })
       nil
     end
 
-    def list(owner:)
-      @c.request("GET", "/v1/secrets/#{seg(owner)}")
+    def list(owner:, scope: "mine")
+      @c.request("GET", path(owner, scope))
     end
 
     # 409 while a workspace or environment still references it; the body names them.
-    def delete(owner:, name:)
-      @c.request("DELETE", "/v1/secrets/#{seg(owner)}/#{seg(name)}")
+    def delete(owner:, name:, scope: "mine")
+      @c.request("DELETE", path(owner, scope, name))
+      nil
+    end
+
+    private
+
+    def path(owner, scope, name = nil)
+      raise ArgumentError, "scope is 'mine' or 'team', got #{scope.inspect}" unless %w[mine team].include?(scope.to_s)
+
+      "/v1/secrets/#{seg(owner)}#{'/mine' if scope.to_s == 'mine'}#{"/#{seg(name)}" if name}"
+    end
+  end
+
+  # The provider accounts linked to an owner, over /v1/connectors.
+  class Connectors
+    include Names
+
+    def initialize(client)
+      @c = client
+    end
+
+    # Connectors by name; +owner+ is a handle or team slug, default your own.
+    def list(owner: nil)
+      @c.request("GET", "/v1/connectors", query: { owner: owner })
+    end
+
+    # Remove a connector (204); a team's needs an admin.
+    def delete(name:)
+      @c.request("DELETE", "/v1/connectors/#{seg(name)}")
       nil
     end
   end
 
   # The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
-  # the two deletes — over /v1/volumes.
+  # the deletes — over /v1/volumes.
   class Volumes
     include Names
 
@@ -605,86 +678,124 @@ module Kloudlite
     end
 
     # Takes a DETACHED volume with all its snapshots; refused while a working copy remains.
-    def delete(volume:)
+    def delete_by_id(volume:)
       @c.request("DELETE", "/v1/volumes/#{seg(volume)}")
+    end
+
+    # One named volume; +owner+ is your handle or a team slug.
+    def get(owner:, name:)
+      @c.request("GET", named(owner, name))
+    end
+
+    # The versions of a named volume, newest first.
+    def versions(owner:, name:)
+      @c.request("GET", named(owner, name, "/versions"))
+    end
+
+    # Delete a named volume and every snapshot on it (204); the name is free again.
+    def delete(owner:, name:)
+      @c.request("DELETE", named(owner, name))
+    end
+
+    # Delete version +n+ (204); deleting the last one deletes the volume.
+    def delete_version(owner:, name:, n:)
+      @c.request("DELETE", named(owner, name, "/versions/#{Integer(n)}"))
+    end
+
+    private
+
+    def named(owner, name, tail = "")
+      "/v1/volumes/#{seg(owner)}/#{seg(name)}#{tail}"
     end
   end
 
-  # Short-lived isolated containers you send commands to, over /v1/sandboxes — Modal-shaped:
-  # create, exec as often as you like, terminate. Not a workspace: no ssh, no sync, no wake;
-  # when it ends only its record (phase, reason, timings) stays. Read files out before
-  # terminating — the disk goes with it.
+  # Throwaway, isolated machines that run ONE command, over /v1/sandboxes. A sandbox starts from
+  # an image, from one of your workspaces (+from_workspace+) or from a pushed snapshot
+  # (+from_snapshot+), runs +cmd+, and ends when it exits or after +timeout_s+ (server default
+  # 300). Every call answers a Sandbox handle.
   #
-  #   sb = kl.sandboxes.create(image: "python:3.12", timeout_s: 600)
-  #   p = sb.exec(cmd: ["bash", "-c", "while read line; do echo $line; done"])
-  #   p.stdin.write("foo bar\n"); p.stdin.write_eof; p.stdin.drain
-  #   p.wait            # => 0
-  #   p.stdout.read     # => "foo bar\n"
-  #   sb.terminate
+  #   sb = kl.sandboxes.create(cmd: ["python3", "-c", "print(6 * 7)"], packages: ["python3"])
+  #   code = sb.wait
+  #   puts code, sb.logs
   class Sandboxes
     include Names
+
+    # The POST /v1/sandboxes body; refuses a missing +cmd+ before anything is sent. Shared with
+    # Sessions#create_sandbox — not public surface.
+    def self.body(cmd:, image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil,
+                  tty: nil, stdin: nil, timeout_s: nil, network: nil, env: nil, cpu: nil,
+                  memory_gb: nil, disk_gb: nil)
+      unless cmd.is_a?(Array) && !cmd.empty? && cmd.all?(String)
+        raise ArgumentError, "cmd is required: the program and its arguments as a non-empty list of strings"
+      end
+
+      { cmd: cmd, image: image, packages: packages, from_workspace: from_workspace,
+        from_snapshot: from_snapshot, team: team, tty: tty, stdin: stdin, timeout_secs: timeout_s,
+        network: network, env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb }.compact
+    end
 
     def initialize(client)
       @c = client
     end
 
-    # Returns at once, before the sandbox runs (Sandbox#exec waits for that). +from_workspace+
-    # ("name", "team/name" or an id) starts from a copy of that workspace's disk, +from_snapshot+
-    # from a pushed snapshot; +network+ is "internet" (default) or "none"; +cpu+ cores and the
-    # *_gb sizes are integers. +session+ (an id, "name" or "team/name" of your session in the
-    # sandbox's team) makes it a member from birth -- the only way it reaches an environment, whose
-    # services then resolve by bare name inside it. Unset keywords are omitted, so the server's
-    # defaults apply.
-    def create(image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil,
-               timeout_s: nil, idle_timeout_s: nil, network: nil, env: nil, cpu: nil, memory_gb: nil,
-               disk_gb: nil, session: nil)
-      body = { team: team, image: image, packages: packages,
-               from_workspace: from_workspace, from_snapshot: from_snapshot,
-               timeout_secs: timeout_s, idle_timeout_secs: idle_timeout_s, network: network,
-               env: env, cpu: cpu, memory_gb: memory_gb, disk_gb: disk_gb,
-               session: session }.compact
-      Sandbox.new(@c, @c.request("POST", "/v1/sandboxes", body: body))
+    # Ask for a sandbox and return at once (202); it is usually still "pending". +cmd+ (required)
+    # is the program then its arguments. +tty+ runs it on a pty; +stdin+ keeps input open for
+    # attach. +timeout_s+ is 10..=86400. +from_workspace+ is an id, "name" or "team/name";
+    # +from_snapshot+ a volume name, "name@N" or snapshot id (exclusive with it). +network+ is
+    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A session's sandbox is made with
+    # Sessions#create_sandbox. Unset keywords are omitted, so the server's defaults apply.
+    def create(cmd:, **options)
+      Sandbox.new(@c, @c.request("POST", "/v1/sandboxes", body: Sandboxes.body(cmd: cmd, **options)))
     end
 
+    # One sandbox by id (a name does not resolve).
     def get(sandbox:)
       Sandbox.new(@c, @c.request("GET", "/v1/sandboxes/#{seg(sandbox)}"))
     end
 
-    # The caller's sandboxes, newest first; +team+ scopes to theirs in that team.
-    def list(team: nil)
-      (@c.request("GET", "/v1/sandboxes", query: { team: team }) || []).map { |doc| Sandbox.new(@c, doc) }
+    # ONE page of the caller's sandboxes, newest first (+limit+ 1..=200, default 50); +team+
+    # scopes to that team. +list_page+ also answers the next cursor.
+    def list(team: nil, limit: nil, cursor: nil)
+      list_page(team: team, limit: limit, cursor: cursor).first
     end
 
-    # One command in a fresh sandbox: create, wait until running, exec, wait, read all output,
-    # and ALWAYS terminate. +env+ and +timeout_s+ are the COMMAND's (timeout_s bounds the wait
-    # for it to exit; nil waits until it does); every other keyword is create's. Answers
-    # {"exit_code", "stdout", "stderr", "sandbox"}.
-    def run(cmd:, cwd: nil, env: nil, timeout_s: nil, **create_args)
-      # A command allowed longer than the sandbox's default lifetime must not be cut by it: the
-      # sandbox outlives the wait by a minute, within the server's 10 s..24 h.
-      create_args = create_args.merge(timeout_s: (timeout_s.ceil + 60).clamp(10, 86_400)) if timeout_s
-      sb = create(**create_args)
-      done = false
+    # [sandboxes, next_cursor]: a page, and the X-Next-Cursor to pass as +cursor+ for the next
+    # one (nil on the last page).
+    def list_page(team: nil, limit: nil, cursor: nil)
+      resp = @c.__send__(:perform, "GET", "/v1/sandboxes", nil,
+                         { team: team, limit: limit, cursor: cursor }, "application/json", 30)
+      docs = resp.body.to_s.empty? ? [] : JSON.parse(resp.body)
+      [(docs || []).map { |d| Sandbox.new(@c, d) }, resp["X-Next-Cursor"]]
+    end
+
+    # One command in a fresh sandbox: create, wait for it to exit, read the output, and
+    # terminate — ALWAYS, also when anything before it raised. Answers
+    # {"exit_code", "stdout", "stderr", "sandbox"}: the sandbox keeps one stream, so "stdout"
+    # holds the output and error output together and "stderr" is "". +timeout_s+ bounds the wait
+    # (TimeoutError; nil waits as long as it takes) and, when given, sizes the sandbox's own
+    # lifetime to cover it plus a minute. +options+ are the other keywords of +create+.
+    def run(cmd:, timeout_s: nil, **options)
+      options[:timeout_s] = (timeout_s.ceil + 60).clamp(10, 86_400) if timeout_s && !options.key?(:timeout_s)
+      sb = create(cmd: cmd, **options)
       begin
-        p = sb.exec(cmd: cmd, cwd: cwd, env: env)
-        code = p.wait(timeout_s: timeout_s)
-        out, err, = p.__send__(:collect)
-        done = true
-        { "exit_code" => code, "stdout" => out, "stderr" => err, "sandbox" => sb.id }
-      ensure
+        code = sb.wait(timeout_s: timeout_s)
+        out = sb.logs
+      rescue Exception # rubocop:disable Lint/RescueException -- terminate on any failure, then re-raise it
         begin
           sb.terminate
-        rescue ApiError, SystemCallError, IOError
-          # The command's own failure is the one worth reporting; a terminate that fails
-          # after success is not swallowed.
-          raise if done
+        rescue StandardError
+          # never mask the failure that got us here
         end
+        raise
       end
+      sb.terminate
+      { "exit_code" => code, "stdout" => out, "stderr" => "", "sandbox" => sb.id }
     end
   end
 
-  # One sandbox: the doc the server last answered, plus the verbs. Fields read as sb["phase"]
-  # or through the named readers.
+  # A handle on one sandbox: id, phase ("pending", "starting", "running", "terminated"), reason
+  # once terminated, exit_code, and the whole server doc as of the last answer — +refresh+
+  # re-reads it. Fields read as sb["phase"] or through the named readers.
   class Sandbox
     include Names
 
@@ -698,6 +809,7 @@ module Kloudlite
     def id = @doc["id"]
     def phase = @doc["phase"]
     def reason = @doc["reason"]
+    def exit_code = @doc["exit_code"]
     def message = @doc["message"]
 
     def [](field)
@@ -719,42 +831,43 @@ module Kloudlite
       end
     end
 
-    # Start +cmd+ — an argv Array, or a String run by the shell — and answer its SandboxProcess.
-    # Always detached: the process outlives this call, and its output and exit are read back.
-    def exec(cmd:, cwd: nil, env: nil)
-      wait_running unless phase == "running"
-      out = call(tool: "exec", cmd: cmd, cwd: cwd, env: env, detach: true)
-      SandboxProcess.new(@c, self, out["id"].to_s)
+    # The main process's output (stdout and stderr together) as text: the live output while it
+    # runs, the last 256 KiB after. +follow+ holds until the process ends. 409 while the sandbox
+    # has no output yet (still starting).
+    def logs(follow: false)
+      @c.__send__(:perform, "GET", "#{base}/logs", nil, { follow: follow ? "true" : nil },
+                  "text/plain", follow ? nil : 30).body.to_s.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
-    # Paths are relative to ~/workspace; both answer the tool's JSON as is.
-    def read(path:)
-      call(tool: "read", path: path)
+    # Not in this SDK: GET /v1/sandboxes/{id}/attach is a WebSocket and this client uses only
+    # the standard library.
+    def attach(cols: nil, rows: nil)
+      raise NotImplementedError, "sandbox attach is a WebSocket and is not in the Ruby SDK"
     end
 
-    def write(path:, content:)
-      call(tool: "write", path: path, content: content)
-    end
-
-    # Any tool the sandbox's tool server lists, arguments as keywords (nil ones dropped). The
-    # sandbox must be running — anything else is a 409.
-    def call(tool:, **args)
-      @c.request("POST", "#{base}/tools/#{seg(tool)}", body: args.compact.transform_keys(&:to_s))
-    end
-
-    # Ask it to end (202); the record stays. Returns self with the answered doc.
+    # Stop it for good (202, or 200 if already ended); the record stays until +delete+. Returns
+    # self with the answered doc.
     def terminate
       @doc = @c.request("POST", "#{base}/terminate") || @doc
       self
     end
 
-    # Poll until terminated and answer the reason; +timeout_s+ nil waits as long as it takes.
+    # Block until it has ended and answer its exit code (nil when it ended some other way than
+    # the command exiting; +reason+ says how). Waits in steps of at most 20 s, the most the api
+    # holds one open; TimeoutError past +timeout_s+.
     def wait(timeout_s: nil)
-      poll_until(timeout_s, "terminated") { phase == "terminated" }
-      reason
+      deadline = timeout_s && (Sandbox.now + timeout_s)
+      loop do
+        left_ms = deadline ? ((deadline - Sandbox.now) * 1000).to_i : 20_000
+        raise TimeoutError, "sandbox #{id} still #{phase} after #{timeout_s} s" if left_ms <= 0
+
+        out = @c.request("POST", "#{base}/wait", body: { timeout_ms: [left_ms, 20_000].min }) || {}
+        @doc = @doc.merge(out.slice("phase", "reason", "exit_code", "message"))
+        return exit_code if phase == "terminated"
+      end
     end
 
-    # Delete the record (and, if it still runs, the sandbox with it).
+    # Delete the record (204); a sandbox still running dies with it.
     def delete
       @c.request("DELETE", base)
       nil
@@ -783,161 +896,9 @@ module Kloudlite
       end
     end
 
-    # ::Process — this module's own SandboxProcess is the one a bare name would suggest.
+    # ::Process — a bare name would be ambiguous with nothing here, but keep it explicit.
     def self.now
       ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
-    end
-  end
-
-  # A process started by Sandbox#exec. +stdin+ takes bytes, +stdout+/+stderr+ read the output
-  # (whole, or line by line as it arrives), +wait+ answers the exit code.
-  class SandboxProcess
-    include Names
-
-    attr_reader :id, :sandbox, :stdin, :stdout, :stderr
-
-    # The longest single process_wait the api will hold open (it clamps to this).
-    WAIT_SLICE_MS = 20_000
-
-    def initialize(client, sandbox, id)
-      @c = client
-      @sandbox = sandbox
-      @id = id
-      @returncode = nil
-      @stdin = Stdin.new(self)
-      @stdout = Output.new(self, "stdout")
-      @stderr = Output.new(self, "stderr")
-    end
-
-    # The exit code last seen (by wait, poll or the end of an output stream); nil until then,
-    # and nil for a process that ended without one.
-    attr_reader :returncode
-
-    # Block until it exits and answer the exit code, in polls of at most 20 s; +timeout_s+ nil
-    # waits as long as it takes, else TimeoutError once it passes.
-    def wait(timeout_s: nil)
-      deadline = timeout_s && (Sandbox.now + timeout_s)
-      loop do
-        left = deadline && (deadline - Sandbox.now)
-        ms = left ? [[(left * 1000).ceil, 0].max, WAIT_SLICE_MS].min : WAIT_SLICE_MS
-        out = tool("process_wait", timeout_ms: ms)
-        return @returncode = out["exit_code"] if out["state"] == "exited"
-        raise TimeoutError, "process #{@id} in #{@sandbox.id} still running after #{timeout_s}s" if left && Sandbox.now >= deadline
-      end
-    end
-
-    # The exit code if it has exited, else nil — never blocks.
-    def poll
-      out = tool("process_wait", timeout_ms: 0)
-      out["state"] == "exited" ? (@returncode = out["exit_code"]) : nil
-    end
-
-    # +signal+ is the tool's own default (TERM) when nil.
-    def kill(signal: nil)
-      tool("process_kill", signal: signal)
-    end
-
-    def inspect
-      "#<Kloudlite::SandboxProcess #{@id} in #{@sandbox.id}>"
-    end
-
-    private
-
-    def tool(name, **args)
-      @sandbox.call(tool: name, id: @id, **args)
-    end
-
-    # Follow the NDJSON stream from the start, yielding [stream, data] per output frame; ends
-    # after the exit frame, whose code it records. A body that ends without one was cut off.
-    def follow
-      exited = false
-      @c.__send__(:stream_ndjson, "/v1/sandboxes/#{seg(@sandbox.id)}/processes/#{seg(@id)}/stream",
-                      query: { since: 0, since_err: 0 }) do |frame|
-        if frame.key?("exit")
-          @returncode = frame["exit"]
-          exited = true
-        elsif frame["stream"]
-          yield frame["stream"], frame["data"].to_s
-        end
-      end
-      raise IOError, "the output stream of process #{@id} ended before it exited" unless exited
-    end
-
-    # Both streams in one pass: [stdout, stderr, exit code].
-    def collect
-      out = +""
-      err = +""
-      follow { |name, data| (name == "stderr" ? err : out) << data }
-      [out, err, @returncode]
-    end
-
-    # The process's stdin. Writes are delivered when the call returns, so +drain+ has nothing
-    # to wait for; it exists so code written against an asyncio-style writer reads the same.
-    # +write+ takes its data positionally, the way IO#write does.
-    class Stdin
-      def initialize(process)
-        @p = process
-      end
-
-      # A String in any encoding is sent as UTF-8; a binary String's bytes go as they are.
-      # Answers the number of bytes written.
-      def write(data)
-        s = data.to_s
-        s = s.encode(Encoding::UTF_8) unless s.encoding == Encoding::BINARY
-        @p.__send__(:tool, "process_write", data_base64: [s].pack("m0"))
-        s.bytesize
-      end
-
-      # Close the process's stdin, so a reader sees end of file.
-      def write_eof
-        @p.__send__(:tool, "process_close_stdin")
-        nil
-      end
-
-      def drain
-        nil
-      end
-    end
-
-    # stdout or stderr: +read+ the whole stream once the process exits, or +each_line+ as it
-    # arrives. Each call follows the stream from the beginning.
-    class Output
-      include Enumerable
-
-      def initialize(process, name)
-        @p = process
-        @name = name
-      end
-
-      # Everything this stream wrote, once the process has exited.
-      def read
-        text = +""
-        @p.__send__(:follow) { |name, data| text << data if name == @name }
-        text
-      end
-
-      # Lines as they arrive, each with its "\n" (like IO#each_line; +chomp: true+ drops it); a
-      # last line with no newline is yielded at the end. No block answers an Enumerator.
-      def each_line(chomp: false)
-        return enum_for(:each_line, chomp: chomp) unless block_given?
-
-        pending = +""
-        @p.__send__(:follow) do |name, data|
-          next unless name == @name
-
-          pending << data
-          while (i = pending.index("\n"))
-            line = pending.slice!(0, i + 1)
-            yield(chomp ? line.chomp : line)
-          end
-        end
-        yield pending unless pending.empty?
-        self
-      end
-
-      def each(&block)
-        each_line(&block)
-      end
     end
   end
 
