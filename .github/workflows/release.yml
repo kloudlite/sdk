@@ -137,6 +137,9 @@ jobs:
           server-password: MAVEN_PASSWORD
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
+      # Central finds the signing key by fingerprint on a public keyserver: print which key will sign.
+      - name: signing key
+        run: gpg --list-secret-keys --with-colons | awk -F: '/^(sec|ssb|fpr)/ {print $1, $5, $10}'
       - run: sed -i '0,/<version>[^<]*<\/version>/s//<version>${{ needs.version.outputs.version }}<\/version>/' java/pom.xml
       # A dry run still builds and signs (`verify`), so a bad key or pom fails before a release; only `deploy` uploads.
       - name: build and sign
