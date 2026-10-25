@@ -1,12 +1,17 @@
-"""Kloudlite SDK for Python — stdlib only.
+"""Kloudlite SDK for Python — stdlib only. Needs Python 3.9 or later.
 
-Auth is a Bearer token (a session or CLI token). Every module hangs off the one
-client::
+Auth is a Bearer token (a CLI token). Every module hangs off the one client::
 
     from kloudlite import Kloudlite
 
-    kl = Kloudlite(base_url="https://dev.kloudlite.io", token="…")
+    kl = Kloudlite()   # the login of `kloudlite`; see "Discovery" below
     workspaces = kl.workspaces.list()
+
+Discovery: the API origin and the token each come from the first source that has one:
+1. the arguments ``base_url=`` / ``token=``; 2. the environment ``KLOUDLITE_URL`` /
+``KLOUDLITE_TOKEN``; 3. ``api`` / ``token`` in ``config.json`` in ``KLOUDLITE_CONFIG_DIR``, else
+``~/.config/kloudlite``. ``/v1`` is added to the origin. With no token the constructor raises
+``RuntimeError`` carrying the sentence ``no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login``.
 
 Every public call takes its inputs BY NAME (keyword-only), so no caller ever has to remember
 argument order.
@@ -14,13 +19,17 @@ argument order.
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 9):  # asyncio.to_thread; annotations stay lazy, so this runs first
+    raise ImportError("kloudlite.py needs Python 3.9 or later, found %d.%d" % sys.version_info[:2])
+
 import asyncio
-import base64
 import contextlib
 import functools
 import json
 import math
-import threading
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -28,8 +37,9 @@ import urllib.request
 
 __all__ = ["Kloudlite", "ApiError", "SandboxTerminated"]
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 USER_AGENT = f"kloudlite-sdk-python/{VERSION}"
+NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 
 
 class ApiError(Exception):
@@ -41,9 +51,33 @@ class ApiError(Exception):
         self.message = message
 
 
+def _login() -> dict:
+    """``config.json`` of the ``kloudlite`` login; {} when it is absent or unreadable."""
+    d = os.environ.get("KLOUDLITE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".config", "kloudlite")
+    try:
+        with open(os.path.join(d, "config.json")) as f:
+            doc = json.load(f)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 class Kloudlite:
-    def __init__(self, *, base_url: str, token: str | None = None, timeout: float = 30.0):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, *, base_url: str | None = None, token: str | None = None,
+                 timeout: float = 30.0):
+        env, cfg = os.environ, None
+        base_url = base_url or env.get("KLOUDLITE_URL")
+        token = token or env.get("KLOUDLITE_TOKEN")
+        if not base_url or not token:
+            cfg = _login()
+            base_url = base_url or cfg.get("api")
+            token = token or cfg.get("token")
+        if not token:
+            raise RuntimeError(NO_LOGIN)
+        if not base_url:
+            raise RuntimeError("no Kloudlite API URL: pass base_url=, set KLOUDLITE_URL, or run kloudlite login")
+        base_url = base_url.rstrip("/")
+        self.base_url = base_url[:-3] if base_url.endswith("/v1") else base_url  # paths carry /v1
         self._token = token
         self._timeout = timeout
         self.workspaces = Workspaces(self)
@@ -51,6 +85,7 @@ class Kloudlite:
         self.sessions = Sessions(self)
         self.volumes = Volumes(self)
         self.secrets = Secrets(self)
+        self.connectors = Connectors(self)
         self.sandboxes = Sandboxes(self)
         self.pipelines = Pipelines(self)
 
@@ -63,34 +98,21 @@ class Kloudlite:
     def request(self, method: str, path: str, *, body=None, query: dict | None = None):
         """One HTTP round trip. Returns parsed JSON (or None on an empty body);
         raises :class:`ApiError` on any non-2xx status."""
-        return self._request(self.base_url, method, path, body, query)
+        return self._request(method, path, body, query)[0]
 
-    def _request(self, base: str, method: str, path: str, body=None, query: dict | None = None):
-        req = self._prepare(base, method, path, body, query, "application/json")
+    def _request(self, method: str, path: str, body=None, query: dict | None = None,
+                 *, text: bool = False, timeout="default"):
+        """(decoded body, response headers). ``text`` returns the body as a str, not JSON."""
+        req = self._prepare(self.base_url, method, path, body, query,
+                            "text/plain" if text else "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read()
+            with urllib.request.urlopen(req, timeout=self._timeout if timeout == "default" else timeout) as resp:
+                raw, headers = resp.read(), resp.headers
         except urllib.error.HTTPError as e:
             raise ApiError(e.code, _error_text(e.read())) from None
-        if not raw:
-            return None
-        return json.loads(raw)
-
-    def _ndjson(self, path: str, query: dict | None = None):
-        """GET an NDJSON stream from the api and yield each line, decoded, as it arrives. Same
-        auth, base URL and :class:`ApiError` mapping as :meth:`request`, but no read timeout: a
-        process may print nothing for longer than any round trip should take, and the server
-        ends the stream itself after the exit frame."""
-        req = self._prepare(self.base_url, "GET", path, None, query, "application/x-ndjson")
-        try:
-            resp = urllib.request.urlopen(req, timeout=None)
-        except urllib.error.HTTPError as e:
-            raise ApiError(e.code, _error_text(e.read())) from None
-        with resp:
-            for line in resp:  # readline on a chunked body returns each line once it lands
-                line = line.strip()
-                if line:
-                    yield json.loads(line)
+        if text:
+            return raw.decode(errors="replace"), headers
+        return (json.loads(raw) if raw else None), headers
 
     def _prepare(self, base: str, method: str, path: str, body, query: dict | None, accept: str):
         url = base + path
@@ -112,6 +134,11 @@ def _seg(s: str) -> str:
     return urllib.parse.quote(str(s), safe="")
 
 
+def _drop(d: dict) -> dict:
+    """The body without its ``None`` values: an unset input is the server's default."""
+    return {k: v for k, v in d.items() if v is not None}
+
+
 class Workspaces:
     """Btrfs-backed dev workspaces, over ``/v1/workspaces``. A workspace is named like an
     environment — ``"name"`` for the caller's own, ``"team/name"`` for one in a team — or by its
@@ -122,23 +149,16 @@ class Workspaces:
         self._c = client
 
     def create(self, *, workspace: str, quota_gb: int, image: str | None = None,
-               repo: str | None = None, branch: str | None = None,
-               packages: list | None = None,
-               ttl_secs: int | None = None, env: dict | None = None):
+               packages: list | None = None, ttl_secs: int | None = None,
+               env: dict | None = None):
         """``workspace`` is ``"name"`` or ``"team/name"``. ``env`` maps variable names to literal
-        values or ``"${{ secrets.NAME }}"`` references to the owner's secrets. ``ttl_secs`` (600..=2592000) deletes it
-        after that long unused; absent, never. ``repo`` seeds from a PLATFORM repo
-        ("owner/name", with ``branch``); ``packages`` are nixpkgs attributes, optionally pinned
-        (``attr@version``)."""
+        values or ``"${{ secrets.NAME }}"`` references to the owner's secrets. ``ttl_secs``
+        (600..=2592000) deletes it after that long unused; absent, never. ``packages`` are
+        nixpkgs attributes, optionally pinned (``attr@version``). 202."""
         team, name = _owned(workspace)
-        body = {"name": name, "quota_gb": quota_gb,
-                "team": team, "repo": repo, "branch": branch,
-                "packages": packages or [], "ttl_secs": ttl_secs}
-        if image is not None:
-            body["image"] = image
-        if env is not None:
-            body["env"] = env
-        return self._c.request("POST", "/v1/workspaces", body=body)
+        return self._c.request("POST", "/v1/workspaces", body=_drop({
+            "name": name, "quota_gb": quota_gb, "team": team, "image": image,
+            "packages": packages, "ttl_secs": ttl_secs, "env": env}))
 
     def list(self, *, team: str | None = None):
         """The caller's workspaces; ``team`` scopes to their workspaces in that team."""
@@ -158,24 +178,34 @@ class Workspaces:
         """A stop cuts a sync point and tears the workspace down — seconds, never waiting on a replica."""
         return self._at("POST", workspace, "/stop")
 
-    def push(self, *, workspace: str, message: str | None = None):
-        """Cut a SNAPSHOT of the working copy — the one durable, restorable state."""
-        return self._at("POST", workspace, "/push",
-                        body={"message": message} if message is not None else None)
+    def restart(self, *, workspace: str):
+        """Restart a running workspace so it gets the current env (202); 409 when not running."""
+        return self._at("POST", workspace, "/restart")
+
+    def take_snapshot(self, *, workspace: str, message: str | None = None, volume: str | None = None,
+                      ttl_secs: int | None = None, never: bool | None = None):
+        """Push a SNAPSHOT of the working copy — the one durable, restorable state (202). ``volume``
+        names the volume and is required on its first push; ``ttl_secs`` (3600..=31536000) or
+        ``never=True`` set its expiry. ``push`` is the old name."""
+        return self._at("POST", workspace, "/snapshots", body=_drop(
+            {"message": message, "volume": volume, "ttl_secs": ttl_secs, "never": never}))
+
+    push = take_snapshot
 
     def clone(self, *, workspace: str, to: str, task: str | None = None):
         """A new workspace ``to`` from this one's state, cut at the moment of the request; the
         answer's ``based_on`` names exactly what it grafted onto."""
         return self._at("POST", workspace, "/clone", body={"name": to, "task": task})
 
-    def restore(self, *, snapshot: str, to: str, image: str | None = None,
+    def restore(self, *, snapshot: str, to: str, team: str | None = None, image: str | None = None,
                 packages: list | None = None, quota_gb: int | None = None):
-        """A new workspace ``to`` grafted onto a PUSHED ``snapshot`` — also one whose workspace is
-        long gone. Absent overrides mean "whatever the snapshot froze"."""
-        return self._c.request("POST", "/v1/workspaces/restore", body={
-            "name": to, "snapshot_id": snapshot,
-            "image": image, "packages": packages, "quota_gb": quota_gb,
-        })
+        """A new workspace ``to`` grafted onto a PUSHED ``snapshot`` (a volume name, ``name@N`` or a
+        snapshot id) — also one whose workspace is long gone. ``team`` (or ``to="team/name"``)
+        is required for a team's volume. Absent overrides mean "whatever the snapshot froze"."""
+        owner, name = _owned(to)
+        return self._c.request("POST", "/v1/workspaces/restore", body=_drop({
+            "name": name, "snapshot_id": snapshot, "team": team or owner,
+            "image": image, "packages": packages, "quota_gb": quota_gb}))
 
     def set_packages(self, *, workspace: str, packages: list):
         """Replace the package list; pinned entries are locked before anything is written."""
@@ -186,10 +216,12 @@ class Workspaces:
         for a sandbox or a bench."""
         return self._at("PUT", workspace, "/ttl", body={"ttl_secs": ttl_secs})
 
-    def set_env(self, *, workspace: str, env: dict):
+    def set_env(self, *, workspace: str, env: dict, restart_on_env_change: bool | None = None):
         """Replace the whole env: literals or ``"${{ secrets.NAME }}"`` references. Takes effect on the
-        next start."""
-        return self._at("PUT", workspace, "/env", body={"env": env})
+        next start; a running workspace is only marked ``restart_required`` unless
+        ``restart_on_env_change=True``."""
+        return self._at("PUT", workspace, "/env", body=_drop(
+            {"env": env, "restartOnEnvChange": restart_on_env_change}))
 
     def update_packages(self, *, workspace: str):
         """Re-resolve every pinned package — the only call that moves existing locks."""
@@ -334,10 +366,9 @@ class Environments:
         and then ``services`` default to the ones that snapshot froze. ``ttl_secs``
         (600..=2592000) deletes it after that long unused; absent, never."""
         owner, name = _owned(environment)
-        return self._c.request("POST", "/v1/environments", body={
-            "name": name, "owner": owner, "services": _services(services),
-            "quota_gb": quota_gb, "snapshot_id": snapshot, "ttl_secs": ttl_secs,
-        })
+        return self._c.request("POST", "/v1/environments", body=_drop({
+            "name": name, "owner": owner, "services": _services(services) if services else None,
+            "quota_gb": quota_gb, "snapshot_id": snapshot, "ttl_secs": ttl_secs}))
 
     def list(self, *, owner: str | None = None):
         """The caller's environments and their teams'; ``owner`` narrows to one handle or team."""
@@ -346,16 +377,23 @@ class Environments:
     def get(self, *, environment: str):
         return self._at("GET", environment)
 
-    def set_services(self, *, environment: str, services: list):
+    def set_services(self, *, environment: str, services: list,
+                     restart_on_env_change: bool | None = None):
         """Replace the WHOLE service list. A removed service keeps its folders on the disk, so
-        adding it back finds its data."""
-        return self._at("PATCH", environment, body={"services": _services(services)})
+        adding it back finds its data. A changed ``env`` only marks a running service
+        ``restartRequired`` unless ``restart_on_env_change=True``."""
+        return self._at("PATCH", environment, body=_drop(
+            {"services": _services(services), "restartOnEnvChange": restart_on_env_change}))
 
     def start(self, *, environment: str):
         return self._at("POST", environment, "/start")
 
     def stop(self, *, environment: str):
         return self._at("POST", environment, "/stop")
+
+    def restart(self, *, environment: str, service: str):
+        """Restart one service so it gets the current env (202); 409 when the environment is not running."""
+        return self._at("POST", environment, f"/services/{_seg(service)}/restart")
 
     def set_ttl(self, *, environment: str, ttl_secs: int | None):
         """Seconds the environment may sit unused before it is deleted (600..=2592000); None clears."""
@@ -365,27 +403,34 @@ class Environments:
         """The volume survives while a pushed snapshot references it."""
         return self._at("DELETE", environment)
 
-    def push(self, *, environment: str, message: str | None = None):
-        """Cut a SNAPSHOT of every service's data — the one durable, restorable state."""
-        return self._at("POST", environment, "/push",
-                        body={"message": message} if message is not None else None)
+    def take_snapshot(self, *, environment: str, message: str | None = None,
+                      volume: str | None = None, ttl_secs: int | None = None,
+                      never: bool | None = None):
+        """Push a SNAPSHOT of every service's data and the service list (202). ``volume`` names
+        the volume and is required on its first push. ``push`` is the old name."""
+        return self._at("POST", environment, "/snapshots", body=_drop(
+            {"message": message, "volume": volume, "ttl_secs": ttl_secs, "never": never}))
+
+    push = take_snapshot
 
     def clone(self, *, environment: str, to: str, snapshot: str | None = None,
-              services: list | None = None, quota_gb: int | None = None):
-        """A new environment ``to`` (``"name"`` or ``"team/name"``): a copy of the live disk, or
-        with ``snapshot`` of one of this environment's snapshots."""
+              services: list | None = None, quota_gb: int | None = None,
+              ttl_secs: int | None = None):
+        """A new environment ``to`` (``"name"``; ``"team/name"`` only with ``snapshot``): a copy of
+        the live disk, or with ``snapshot`` of one of this environment's snapshots. ``services``
+        and ``quota_gb`` apply only with ``snapshot``."""
         owner, name = _owned(to)
-        return self._at("POST", environment, "/clone", body={
+        return self._at("POST", environment, "/clone", body=_drop({
             "name": name, "owner": owner, "snapshot_id": snapshot,
             "services": _services(services) if services else None, "quota_gb": quota_gb,
-        })
+            "ttl_secs": ttl_secs}))
 
     def restore(self, *, environment: str, snapshot: str, discard: list | None = None):
         """Put THIS environment back to one of its own snapshots, services and data (202). A
         persistent service the snapshot lacks is a 409 naming it; list it in ``discard`` to
         accept losing its data."""
         return self._at("POST", environment, "/restore",
-                        body={"snapshot_id": snapshot, "discard": discard or []})
+                        body=_drop({"snapshot_id": snapshot, "discard": discard}))
 
     def _at(self, method: str, environment: str, tail: str = "", body=None):
         owner, name = _owned(environment)
@@ -448,14 +493,30 @@ class Sessions:
         way."""
         return self._at("PUT", session, "/environment", body={"environment": environment})
 
-    def add(self, *, session: str, workspace: str):
-        """A workspace is in at most one session; while in one it resolves that session's
-        environment by bare service name instead of its team's choice."""
-        return self._at("POST", session, "/workspaces", body={"workspace": workspace})
+    def stop(self, *, session: str):
+        """Stop the session and every workspace in it (202, ``{"stopped": [ids]}``); sandboxes and
+        the environment are untouched."""
+        return self._at("POST", session, "/stop")
 
-    def remove(self, *, session: str, workspace: str):
-        """Releases whatever the workspace intercepts in this session first."""
+    def create_workspace(self, *, session: str, workspace: str, quota_gb: int,
+                         image: str | None = None, packages: list | None = None,
+                         ttl_secs: int | None = None, env: dict | None = None):
+        """Create a workspace ``workspace`` (a bare name) managed by the session, in its team
+        (201). The session controls it from then on; it takes the inputs of
+        :meth:`Workspaces.create`."""
+        return self._at("POST", session, "/workspaces", body=_drop({
+            "name": workspace, "quota_gb": quota_gb, "image": image, "packages": packages,
+            "ttl_secs": ttl_secs, "env": env}))
+
+    def delete_workspace(self, *, session: str, workspace: str):
+        """Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay."""
         return self._at("DELETE", session, f"/workspaces/{_seg(workspace)}")
+
+    def create_sandbox(self, *, session: str, cmd: list, **options) -> "Sandbox":
+        """Create a sandbox managed by the session (202), in its team and reaching its environment.
+        Same inputs as :meth:`Sandboxes.create` (``team`` must be the session's)."""
+        doc = self._at("POST", session, "/sandboxes", body=_sandbox_body(cmd=cmd, **options))
+        return Sandbox(self._c, doc)
 
     def intercept(self, *, session: str, service: str, workspace: str, ports: dict | None = None):
         """Send everything that calls ``service`` in the environment to ``workspace`` (a member),
@@ -483,15 +544,41 @@ class Secrets:
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def set(self, *, owner: str, name: str, value: str) -> None:
-        self._c.request("PUT", f"/v1/secrets/{_seg(owner)}/{_seg(name)}", body={"value": value})
+    def set(self, *, owner: str, name: str, value: str, scope: str = "mine") -> None:
+        """Store ``name``. ``scope`` ``"mine"`` (default) is your own secret in the team ``owner``
+        (``PUT /v1/secrets/{owner}/mine/{name}``; for your own handle, your personal one);
+        ``"team"`` is the team's shared secret and needs an admin."""
+        self._c.request("PUT", self._path(owner, scope, name), body={"value": value})
 
-    def list(self, *, owner: str):
-        return self._c.request("GET", f"/v1/secrets/{_seg(owner)}")
+    def list(self, *, owner: str, scope: str = "mine"):
+        """Names with ``updated_at`` and ``updated_by``, never values."""
+        return self._c.request("GET", self._path(owner, scope))
 
-    def delete(self, *, owner: str, name: str) -> None:
+    def delete(self, *, owner: str, name: str, scope: str = "mine") -> None:
         """409 while a workspace or environment still references it; the body names them."""
-        self._c.request("DELETE", f"/v1/secrets/{_seg(owner)}/{_seg(name)}")
+        self._c.request("DELETE", self._path(owner, scope, name))
+
+    @staticmethod
+    def _path(owner: str, scope: str, name: str | None = None) -> str:
+        if scope not in ("mine", "team"):
+            raise ValueError(f"scope is 'mine' or 'team', got {scope!r}")
+        p = f"/v1/secrets/{_seg(owner)}" + ("/mine" if scope == "mine" else "")
+        return p + (f"/{_seg(name)}" if name is not None else "")
+
+
+class Connectors:
+    """The provider accounts linked to an owner, over ``/v1/connectors``."""
+
+    def __init__(self, client: Kloudlite):
+        self._c = client
+
+    def list(self, *, owner: str | None = None):
+        """Connectors by name; ``owner`` is a handle or team slug, default your own."""
+        return self._c.request("GET", "/v1/connectors", query={"owner": owner})
+
+    def delete(self, *, name: str) -> None:
+        """Remove a connector (204); a team's needs an admin."""
+        self._c.request("DELETE", f"/v1/connectors/{_seg(name)}")
 
 
 class Volumes:
@@ -517,9 +604,29 @@ class Volumes:
         volume's last snapshot deletes the volume."""
         return self._c.request("DELETE", f"/v1/volumes/{_seg(volume)}/snapshots/{_seg(snapshot)}")
 
-    def delete(self, *, volume: str):
+    def delete_by_id(self, *, volume: str):
         """Takes a DETACHED volume with all its snapshots; refused while a working copy remains."""
         return self._c.request("DELETE", f"/v1/volumes/{_seg(volume)}")
+
+    def get(self, *, owner: str, name: str):
+        """One named volume; ``owner`` is your handle or a team slug."""
+        return self._c.request("GET", self._named(owner, name))
+
+    def versions(self, *, owner: str, name: str):
+        """The versions of a named volume, newest first."""
+        return self._c.request("GET", self._named(owner, name, "/versions"))
+
+    def delete(self, *, owner: str, name: str):
+        """Delete a named volume and every snapshot on it (204); the name is free again."""
+        return self._c.request("DELETE", self._named(owner, name))
+
+    def delete_version(self, *, owner: str, name: str, n: int):
+        """Delete version ``n`` (204); deleting the last one deletes the volume."""
+        return self._c.request("DELETE", self._named(owner, name, f"/versions/{int(n)}"))
+
+    @staticmethod
+    def _named(owner: str, name: str, tail: str = "") -> str:
+        return f"/v1/volumes/{_seg(owner)}/{_seg(name)}{tail}"
 
 
 class SandboxTerminated(ApiError):
@@ -574,92 +681,106 @@ def _backoff(timeout_s: float | None, what: str):
         delay = min(delay * 1.5, 2.0)
 
 
-class Sandboxes:
-    """Throwaway, isolated machines that run code, over ``/v1/sandboxes``. A sandbox starts from an
-    image, from one of your workspaces (``from_workspace``) or from a pushed snapshot
-    (``from_snapshot``), lives at most ``timeout_s`` (server default 300) and is gone once
-    terminated — read anything you need out of it first. Every call answers a :class:`Sandbox`
-    handle, and every call here and on the handles also has an async twin, ``.aio``::
+def _sandbox_body(*, cmd, image: str | None = None, packages: list | None = None,
+                  from_workspace: str | None = None, from_snapshot: str | None = None,
+                  team: str | None = None, tty: bool | None = None, stdin: bool | None = None,
+                  timeout_s: int | None = None, network: str | None = None,
+                  env: dict | None = None, cpu: int | None = None, memory_gb: int | None = None,
+                  disk_gb: int | None = None) -> dict:
+    """The ``POST /v1/sandboxes`` body; refuses a missing ``cmd`` before anything is sent."""
+    if isinstance(cmd, (list, tuple)) and cmd and all(isinstance(a, str) for a in cmd):
+        cmd = list(cmd)
+    else:
+        raise ValueError("cmd is required: the program and its arguments as a non-empty list of strings")
+    return _drop({"cmd": cmd, "image": image, "packages": packages,
+                  "from_workspace": from_workspace, "from_snapshot": from_snapshot, "team": team,
+                  "tty": tty, "stdin": stdin, "timeout_secs": timeout_s, "network": network,
+                  "env": env, "cpu": cpu, "memory_gb": memory_gb, "disk_gb": disk_gb})
 
-        sb = kl.sandboxes.create(image="python:3.12")
-        p = sb.exec(cmd=["python", "-c", "print(input())"])
-        p.stdin.write(b"hi\\n"); p.stdin.write_eof()
-        assert p.wait() == 0 and p.stdout.read() == "hi\\n"
-        sb.terminate()
+
+class Sandboxes:
+    """Throwaway, isolated machines that run ONE command, over ``/v1/sandboxes``. A sandbox starts
+    from an image, from one of your workspaces (``from_workspace``) or from a pushed snapshot
+    (``from_snapshot``), runs ``cmd``, and ends when it exits or after ``timeout_s`` (server
+    default 300). Every call answers a :class:`Sandbox` handle, and every call here and on the
+    handles also has an async twin, ``.aio``::
+
+        sb = kl.sandboxes.create(cmd=["python3", "-c", "print(6 * 7)"], packages=["python3"])
+        code = sb.wait()
+        print(code, sb.logs())
     """
 
     def __init__(self, client: Kloudlite):
         self._c = client
 
     @_aio
-    def create(self, *, image: str | None = None, packages: list | None = None,
+    def create(self, *, cmd: list, image: str | None = None, packages: list | None = None,
                from_workspace: str | None = None, from_snapshot: str | None = None,
-               team: str | None = None,
-               timeout_s: int | None = None, idle_timeout_s: int | None = None,
-               network: str | None = None, env: dict | None = None, cpu: int | None = None,
-               memory_gb: int | None = None, disk_gb: int | None = None,
-               session: str | None = None) -> "Sandbox":
-        """Ask for a sandbox and return at once (202) — it is usually still ``starting``;
-        :meth:`Sandbox.exec` waits for it. ``from_workspace`` is an id, ``"name"`` or
-        ``"team/name"``; ``network`` is ``internet`` or ``none``; ``cpu`` in cores.
-        ``session`` (an id, ``"name"`` or ``"team/name"`` of your session in the sandbox's team)
-        makes it a member from birth — the only way it reaches an environment, whose services
-        then resolve by bare name inside it. Unset arguments are
-        left to the server's defaults and the owner's quota."""
-        body = {"image": image, "packages": packages, "from_workspace": from_workspace,
-                "from_snapshot": from_snapshot, "team": team,
-                "timeout_secs": timeout_s, "idle_timeout_secs": idle_timeout_s,
-                "network": network, "env": env, "cpu": cpu, "memory_gb": memory_gb,
-                "disk_gb": disk_gb, "session": session}
-        doc = self._c.request("POST", "/v1/sandboxes",
-                              body={k: v for k, v in body.items() if v is not None})
-        return Sandbox(self._c, doc)
+               team: str | None = None, tty: bool | None = None, stdin: bool | None = None,
+               timeout_s: int | None = None, network: str | None = None, env: dict | None = None,
+               cpu: int | None = None, memory_gb: int | None = None,
+               disk_gb: int | None = None) -> "Sandbox":
+        """Ask for a sandbox and return at once (202); it is usually still ``pending``.
+        ``cmd`` (required) is the program then its arguments. ``tty`` runs it on a pty; ``stdin``
+        keeps input open for ``attach``. ``timeout_s`` is 10..=86400. ``from_workspace`` is an id,
+        ``"name"`` or ``"team/name"``; ``from_snapshot`` a volume name, ``name@N`` or snapshot id
+        (exclusive with it). ``network`` is ``internet`` or ``none``; ``cpu`` 1..=8, ``memory_gb``
+        1..=32. A session's sandbox is made with :meth:`Sessions.create_sandbox`. Unset inputs are
+        left to the server's defaults."""
+        body = _sandbox_body(cmd=cmd, image=image, packages=packages, from_workspace=from_workspace,
+                             from_snapshot=from_snapshot, team=team, tty=tty, stdin=stdin,
+                             timeout_s=timeout_s, network=network, env=env, cpu=cpu,
+                             memory_gb=memory_gb, disk_gb=disk_gb)
+        return Sandbox(self._c, self._c.request("POST", "/v1/sandboxes", body=body))
 
     @_aio
     def get(self, *, sandbox: str) -> "Sandbox":
+        """One sandbox by id (a name does not resolve)."""
         return Sandbox(self._c, self._c.request("GET", f"/v1/sandboxes/{_seg(sandbox)}"))
 
     @_aio
-    def list(self, *, team: str | None = None) -> list:
-        """The caller's sandboxes, newest first; ``team`` scopes to theirs in that team."""
-        docs = self._c.request("GET", "/v1/sandboxes", query={"team": team}) or []
-        return [Sandbox(self._c, d) for d in docs]
+    def list(self, *, team: str | None = None, limit: int | None = None,
+             cursor: str | None = None) -> list:
+        """ONE page of the caller's sandboxes, newest first (``limit`` 1..=200, default 50);
+        ``team`` scopes to that team. :meth:`list_page` also answers the next cursor."""
+        return self.list_page(team=team, limit=limit, cursor=cursor)[0]
 
     @_aio
-    def run(self, *, cmd, cwd: str | None = None, env: dict | None = None,
-            timeout_s: float | None = None, image: str | None = None,
-            packages: list | None = None, from_workspace: str | None = None,
-            from_snapshot: str | None = None, team: str | None = None,
-            idle_timeout_s: int | None = None,
-            network: str | None = None, cpu: int | None = None, memory_gb: int | None = None,
-            disk_gb: int | None = None, session: str | None = None) -> dict:
-        """One command in a fresh sandbox: create, exec, wait, read every byte of output, and
+    def list_page(self, *, team: str | None = None, limit: int | None = None,
+                  cursor: str | None = None) -> tuple:
+        """``(sandboxes, next_cursor)``: a page, and the ``X-Next-Cursor`` to pass as ``cursor`` for
+        the next one (``None`` on the last page)."""
+        docs, headers = self._c._request("GET", "/v1/sandboxes",
+                                         query={"team": team, "limit": limit, "cursor": cursor})
+        return [Sandbox(self._c, d) for d in docs or []], headers.get("X-Next-Cursor")
+
+    @_aio
+    def run(self, *, cmd: list, timeout_s: float | None = None, **options) -> dict:
+        """One command in a fresh sandbox: create, wait for it to exit, read the output, and
         terminate — ALWAYS, also when anything before it raised. Answers
-        ``{"exit_code", "stdout", "stderr", "sandbox"}``. ``env`` and ``cwd`` are the command's;
-        ``timeout_s`` bounds the command (None waits until it exits) and, when given, also sizes
-        the sandbox's own lifetime to cover it plus a minute to start."""
-        lifetime = None if timeout_s is None else min(86_400, max(10, math.ceil(timeout_s) + 60))
-        sb = self.create(image=image, packages=packages, from_workspace=from_workspace,
-                         from_snapshot=from_snapshot, team=team,
-                         timeout_s=lifetime, idle_timeout_s=idle_timeout_s, network=network,
-                         cpu=cpu, memory_gb=memory_gb, disk_gb=disk_gb,
-                         session=session)
+        ``{"exit_code", "stdout", "stderr", "sandbox"}``: the sandbox keeps one stream, so
+        ``stdout`` holds the output and error output together and ``stderr`` is ``""``.
+        ``timeout_s`` bounds the wait (TimeoutError; None waits as long as it takes) and, when
+        given, sizes the sandbox's own lifetime to cover it plus a minute. ``options`` are the
+        other inputs of :meth:`create` (``image``, ``packages``, ``env``, …)."""
+        if timeout_s is not None and "timeout_s" not in options:
+            options["timeout_s"] = min(86_400, max(10, math.ceil(timeout_s) + 60))
+        sb = self.create(cmd=cmd, **options)
         try:
-            p = sb.exec(cmd=cmd, cwd=cwd, env=env)
-            code = p.wait(timeout_s=timeout_s)
-            out, err = p._collect()
+            code = sb.wait(timeout_s=timeout_s)
+            out = sb.logs()
         except BaseException:
             with contextlib.suppress(Exception):  # never mask the failure that got us here
                 sb.terminate()
             raise
         sb.terminate()
-        return {"exit_code": code, "stdout": out, "stderr": err, "sandbox": sb.id}
+        return {"exit_code": code, "stdout": out, "stderr": "", "sandbox": sb.id}
 
 
 class Sandbox:
     """A handle on one sandbox: ``id``, ``phase`` (``pending``, ``starting``, ``running``,
-    ``terminated``), ``reason`` once terminated, and the whole server ``doc`` as of the last
-    answer — :meth:`refresh` re-reads it."""
+    ``terminated``), ``reason`` once terminated, ``exit_code``, and the whole server ``doc`` as of
+    the last answer — :meth:`refresh` re-reads it."""
 
     def __init__(self, client: Kloudlite, doc: dict):
         self._c = client
@@ -668,6 +789,7 @@ class Sandbox:
     id = property(lambda self: self.doc["id"])
     phase = property(lambda self: self.doc.get("phase"))
     reason = property(lambda self: self.doc.get("reason"))
+    exit_code = property(lambda self: self.doc.get("exit_code"))
 
     def __repr__(self):
         return f"<Sandbox {self.id} {self.phase}{' ' + self.reason if self.reason else ''}>"
@@ -680,244 +802,57 @@ class Sandbox:
     @_aio
     def wait_running(self, *, timeout_s: float = 120) -> "Sandbox":
         """Poll until ``running``; :class:`SandboxTerminated` naming the reason if it terminates
-        instead (an image that does not pull, a quota, a node that cannot place it)."""
+        instead (an image that does not pull, a quota, a node that cannot place it, or a command
+        that already exited)."""
         for _ in _backoff(timeout_s, f"sandbox {self.id} not running"):
             self.refresh()
             if self.phase == "running":
                 return self
-            self._raise_if_terminated()
+            if self.phase == "terminated":
+                raise SandboxTerminated(self.id, self.reason, self.doc.get("message"))
 
     @_aio
-    def exec(self, *, cmd, cwd: str | None = None, env: dict | None = None) -> "Process":
-        """Start ``cmd`` — an argv list, or a string run by the shell — and return its
-        :class:`Process` at once; waits for the sandbox to run first. Always detached: the
-        process is followed through its stdin/stdout/stderr and :meth:`Process.wait`."""
-        if self.phase != "running":
-            self.wait_running()
-        body = {"cmd": cmd, "detach": True}
-        if cwd is not None:
-            body["cwd"] = cwd
-        if env is not None:
-            body["env"] = env
-        return Process(self, str(self._tool("exec", body)["id"]))
+    def logs(self, *, follow: bool = False) -> str:
+        """The main process's output (stdout and stderr together) as text: the live output while it
+        runs, the last 256 KiB after. ``follow=True`` holds until the process ends. 409 while the
+        sandbox has no output yet (still starting)."""
+        return self._c._request("GET", self._path("/logs"), query={"follow": "true" if follow else None},
+                                text=True, timeout=None if follow else "default")[0]
 
-    @_aio
-    def read(self, *, path: str):
-        """The tool server's ``read``; ``path`` is relative to ``~/workspace``."""
-        return self._tool("read", {"path": path})
-
-    @_aio
-    def write(self, *, path: str, content: str):
-        return self._tool("write", {"path": path, "content": content})
+    def attach(self, *, cols: int | None = None, rows: int | None = None):
+        """Not in this SDK: ``GET /v1/sandboxes/{id}/attach`` is a WebSocket and this client uses
+        only the standard library."""
+        raise NotImplementedError("sandbox attach is a WebSocket and is not in the Python SDK")
 
     @_aio
     def terminate(self) -> "Sandbox":
-        """Stop it for good (202); the record stays until :meth:`delete`."""
+        """Stop it for good (202, or 200 if already ended); the record stays until :meth:`delete`."""
         self.doc = self._c.request("POST", self._path("/terminate")) or self.doc
         return self
 
     @_aio
-    def wait(self, *, timeout_s: float | None = None) -> str | None:
-        """Poll until ``terminated`` and answer the reason."""
-        for _ in _backoff(timeout_s, f"sandbox {self.id} still {self.phase}"):
-            self.refresh()
-            if self.phase == "terminated":
-                return self.reason
-
-    @_aio
-    def delete(self):
-        return self._c.request("DELETE", self._path())
-
-    def _path(self, tail: str = "") -> str:
-        return f"/v1/sandboxes/{_seg(self.id)}{tail}"
-
-    def _raise_if_terminated(self):
-        if self.phase == "terminated":
-            raise SandboxTerminated(self.id, self.reason, self.doc.get("message"))
-
-    def _tool(self, name: str, body: dict):
-        try:
-            return self._c.request("POST", self._path(f"/tools/{_seg(name)}"), body=body)
-        except ApiError as e:
-            if e.status != 409:
-                raise
-            # 409 is the api saying "not running": name WHY rather than the bare refusal.
-            with contextlib.suppress(ApiError):
-                self.refresh()
-            self._raise_if_terminated()
-            raise
-
-
-class Process:
-    """A detached process in a sandbox: ``id``, ``sandbox``, ``stdin`` to write to, ``stdout`` and
-    ``stderr`` to read or iterate, and ``returncode`` once it is known."""
-
-    def __init__(self, sandbox: Sandbox, pid: str):
-        self.sandbox = sandbox
-        self.id = pid
-        self._returncode = None
-        self.stdin = ProcessStdin(self)
-        self.stdout = ProcessOutput(self, "stdout")
-        self.stderr = ProcessOutput(self, "stderr")
-
-    def __repr__(self):
-        return f"<Process {self.id} in {self.sandbox.id} returncode={self._returncode}>"
-
-    @property
-    def returncode(self) -> int | None:
-        """The exit code as of the last :meth:`wait`, :meth:`poll` or finished read; None
-        before then (or for a process a signal ended)."""
-        return self._returncode
-
-    @_aio
     def wait(self, *, timeout_s: float | None = None) -> int | None:
-        """Block until it exits and answer the exit code; TimeoutError past ``timeout_s``. Waits
-        in polls of at most 20 s, the most the api holds one open."""
+        """Block until it has ended and answer its exit code (``None`` when it ended some other way
+        than the command exiting; ``reason`` says how). Waits in steps of at most 20 s, the most the
+        api holds one open; TimeoutError past ``timeout_s``."""
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
         while True:
             left_ms = 20_000 if deadline is None else int((deadline - time.monotonic()) * 1000)
             if left_ms <= 0:
-                raise TimeoutError(f"process {self.id} still running after {timeout_s} s")
-            code = self._wait_ms(min(left_ms, 20_000))
-            if code is not _RUNNING:
-                return code
+                raise TimeoutError(f"sandbox {self.id} still {self.phase} after {timeout_s} s")
+            out = self._c.request("POST", self._path("/wait"), body={"timeout_ms": min(left_ms, 20_000)})
+            self.doc = {**self.doc, **{k: v for k, v in (out or {}).items() if k in
+                                       ("phase", "reason", "exit_code", "message")}}
+            if self.phase == "terminated":
+                return self.exit_code
 
     @_aio
-    def poll(self) -> int | None:
-        """The exit code if it has exited, else None — never blocks."""
-        code = self._wait_ms(0)
-        return None if code is _RUNNING else code
+    def delete(self):
+        """Delete the record (204); a sandbox still running dies with it."""
+        return self._c.request("DELETE", self._path())
 
-    @_aio
-    def kill(self, *, signal: str | None = None):
-        """Signal the whole process group (the tool server's default is a kill)."""
-        body = {"id": self.id}
-        if signal is not None:
-            body["signal"] = signal
-        return self.sandbox._tool("process_kill", body)
-
-    def _wait_ms(self, timeout_ms: int):
-        out = self.sandbox._tool("process_wait", {"id": self.id, "timeout_ms": timeout_ms})
-        if out.get("state") != "exited":
-            return _RUNNING
-        self._returncode = out.get("exit_code")
-        return self._returncode
-
-    def _frames(self):
-        """Every frame of the output stream, from the first byte the ring still holds to the
-        exit frame — each read or iteration is its own replay, so they never steal output."""
-        path = self.sandbox._path(f"/processes/{_seg(self.id)}/stream")
-        for frame in self.sandbox._c._ndjson(path, {"since": 0, "since_err": 0}):
-            if "exit" in frame:
-                self._returncode = frame["exit"]
-            yield frame
-
-    def _collect(self) -> tuple[str, str]:
-        out, err = [], []
-        for frame in self._frames():
-            if frame.get("stream") == "stdout":
-                out.append(frame.get("data", ""))
-            elif frame.get("stream") == "stderr":
-                err.append(frame.get("data", ""))
-        return "".join(out), "".join(err)
-
-
-_RUNNING = object()
-
-
-class ProcessStdin:
-    """A process's stdin. Each write is delivered when the call returns, so :meth:`drain` has
-    nothing to wait for; :meth:`write_eof` closes it."""
-
-    def __init__(self, process: Process):
-        self._p = process
-
-    @_aio
-    def write(self, data: str | bytes) -> int:
-        """Send ``data`` (bytes, or text as UTF-8) and answer how many bytes went. The one call
-        that also takes its input by position — ``stdin.write(b"…")`` — because it is a file's
-        ``write`` and has exactly one input to get in order."""
-        raw = data.encode() if isinstance(data, str) else bytes(data)
-        self._p.sandbox._tool("process_write", {
-            "id": self._p.id, "data_base64": base64.b64encode(raw).decode("ascii"),
-        })
-        return len(raw)
-
-    @_aio
-    def write_eof(self):
-        """Close stdin — what ends a ``while read line`` loop."""
-        return self._p.sandbox._tool("process_close_stdin", {"id": self._p.id})
-
-    @_aio
-    def drain(self):
-        """Nothing to flush: kept so code written against a stream writer reads the same."""
-        return None
-
-
-class ProcessOutput:
-    """A process's stdout or stderr. :meth:`read` answers the whole stream once the process has
-    exited; iterating yields lines as they arrive — newline kept, as a file does, and a last
-    unterminated line at the end — and :meth:`aio_lines` is the same iteration for ``async for``."""
-
-    def __init__(self, process: Process, name: str):
-        self._p = process
-        self._name = name
-
-    @_aio
-    def read(self) -> str:
-        return "".join(self._chunks())
-
-    def __iter__(self):
-        pending = ""
-        for chunk in self._chunks():
-            pending += chunk
-            *lines, pending = pending.split("\n")
-            for line in lines:
-                yield line + "\n"
-        if pending:
-            yield pending
-
-    async def aio_lines(self):
-        """``async for line in p.stdout.aio_lines()``: the blocking stream runs on its own
-        daemon thread and hands lines over a queue, so a consumer that stops early leaves
-        nothing for the event loop to wait on at shutdown."""
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-        stop = threading.Event()
-        end = object()
-
-        def hand(item):
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, item)
-            except RuntimeError:  # the loop closed under a consumer that went away
-                stop.set()
-
-        def pump():
-            try:
-                for line in self:
-                    if stop.is_set():
-                        return
-                    hand((line, None))
-                hand((end, None))
-            except BaseException as e:  # surfaced in the consumer, not lost on the thread
-                hand((end, e))
-
-        threading.Thread(target=pump, daemon=True).start()
-        try:
-            while True:
-                line, err = await queue.get()
-                if line is end:
-                    if err is not None:
-                        raise err
-                    return
-                yield line
-        finally:
-            stop.set()
-
-    def _chunks(self):
-        for frame in self._p._frames():
-            if frame.get("stream") == self._name:
-                yield frame.get("data", "")
+    def _path(self, tail: str = "") -> str:
+        return f"/v1/sandboxes/{_seg(self.id)}{tail}"
 
 
 _RUN_TERMINAL = ("success", "failure", "cancelled")
