@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.kloudlite</groupId>
+  <artifactId>kloudlite-sdk</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+  <name>Kloudlite SDK</name>
+  <description>Kloudlite SDK for Java</description>
+  <url>https://github.com/kloudlite/sdk</url>
+
+  <!-- Maven Central only accepts io.kloudlite after the namespace is verified in the
+       Central Portal (central.sonatype.com): add the DNS TXT record for kloudlite.io,
+       then generate a publishing user token. Until then `mvn -Prelease deploy` is refused. -->
+
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <name>Kloudlite</name>
+      <organization>Kloudlite</organization>
+      <organizationUrl>https://kloudlite.io</organizationUrl>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/kloudlite/sdk.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/kloudlite/sdk.git</developerConnection>
+    <url>https://github.com/kloudlite/sdk</url>
+  </scm>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <build>
+    <sourceDirectory>.</sourceDirectory>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <release>11</release>
+          <includes><include>Kloudlite.java</include></includes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-source-plugin</artifactId>
+        <version>3.3.1</version>
+        <configuration>
+          <includes><include>Kloudlite.java</include></includes>
+        </configuration>
+        <executions>
+          <execution><id>attach-sources</id><goals><goal>jar-no-fork</goal></goals></execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>3.10.1</version>
+        <configuration>
+          <sourceFileIncludes><include>Kloudlite.java</include></sourceFileIncludes>
+          <doclint>none</doclint>
+        </configuration>
+        <executions>
+          <execution><id>attach-javadocs</id><goals><goal>jar</goal></goals></execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+                <configuration>
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.6.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <!-- server id "central" in settings.xml holds the Central Portal user token -->
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>false</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>
