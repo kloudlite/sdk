@@ -1,12 +1,11 @@
 # Kloudlite SDK for Ruby — stdlib only (net/http + json).
 #
 # Auth is a Bearer token (a session or CLI token). Every module hangs off the
-# one client, and every repository is named by ONE "owner/name" string — the
-# owner half being a person's handle or a team slug:
+# one client:
 #
 #   require_relative "kloudlite"
 #   kl = Kloudlite::Client.new(base_url: "https://dev.kloudlite.io", token: "…")
-#   repo = kl.code_repos.create(repo: "acme/payments")
+#   workspaces = kl.workspaces.list
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
 # resource is always the keyword named after it (repo:, workspace:, environment:, session:,
@@ -78,17 +77,13 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :code_repos, :model_repos, :data_repos, :workspaces, :environments, :sessions, :volumes,
+    attr_reader :workspaces, :environments, :sessions, :volumes,
                 :secrets, :sandboxes, :pipelines
 
-    def initialize(base_url:, token: nil, hub_url: nil, timeout: 30)
+    def initialize(base_url:, token: nil, timeout: 30)
       @base_url = base_url.sub(%r{/+\z}, "")
-      @hub_url = hub_url&.sub(%r{/+\z}, "")
       @token = token
       @timeout = timeout
-      @code_repos = CodeRepos.new(self)
-      @model_repos = HubRepos.new(self, "model")
-      @data_repos = HubRepos.new(self, "dataset")
       @workspaces = Workspaces.new(self)
       @environments = Environments.new(self)
       @sessions = Sessions.new(self)
@@ -107,12 +102,6 @@ module Kloudlite
     # raises ApiError on any non-2xx status.
     def request(method, path, body: nil, query: nil)
       send_to(@base_url, method, path, body: body, query: query)
-    end
-
-    # The same round trip against the hub listener (models and datasets).
-    def hub_request(method, path, body: nil, query: nil)
-      raise ArgumentError, "this client has no hub_url; pass one to reach models and datasets" unless @hub_url
-      send_to(@hub_url, method, path, body: body, query: query)
     end
 
     # The server answers errors as {"error": …} or plain text; take either. Shared with Ide.
@@ -179,139 +168,6 @@ module Kloudlite
           yield JSON.parse(tail.force_encoding(Encoding::UTF_8)) unless tail.empty?
         end
       end
-    end
-  end
-
-  # Code repositories: /v1/repos. Every +repo:+ is one "owner/name" string; only owner-scoped
-  # calls (+list+) take a bare handle.
-  class CodeRepos
-    include Names
-
-    def initialize(client)
-      @c = client
-    end
-
-    # repos
-    def create(repo:, visibility: "private", description: "")
-      owner, name = split(repo)
-      @c.request("POST", "/v1/repos",
-                 body: { owner: owner, name: name, visibility: visibility, description: description })
-    end
-
-    def list(owner:)
-      @c.request("GET", "/v1/repos", query: { owner: owner })
-    end
-
-    def get(repo:)
-      @c.request("GET", path(repo))
-    end
-
-    def update(repo:, description: nil, visibility: nil)
-      @c.request("PATCH", path(repo), body: { description: description, visibility: visibility })
-    end
-
-    def delete(repo:)
-      @c.request("DELETE", path(repo))
-    end
-
-    # A new repo +to+ copied from +repo+: objects and refs, never its pull requests or
-    # settings. Private by default, whatever the source was.
-    def fork(repo:, to:, visibility: "private", description: "")
-      owner, name = split(to)
-      @c.request("POST", path(repo, "/fork"),
-                 body: { owner: owner, name: name, visibility: visibility, description: description })
-    end
-
-    # A new repo whose contents are fetched from a PUBLIC git remote — +url+ is a strict
-    # "https://" URL (GitHub is one host among any; the wire field is +git+). Answers 202: the
-    # repo exists but the fetch runs in the background; poll +import_status+.
-    def import_git(repo:, url:, visibility: "private", description: "")
-      owner, name = split(repo)
-      @c.request("POST", "/v1/repos/import",
-                 body: { owner: owner, name: name, git: url,
-                         visibility: visibility, description: description })
-    end
-
-    # {"from", "state" (queued|running|done|failed), "detail"?} for an imported repo.
-    def import_status(repo:)
-      @c.request("GET", path(repo, "/import"))
-    end
-
-    # branches
-    def branches(repo:)
-      @c.request("GET", path(repo, "/branches"))
-    end
-
-    # +oid+ is the head the caller saw; the delete is refused if the branch moved.
-    def delete_branch(repo:, branch:, oid:)
-      @c.request("DELETE", path(repo, "/branches/#{seg(branch)}"), query: { oid: oid })
-    end
-
-    # protection
-    def protection(repo:)
-      @c.request("GET", path(repo, "/protection"))
-    end
-
-    def protect(repo:, pattern:, remove: false, no_force: true, no_delete: true)
-      @c.request("POST", path(repo, "/protection"),
-                 body: { pattern: pattern, remove: remove, no_force: no_force, no_delete: no_delete })
-    end
-
-    # pull requests
-    def pulls(repo:, state: nil, limit: nil)
-      @c.request("GET", path(repo, "/pulls"), query: { state: state, limit: limit })
-    end
-
-    def pull(repo:, number:)
-      @c.request("GET", path(repo, "/pulls/#{number.to_i}"))
-    end
-
-    # +head_repo+ (another "owner/name") makes it a cross-repo pull: +head+ then
-    # names a branch of that fork, proposed onto this repo's +base+.
-    def open_pull(repo:, title:, head:, base:, description: "", head_repo: nil)
-      split(head_repo) unless head_repo.nil?
-      @c.request("POST", path(repo, "/pulls"),
-                 body: { title: title, head: head, base: base, body: description,
-                         head_repo: head_repo })
-    end
-
-    def comment(repo:, number:, body:)
-      @c.request("POST", path(repo, "/pulls/#{number.to_i}/comments"), body: { body: body })
-    end
-
-    # strategy: fast-forward, squash, merge or rebase. Answers 202 — the merge is a job.
-    def merge(repo:, number:, strategy: "fast-forward")
-      @c.request("POST", path(repo, "/pulls/#{number.to_i}/merge"), query: { strategy: strategy })
-    rescue JSON::ParserError
-      nil # 2xx with the plain-text body "merging"; non-2xx raised ApiError already
-    end
-
-    def close(repo:, number:)
-      @c.request("POST", path(repo, "/pulls/#{number.to_i}/close"))
-    end
-
-    # commits
-    def compare(repo:, base:, head:)
-      @c.request("GET", path(repo, "/compare"), query: { base: base, head: head })
-    end
-
-    # One commit of file changes; each change is {path:, contentBase64:, executable:, delete:}.
-    # +expect+ refuses the commit if the branch moved.
-    def commit(repo:, branch:, message:, changes:, expect: nil, new_branch: nil)
-      @c.request("POST", path(repo, "/commits"),
-                 body: { branch: branch, message: message, changes: changes,
-                         expect: expect, newBranch: new_branch })
-    end
-
-    def signature(repo:, sha:)
-      @c.request("GET", path(repo, "/commits/#{seg(sha)}/signature"))
-    end
-
-    private
-
-    def path(repo, tail = "")
-      owner, name = split(repo)
-      "/v1/repos/#{seg(owner)}/#{seg(name)}#{tail}"
     end
   end
 
@@ -1283,66 +1139,6 @@ module Kloudlite
         return job
       end
       keys.index(job.to_s) or raise ArgumentError, "run #{id} has no job #{job.inspect}; its jobs are #{keys.inspect}"
-    end
-  end
-
-  # Model and dataset repositories, on the hub listener (Hugging Face Hub API).
-  # Management level: create, read, refs, visibility, delete — files move with
-  # git/huggingface_hub against the same hub URL. Every +repo:+ is one
-  # "owner/name" string, exactly as in CodeRepos.
-  class HubRepos
-    include Names
-
-    def initialize(client, kind)
-      @c = client
-      @kind = kind
-      @plural = { "model" => "models", "dataset" => "datasets" }.fetch(kind)
-    end
-
-    # +private+ is sent explicitly rather than trusting a server default.
-    def create(repo:, private: true)
-      @c.hub_request("POST", "/api/repos/create", body: body_of(repo, private: private))
-    end
-
-    def get(repo:)
-      @c.hub_request("GET", path(repo))
-    end
-
-    # Branches and tags, as the hub spells them.
-    def refs(repo:)
-      @c.hub_request("GET", path(repo, "/refs"))
-    end
-
-    def set_private(repo:, private:)
-      @c.hub_request("PUT", path(repo, "/settings"), body: { private: private })
-    end
-
-    def delete(repo:)
-      @c.hub_request("DELETE", "/api/repos/delete", body: body_of(repo))
-    end
-
-    # A new repo whose contents — large files included, through git-lfs — are fetched from a
-    # PUBLIC git remote; +url+ is a strict "https://" URL (the Hugging Face Hub is one host among
-    # any). Answers 202; poll +import_status+.
-    def import_git(repo:, url:, private: true)
-      @c.hub_request("POST", path(repo, "/import"), body: { from: url, private: private })
-    end
-
-    # {"from", "state" (queued|running|done|failed), "detail"?} for an imported repo.
-    def import_status(repo:)
-      @c.hub_request("GET", path(repo, "/import"))
-    end
-
-    private
-
-    def body_of(repo, extra = {})
-      owner, name = split(repo)
-      { name: name, organization: owner, type: @kind }.merge(extra)
-    end
-
-    def path(repo, tail = "")
-      owner, name = split(repo)
-      "/api/#{@plural}/#{seg(owner)}/#{seg(name)}#{tail}"
     end
   end
 end

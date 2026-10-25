@@ -1,13 +1,12 @@
 """Kloudlite SDK for Python — stdlib only.
 
 Auth is a Bearer token (a session or CLI token). Every module hangs off the one
-client, and every repository is named by ONE ``"owner/name"`` string — the owner
-half being a person's handle or a team slug::
+client::
 
     from kloudlite import Kloudlite
 
     kl = Kloudlite(base_url="https://dev.kloudlite.io", token="…")
-    repo = kl.code_repos.create(repo="acme/payments")
+    workspaces = kl.workspaces.list()
 
 Every public call takes its inputs BY NAME (keyword-only), so no caller ever has to remember
 argument order.
@@ -43,15 +42,10 @@ class ApiError(Exception):
 
 
 class Kloudlite:
-    def __init__(self, *, base_url: str, token: str | None = None,
-                 hub_url: str | None = None, timeout: float = 30.0):
+    def __init__(self, *, base_url: str, token: str | None = None, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
-        self.hub_url = hub_url.rstrip("/") if hub_url else None
         self._token = token
         self._timeout = timeout
-        self.code_repos = CodeRepos(self)
-        self.model_repos = HubRepos(self, "model")
-        self.data_repos = HubRepos(self, "dataset")
         self.workspaces = Workspaces(self)
         self.environments = Environments(self)
         self.sessions = Sessions(self)
@@ -70,12 +64,6 @@ class Kloudlite:
         """One HTTP round trip. Returns parsed JSON (or None on an empty body);
         raises :class:`ApiError` on any non-2xx status."""
         return self._request(self.base_url, method, path, body, query)
-
-    def hub_request(self, method: str, path: str, *, body=None, query: dict | None = None):
-        """The same round trip against the hub listener (models and datasets)."""
-        if not self.hub_url:
-            raise ValueError("this client has no hub_url; pass one to reach models and datasets")
-        return self._request(self.hub_url, method, path, body, query)
 
     def _request(self, base: str, method: str, path: str, body=None, query: dict | None = None):
         req = self._prepare(base, method, path, body, query, "application/json")
@@ -131,131 +119,6 @@ def _split(repo: str) -> tuple[str, str]:
     if not sep or not owner or not name or "/" in name:
         raise ValueError(f"a repository is named owner/name, got {repo!r}")
     return owner, name
-
-
-class CodeRepos:
-    """Code repositories: ``/v1/repos``. Every ``repo`` argument is one
-    ``"owner/name"`` string; only owner-scoped calls (``list``) take a bare handle."""
-
-    def __init__(self, client: Kloudlite):
-        self._c = client
-
-    def _path(self, repo: str, tail: str = "") -> str:
-        owner, name = _split(repo)
-        return f"/v1/repos/{_seg(owner)}/{_seg(name)}{tail}"
-
-    # repos
-    def create(self, *, repo: str, visibility: str = "private", description: str = ""):
-        owner, name = _split(repo)
-        return self._c.request("POST", "/v1/repos", body={
-            "owner": owner, "name": name, "visibility": visibility, "description": description,
-        })
-
-    def list(self, *, owner: str):
-        return self._c.request("GET", "/v1/repos", query={"owner": owner})
-
-    def get(self, *, repo: str):
-        return self._c.request("GET", self._path(repo))
-
-    def update(self, *, repo: str, description: str | None = None, visibility: str | None = None):
-        return self._c.request("PATCH", self._path(repo), body={
-            "description": description, "visibility": visibility,
-        })
-
-    def delete(self, *, repo: str):
-        return self._c.request("DELETE", self._path(repo))
-
-    def fork(self, *, repo: str, to: str, visibility: str = "private", description: str = ""):
-        """A new repo ``to`` copied from ``repo``: objects and refs, never its pull
-        requests or settings. Private by default, whatever the source was."""
-        owner, name = _split(to)
-        return self._c.request("POST", self._path(repo, "/fork"), body={
-            "owner": owner, "name": name, "visibility": visibility, "description": description,
-        })
-
-    def import_git(self, *, repo: str, url: str, visibility: str = "private", description: str = ""):
-        """A new repo whose contents are fetched from a PUBLIC git remote — ``url`` is a strict
-        ``https://`` URL (GitHub is one host among any; the wire field stays ``git``). Answers
-        202: the repo exists but the fetch runs in the background; poll :meth:`import_status`."""
-        owner, name = _split(repo)
-        return self._c.request("POST", "/v1/repos/import", body={
-            "owner": owner, "name": name, "git": url,
-            "visibility": visibility, "description": description,
-        })
-
-    def import_status(self, *, repo: str):
-        """``{"from", "state": queued|running|done|failed, "detail"?}`` for an imported repo."""
-        return self._c.request("GET", self._path(repo, "/import"))
-
-    # branches
-    def branches(self, *, repo: str):
-        return self._c.request("GET", self._path(repo, "/branches"))
-
-    def delete_branch(self, *, repo: str, branch: str, oid: str):
-        """`oid` is the head the caller saw; the delete is refused if the branch moved."""
-        return self._c.request("DELETE", self._path(repo, f"/branches/{_seg(branch)}"),
-                               query={"oid": oid})
-
-    # protection
-    def protection(self, *, repo: str):
-        return self._c.request("GET", self._path(repo, "/protection"))
-
-    def protect(self, *, repo: str, pattern: str, remove: bool = False,
-                no_force: bool = True, no_delete: bool = True):
-        return self._c.request("POST", self._path(repo, "/protection"), body={
-            "pattern": pattern, "remove": remove, "no_force": no_force, "no_delete": no_delete,
-        })
-
-    # pull requests
-    def pulls(self, *, repo: str, state: str | None = None, limit: int | None = None):
-        return self._c.request("GET", self._path(repo, "/pulls"),
-                               query={"state": state, "limit": limit})
-
-    def pull(self, *, repo: str, number: int):
-        return self._c.request("GET", self._path(repo, f"/pulls/{int(number)}"))
-
-    def open_pull(self, *, repo: str, title: str, head: str, base: str,
-                  head_repo: str | None = None, description: str = ""):
-        """``head_repo`` (another ``"owner/name"``) makes it a cross-repo pull:
-        ``head`` then names a branch of that fork, proposed onto this repo's ``base``."""
-        if head_repo is not None:
-            _split(head_repo)  # same shape rule as every other repo reference
-        return self._c.request("POST", self._path(repo, "/pulls"), body={
-            "title": title, "head": head, "base": base, "body": description,
-            "head_repo": head_repo,
-        })
-
-    def comment(self, *, repo: str, number: int, body: str):
-        return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/comments"),
-                               body={"body": body})
-
-    def merge(self, *, repo: str, number: int, strategy: str = "fast-forward"):
-        """strategy: fast-forward, squash, merge or rebase. Answers 202 — the merge is a job."""
-        try:
-            return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/merge"),
-                                   query={"strategy": strategy})
-        except json.JSONDecodeError:
-            return None  # 2xx with the plain-text body "merging"; non-2xx raised ApiError already
-
-    def close(self, *, repo: str, number: int):
-        return self._c.request("POST", self._path(repo, f"/pulls/{int(number)}/close"))
-
-    # commits
-    def compare(self, *, repo: str, base: str, head: str):
-        return self._c.request("GET", self._path(repo, "/compare"),
-                               query={"base": base, "head": head})
-
-    def commit(self, *, repo: str, branch: str, message: str, changes: list,
-               expect: str | None = None, new_branch: str | None = None):
-        """One commit of file changes; each change is
-        ``{"path", "contentBase64"?, "executable"?, "delete"?}``."""
-        return self._c.request("POST", self._path(repo, "/commits"), body={
-            "branch": branch, "message": message, "changes": changes,
-            "expect": expect, "newBranch": new_branch,
-        })
-
-    def signature(self, *, repo: str, sha: str):
-        return self._c.request("GET", self._path(repo, f"/commits/{_seg(sha)}/signature"))
 
 
 class Workspaces:
@@ -1257,58 +1120,6 @@ class Run:
         if job in keys:
             return keys.index(job)
         raise ValueError(f"run {self.id} has no job {job!r}; its jobs are {keys}")
-
-
-class HubRepos:
-    """Model and dataset repositories, on the hub listener (Hugging Face Hub API).
-    Management level: create, read, refs, visibility, delete — files move with
-    git/`huggingface_hub` against the same hub URL. Every ``repo`` is one
-    ``"owner/name"`` string, exactly as in :class:`CodeRepos`."""
-
-    def __init__(self, client: Kloudlite, kind: str):
-        self._c = client
-        self._kind = kind
-        self._plural = {"model": "models", "dataset": "datasets"}[kind]
-
-    def _body(self, repo: str, extra: dict | None = None) -> dict:
-        owner, name = _split(repo)
-        out = {"name": name, "organization": owner, "type": self._kind}
-        out.update(extra or {})
-        return out
-
-    def _path(self, repo: str, tail: str = "") -> str:
-        owner, name = _split(repo)
-        return f"/api/{self._plural}/{_seg(owner)}/{_seg(name)}{tail}"
-
-    def create(self, *, repo: str, private: bool = True):
-        """Sent explicitly rather than trusting a server default: a model that was meant to be
-        private must not hinge on one."""
-        return self._c.hub_request("POST", "/api/repos/create",
-                                   body=self._body(repo, {"private": private}))
-
-    def get(self, *, repo: str):
-        return self._c.hub_request("GET", self._path(repo))
-
-    def refs(self, *, repo: str):
-        """Branches and tags, as the hub spells them."""
-        return self._c.hub_request("GET", self._path(repo, "/refs"))
-
-    def set_private(self, *, repo: str, private: bool):
-        return self._c.hub_request("PUT", self._path(repo, "/settings"), body={"private": private})
-
-    def delete(self, *, repo: str):
-        return self._c.hub_request("DELETE", "/api/repos/delete", body=self._body(repo))
-
-    def import_git(self, *, repo: str, url: str, private: bool = True):
-        """A new repo whose contents — large files included, through git-lfs — are fetched from a
-        PUBLIC git remote; ``url`` is a strict ``https://`` URL (the Hugging Face Hub is one host
-        among any). Answers 202; poll :meth:`import_status`."""
-        return self._c.hub_request("POST", self._path(repo, "/import"),
-                                   body={"from": url, "private": private})
-
-    def import_status(self, *, repo: str):
-        """``{"from", "state": queued|running|done|failed, "detail"?}`` for an imported repo."""
-        return self._c.hub_request("GET", self._path(repo, "/import"))
 
 
 def _error_text(raw: bytes) -> str:
