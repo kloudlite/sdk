@@ -112,15 +112,6 @@ def _seg(s: str) -> str:
     return urllib.parse.quote(str(s), safe="")
 
 
-def _split(repo: str) -> tuple[str, str]:
-    """``"owner/name"`` → its two halves, refused client-side when malformed —
-    a shape the server would only ever 404."""
-    owner, sep, name = repo.partition("/")
-    if not sep or not owner or not name or "/" in name:
-        raise ValueError(f"a repository is named owner/name, got {repo!r}")
-    return owner, name
-
-
 class Workspaces:
     """Btrfs-backed dev workspaces, over ``/v1/workspaces``. A workspace is named like an
     environment — ``"name"`` for the caller's own, ``"team/name"`` for one in a team — or by its
@@ -933,13 +924,13 @@ _RUN_TERMINAL = ("success", "failure", "cancelled")
 
 
 class Pipelines:
-    """CI pipelines, over ``/v1/pipelines``: definitions live as YAML in an owner's
-    ``{owner}/pipelines`` repository and run against that owner's repositories, each job in its
-    own sandbox. A run is recorded on the repository it is about, so it is read back by that
-    ``repo`` (``"owner/name"``). :meth:`run`, :meth:`runs` and :meth:`get_run` answer :class:`Run`
-    handles, and every call here and on a handle also has an async twin, ``.aio``::
+    """Pipelines, over ``/v1/pipelines``: a pipeline is a JSON definition stored as numbered
+    versions; a run belongs to a pipeline and executes one version, each job in its own sandbox.
+    :meth:`run`, :meth:`runs` and :meth:`get_run` answer :class:`Run` handles, and every call here
+    and on a handle also has an async twin, ``.aio``::
 
-        run = kl.pipelines.run(owner="acme", pipeline="ci", repo="acme/payments")
+        kl.pipelines.create(owner="acme", definition=definition)
+        run = kl.pipelines.run(owner="acme", pipeline="test", inputs={"target": "staging"})
         for chunk in run.follow(job="test"):
             print(chunk, end="")
         assert run.wait() == "success"
@@ -949,44 +940,76 @@ class Pipelines:
         self._c = client
 
     @_aio
-    def list(self, *, owner: str | None = None) -> dict:
-        """The definitions on ``{owner}/pipelines``'s main branch, broken ones included:
-        ``{"repo", "sha", "pipelines": [{"name", "file", "valid", "errors", "repos", "on",
-        "jobs"}], "errors"}``. ``owner`` (a handle or team slug) defaults to the caller."""
-        return self._c.request("GET", "/v1/pipelines", query={"owner": owner})
+    def create(self, *, owner: str, definition: dict) -> dict:
+        """Save ``definition`` (its ``name`` is the pipeline's) as version 1 (201). A webhook
+        trigger's secret URL is in the answer's ``webhookUrl``, this once. 409 if the name exists."""
+        return self._c.request("POST", f"/v1/pipelines/{_seg(owner)}", body=definition)
 
     @_aio
-    def run(self, *, owner: str, pipeline: str, repo: str, ref: str | None = None,
+    def update(self, *, owner: str, name: str, definition: dict) -> dict:
+        """Replace the definition: a changed one is the next version, an equal one saves nothing
+        and answers the latest. To roll back, send an old definition. A concurrent save is an
+        :class:`ApiError` 409 (``changed; retry``)."""
+        return self._c.request("PUT", f"/v1/pipelines/{_seg(owner)}/{_seg(name)}", body=definition)
+
+    @_aio
+    def list(self, *, owner: str) -> list:
+        """``owner``'s pipelines by name: ``name``, ``latestVersion``, ``updatedAtMs``, ``triggers``."""
+        return self._c.request("GET", f"/v1/pipelines/{_seg(owner)}")
+
+    @_aio
+    def get(self, *, owner: str, name: str, version: int | None = None) -> dict:
+        """The pipeline document of ``version`` (default the latest), ``definition`` included."""
+        return self._c.request("GET", f"/v1/pipelines/{_seg(owner)}/{_seg(name)}",
+                               query={"version": version})
+
+    @_aio
+    def versions(self, *, owner: str, name: str) -> list:
+        """The versions, oldest first: ``version``, ``createdBy``, ``createdAtMs``, ``definitionSha256``."""
+        return self._c.request("GET", f"/v1/pipelines/{_seg(owner)}/{_seg(name)}/versions")
+
+    @_aio
+    def delete(self, *, owner: str, name: str) -> None:
+        """Delete the pipeline and its versions; finished runs stay. 409 while a run is queued or running."""
+        self._c.request("DELETE", f"/v1/pipelines/{_seg(owner)}/{_seg(name)}")
+
+    @_aio
+    def delete_version(self, *, owner: str, name: str, version: int) -> None:
+        """Delete one version; 409 for the latest or one a queued or running run uses."""
+        self._c.request("DELETE", f"/v1/pipelines/{_seg(owner)}/{_seg(name)}/versions/{int(version)}")
+
+    @_aio
+    def rotate_webhook(self, *, owner: str, name: str) -> dict:
+        """Make a new webhook secret; the old URL stops at once. ``{"webhookUrl"}``, shown only here."""
+        return self._c.request("POST", f"/v1/pipelines/{_seg(owner)}/{_seg(name)}/webhook/rotate")
+
+    @_aio
+    def run(self, *, owner: str, pipeline: str, version: int | None = None,
             inputs: dict | None = None, environment: str | None = None,
             clone: str | None = None) -> "Run":
-        """Start ``owner``'s ``pipeline`` by hand on ``repo`` (a name, or ``"owner/name"`` — one of
-        ``owner``'s) at ``ref`` (a branch, tag, full ref or sha; default ``main``) and answer the
-        :class:`Run` at once (202), ``queued``. ``inputs`` are the ones the pipeline's
-        ``on.manual.inputs`` declares. ``environment`` runs every job that names none in that
-        environment; ``clone`` instead in a per-run copy of it, deleted when the run ends — one or
-        the other. A definition that cannot run is an :class:`ApiError` 422 whose message lists
-        every reason, and nothing is recorded."""
-        body = {"repo": repo, "ref": ref, "inputs": inputs,
+        """Start ``pipeline`` by hand and answer the :class:`Run` at once (202), ``queued``.
+        ``version`` defaults to the newest; ``inputs`` are string values of the inputs it declares.
+        ``environment`` runs every job that names none in that environment; ``clone`` instead in a
+        per-run copy of it — one or the other. A version that cannot run is an :class:`ApiError`
+        422 whose message lists every reason, and nothing is recorded."""
+        body = {"version": version, "inputs": inputs,
                 "environment": _run_environment(environment, clone)}
         doc = self._c.request("POST", f"/v1/pipelines/{_seg(owner)}/{_seg(pipeline)}/runs",
                               body={k: v for k, v in body.items() if v is not None})
         return Run(self._c, doc)
 
     @_aio
-    def runs(self, *, repo: str, pipeline: str | None = None, limit: int | None = None) -> list:
-        """``repo``'s runs, newest first; ``pipeline`` keeps one pipeline's."""
-        docs = self._c.request("GET", _repo_runs(repo), query={"pipeline": pipeline, "limit": limit})
+    def runs(self, *, owner: str, pipeline: str, limit: int | None = None) -> list:
+        """The pipeline's runs, newest first (``limit`` default 50, at most 200)."""
+        docs = self._c.request("GET", f"/v1/pipelines/{_seg(owner)}/{_seg(pipeline)}/runs",
+                               query={"limit": limit})
         return [Run(self._c, d) for d in docs or []]
 
     @_aio
-    def get_run(self, *, repo: str, run: str) -> "Run":
-        """One run of ``repo`` by its id (``1760400000000-0a1b2c``)."""
-        return Run(self._c, self._c.request("GET", _repo_runs(repo, f"/{_seg(run)}")))
-
-
-def _repo_runs(repo: str, tail: str = "") -> str:
-    owner, name = _split(repo)
-    return f"/v1/repos/{_seg(owner)}/{_seg(name)}/runs{tail}"
+    def get_run(self, *, owner: str, pipeline: str, run: str) -> "Run":
+        """One run by its id (``1760400000000-0a1b2c``), ``definition`` set while its version exists."""
+        return Run(self._c, self._c.request(
+            "GET", f"/v1/pipelines/{_seg(owner)}/{_seg(pipeline)}/runs/{_seg(run)}"))
 
 
 def _run_environment(environment: str | None, clone: str | None):
@@ -1013,11 +1036,9 @@ class Run:
     id = property(lambda self: self.doc["id"])
     number = property(lambda self: self.doc.get("number"))
     pipeline = property(lambda self: self.doc.get("pipeline"))
-    pipelines_repo = property(lambda self: self.doc.get("pipelinesRepo"))
-    pipelines_sha = property(lambda self: self.doc.get("pipelinesSha"))
-    repo = property(lambda self: self.doc.get("repo"))
-    ref = property(lambda self: self.doc.get("ref"))
-    sha = property(lambda self: self.doc.get("sha"))
+    owner = property(lambda self: self.doc.get("owner"))
+    pipeline_version = property(lambda self: self.doc.get("pipelineVersion"))
+    definition_sha256 = property(lambda self: self.doc.get("definitionSha256"))
     event = property(lambda self: self.doc.get("event"))
     inputs = property(lambda self: self.doc.get("inputs") or {})
     environment = property(lambda self: self.doc.get("environment"))
@@ -1031,7 +1052,7 @@ class Run:
     jobs = property(lambda self: self.doc.get("jobs") or [])
 
     def __repr__(self):
-        return f"<Run {self.repo}#{self.number} {self.pipeline} {self.state}>"
+        return f"<Run {self.owner}/{self.pipeline}#{self.number} {self.state}>"
 
     @_aio
     def refresh(self) -> "Run":
@@ -1105,7 +1126,7 @@ class Run:
             offset = max(offset, nxt)
 
     def _path(self, tail: str = "") -> str:
-        return _repo_runs(self.repo, f"/{_seg(self.id)}{tail}")
+        return f"/v1/pipelines/{_seg(self.owner)}/{_seg(self.pipeline)}/runs/{_seg(self.id)}{tail}"
 
     def _page(self, index: int, offset: int) -> dict:
         """``{data, next, complete, state}``: at most a page of the log from byte ``offset``."""

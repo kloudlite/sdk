@@ -149,23 +149,7 @@ function url(base: string, path: string, query?: Query): string {
   return out;
 }
 
-/** A repository, by its one `"owner/name"` string. */
-export interface RepoRef {
-  repo: string;
-}
-
 const seg = encodeURIComponent;
-
-/** `"owner/name"` → its two halves, refused client-side when malformed. */
-function split(repo: string): [string, string] {
-  const at = repo.indexOf("/");
-  const owner = repo.slice(0, at < 0 ? 0 : at);
-  const name = at < 0 ? "" : repo.slice(at + 1);
-  if (!owner || !name || name.includes("/")) {
-    throw new Error(`a repository is named owner/name, got ${JSON.stringify(repo)}`);
-  }
-  return [owner, name];
-}
 
 /** A workspace: `"name"` (the caller's own), `"team/name"` (theirs in a team), or its id. */
 export interface WorkspaceRef {
@@ -1161,28 +1145,40 @@ export class ProcessOutput implements AsyncIterable<string> {
   }
 }
 
-/** One definition of `GET /v1/pipelines`; a broken one has `valid: false` and its `errors`. */
-export interface PipelineDef {
+/** A pipeline definition: the JSON of the pipeline definition reference. `name` is the pipeline's. */
+export type PipelineDefinition = { name: string } & Record<string, unknown>;
+
+/** A pipeline document, as the definition routes answer it. */
+export interface PipelineDoc {
+  owner: string;
   name: string;
-  /** The path it was parsed from, e.g. `pipelines/ci.yaml`. */
-  file: string;
-  valid: boolean;
-  errors: string[];
-  /** The repositories it runs on. */
-  repos: string[];
-  /** Its triggers, as the definition spells them; `null` when it has none. */
-  on: Record<string, unknown> | null;
-  /** Its job names, in the order written. */
-  jobs: string[];
+  /** The version shown, and the newest one. */
+  version: number;
+  latestVersion: number;
+  createdBy: string;
+  createdAtMs: number;
+  definitionSha256: string;
+  definition: PipelineDefinition;
+  triggers: { schedule?: unknown[]; webhook?: boolean; after?: unknown };
+  webhook: { set: boolean };
+  /** The webhook URL with its secret: only in the answer of the save that made it. */
+  webhookUrl?: string;
 }
 
-/** `GET /v1/pipelines`: the definitions on `{owner}/pipelines`'s main branch at `sha`. */
-export interface PipelineCatalog {
-  repo: string;
-  sha: string;
-  pipelines: PipelineDef[];
-  /** Errors in the shared actions, which belong to no one pipeline. */
-  errors: string[];
+/** One row of `GET /v1/pipelines/{owner}`. */
+export interface PipelineSummary {
+  name: string;
+  latestVersion: number;
+  updatedAtMs: number;
+  triggers: { schedule?: unknown[]; webhook?: boolean; after?: unknown };
+}
+
+/** One row of `GET /v1/pipelines/{owner}/{name}/versions`. */
+export interface PipelineVersion {
+  version: number;
+  createdBy: string;
+  createdAtMs: number;
+  definitionSha256: string;
 }
 
 export type RunState = "queued" | "running" | "success" | "failure" | "cancelled";
@@ -1202,21 +1198,23 @@ export interface RunJob {
   exitCode: number | null;
   failedStep: string | null;
   detail: string | null;
+  /** What the job started from; absent for an empty home. */
+  home?: { volume: string; name?: string; version?: number; snapshot: string };
+  /** What the job saved; absent until the save is ready. */
+  saved?: { volume: string; name?: string; version?: number; snapshot: string };
 }
 
 /** A run as `/v1` answers it — the wire's camelCase, as stored. */
 export interface RunDoc {
   id: string;
-  /** Per repo, from 1: the name people say out loud. */
+  /** Per owner and pipeline, from 1: the name people say out loud. */
   number: number;
   pipeline: string;
-  pipelinesRepo: string;
-  pipelinesSha: string;
-  /** `"owner/name"` of the repo the run is about. */
-  repo: string;
-  ref: string;
-  sha: string;
-  event: "manual" | "push" | "pull_request" | "schedule" | "pipeline";
+  owner: string;
+  /** The version the run was planned from; it cannot change. */
+  pipelineVersion: number;
+  definitionSha256: string;
+  event: "manual" | "schedule" | "webhook" | "pipeline";
   inputs: Record<string, unknown>;
   /** As requested: an environment, `{ clone: name }`, or `null` for the pipeline's own. */
   environment: string | { clone: string } | null;
@@ -1228,6 +1226,8 @@ export interface RunDoc {
   finishedAtMs: number | null;
   detail: string | null;
   jobs: RunJob[];
+  /** The version's definition: only when reading one run, and only while the version exists. */
+  definition: PipelineDefinition | null;
 }
 
 /** One page of a job's log from a byte offset; poll with `next` until `complete`. */
@@ -1240,17 +1240,15 @@ export interface LogPage {
 }
 
 /**
- * {@link Pipelines.run}: `owner`'s `pipeline` on `repo` (a name, or `"owner/name"` — one of
- * `owner`'s). `environment` runs every job that names none in that environment; `clone` instead
- * in a per-run copy of it, deleted when the run ends — one or the other.
+ * {@link Pipelines.run}: start `pipeline` of `owner`. `version` defaults to the newest.
+ * `environment` runs every job that names none in that environment; `clone` instead in a per-run
+ * copy of it — one or the other.
  */
 export interface RunPipeline {
   owner: string;
   pipeline: string;
-  repo: string;
-  /** A branch, tag, full ref or sha; default `main`. */
-  ref?: string;
-  /** The inputs the pipeline's `on.manual.inputs` declares. */
+  version?: number;
+  /** String values of the inputs the pipeline declares. */
   inputs?: Record<string, string>;
   environment?: string;
   clone?: string;
@@ -1261,48 +1259,83 @@ export type JobRef = number | string;
 
 const RUN_TERMINAL: readonly RunState[] = ["success", "failure", "cancelled"];
 
-function runsPath(repo: string, tail = ""): string {
-  const [owner, name] = split(repo);
-  return `/v1/repos/${seg(owner)}/${seg(name)}/runs${tail}`;
-}
-
 /**
- * CI pipelines, over `/v1/pipelines`: definitions live as YAML in an owner's `{owner}/pipelines`
- * repository and run against that owner's repositories, each job in its own sandbox. A run is
- * recorded on the repository it is about, so it is read back by that `repo` (`"owner/name"`):
+ * Pipelines, over `/v1/pipelines`: a JSON definition stored as numbered versions, run job by job
+ * in sandboxes.
  *
- *     const run = await kl.pipelines.run({ owner: "acme", pipeline: "ci", repo: "acme/payments" });
+ *     await kl.pipelines.create({ owner: "acme", definition });
+ *     const run = await kl.pipelines.run({ owner: "acme", pipeline: "test", inputs: { target: "staging" } });
  *     for await (const chunk of run.follow({ job: "test" })) process.stdout.write(chunk);
  *     console.log(await run.wait()); // "success"
  */
 export class Pipelines {
   constructor(private readonly c: Kloudlite) {}
 
-  /** `owner` (a handle or team slug) defaults to the caller. */
-  list({ owner }: { owner?: string } = {}) {
-    return this.c.request<PipelineCatalog>("GET", "/v1/pipelines", undefined, { owner });
+  private base(owner: string, name?: string): string {
+    return `/v1/pipelines/${seg(owner)}` + (name === undefined ? "" : `/${seg(name)}`);
+  }
+
+  /** Save `definition` (its `name` is the pipeline's) as version 1. A webhook trigger's URL is in `webhookUrl`, this once. 409 if the name exists. */
+  create({ owner, definition }: { owner: string; definition: PipelineDefinition }) {
+    return this.c.request<PipelineDoc>("POST", this.base(owner), definition);
   }
 
   /**
-   * Start a run by hand and answer it at once (202), `queued`. A definition that cannot run
-   * rejects with an {@link ApiError} 422 whose message lists every reason, and nothing is recorded.
+   * Replace the definition: a changed one is the next version, an equal one saves nothing. To roll
+   * back, send an old definition. A concurrent save rejects with an {@link ApiError} 409 (`changed; retry`).
    */
-  async run({ owner, pipeline, repo, ref, inputs, environment, clone }: RunPipeline): Promise<Run> {
-    if (environment !== undefined && clone !== undefined) throw new Error("pass environment or clone, not both");
-    const body = { repo, ref, inputs, environment: clone !== undefined ? { clone } : environment };
-    const doc = await this.c.request<RunDoc>("POST", `/v1/pipelines/${seg(owner)}/${seg(pipeline)}/runs`, body);
-    return new Run(this.c, doc);
+  update({ owner, name, definition }: { owner: string; name: string; definition: PipelineDefinition }) {
+    return this.c.request<PipelineDoc>("PUT", this.base(owner, name), definition);
   }
 
-  /** `repo`'s runs, newest first; `pipeline` keeps one pipeline's. */
-  async runs({ repo, pipeline, limit }: RepoRef & { pipeline?: string; limit?: number }): Promise<Run[]> {
-    const docs = await this.c.request<RunDoc[]>("GET", runsPath(repo), undefined, { pipeline, limit });
+  list({ owner }: { owner: string }) {
+    return this.c.request<PipelineSummary[]>("GET", this.base(owner));
+  }
+
+  /** `version` defaults to the latest. */
+  get({ owner, name, version }: { owner: string; name: string; version?: number }) {
+    return this.c.request<PipelineDoc>("GET", this.base(owner, name), undefined, { version });
+  }
+
+  /** Oldest first. */
+  versions({ owner, name }: { owner: string; name: string }) {
+    return this.c.request<PipelineVersion[]>("GET", `${this.base(owner, name)}/versions`);
+  }
+
+  /** Delete the pipeline and its versions; finished runs stay. 409 while a run is queued or running. */
+  async delete({ owner, name }: { owner: string; name: string }): Promise<void> {
+    await this.c.request("DELETE", this.base(owner, name));
+  }
+
+  /** 409 for the latest version or one a queued or running run uses. */
+  async deleteVersion({ owner, name, version }: { owner: string; name: string; version: number }): Promise<void> {
+    await this.c.request("DELETE", `${this.base(owner, name)}/versions/${version}`);
+  }
+
+  /** A new webhook secret; the old URL stops at once. The URL is shown only here. */
+  rotateWebhook({ owner, name }: { owner: string; name: string }) {
+    return this.c.request<{ webhookUrl: string }>("POST", `${this.base(owner, name)}/webhook/rotate`);
+  }
+
+  /**
+   * Start a run by hand and answer it at once (202), `queued`. A version that cannot run rejects
+   * with an {@link ApiError} 422 whose message lists every reason, and nothing is recorded.
+   */
+  async run({ owner, pipeline, version, inputs, environment, clone }: RunPipeline): Promise<Run> {
+    if (environment !== undefined && clone !== undefined) throw new Error("pass environment or clone, not both");
+    const body = { version, inputs, environment: clone !== undefined ? { clone } : environment };
+    return new Run(this.c, await this.c.request<RunDoc>("POST", `${this.base(owner, pipeline)}/runs`, body));
+  }
+
+  /** The pipeline's runs, newest first (`limit` default 50, at most 200). */
+  async runs({ owner, pipeline, limit }: { owner: string; pipeline: string; limit?: number }): Promise<Run[]> {
+    const docs = await this.c.request<RunDoc[]>("GET", `${this.base(owner, pipeline)}/runs`, undefined, { limit });
     return (docs ?? []).map((d) => new Run(this.c, d));
   }
 
-  /** One run of `repo` by its id (`1760400000000-0a1b2c`). */
-  async getRun({ repo, run }: RepoRef & { run: string }): Promise<Run> {
-    return new Run(this.c, await this.c.request<RunDoc>("GET", runsPath(repo, `/${seg(run)}`)));
+  /** One run by its id (`1760400000000-0a1b2c`). */
+  async getRun({ owner, pipeline, run }: { owner: string; pipeline: string; run: string }): Promise<Run> {
+    return new Run(this.c, await this.c.request<RunDoc>("GET", `${this.base(owner, pipeline)}/runs/${seg(run)}`));
   }
 }
 
@@ -1391,7 +1424,7 @@ export class Run {
   }
 
   private path(tail = ""): string {
-    return runsPath(this.doc.repo, `/${seg(this.id)}${tail}`);
+    return `/v1/pipelines/${seg(this.doc.owner)}/${seg(this.doc.pipeline)}/runs/${seg(this.id)}${tail}`;
   }
 
   private page(index: number, offset: number): Promise<LogPage> {

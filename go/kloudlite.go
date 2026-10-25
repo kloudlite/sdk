@@ -157,24 +157,6 @@ func (c *Client) send(base, method, path string, query url.Values, body, out any
 
 func seg(s string) string { return url.PathEscape(s) }
 
-// splitRepo turns "owner/name" into its two halves, refused client-side when
-// malformed — a shape the server would only ever 404.
-func splitRepo(repo string) (string, string, error) {
-	owner, name, ok := strings.Cut(repo, "/")
-	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return "", "", fmt.Errorf("a repository is named owner/name, got %q", repo)
-	}
-	return owner, name, nil
-}
-
-func repoPath(repo, tail string) (string, error) {
-	owner, name, err := splitRepo(repo)
-	if err != nil {
-		return "", err
-	}
-	return "/v1/repos/" + seg(owner) + "/" + seg(name) + tail, nil
-}
-
 // Workspaces is btrfs-backed dev workspaces, over /v1/workspaces. A workspace
 // is named like an environment — "name" (personal), "team/name" (a team's) or
 // its id — and travels as path segment name plus ?owner=team, which the
