@@ -23,18 +23,18 @@ The full manual is at <https://dev.kloudlite.io/docs>.
 
 No call depends on argument order: keyword arguments in Python and Ruby, one
 options object in TypeScript, one request struct in Go, one fluent params
-object in Java. A repository is one `"owner/name"` string; a workspace,
+object in Java. A workspace,
 environment or session is `"name"` (your own) or `"team/name"`.
 
 ## Example
 
-List a repository's pull requests.
+List your workspaces.
 
 Go
 
 ```go
 kl := kloudlite.New(kloudlite.Options{BaseURL: "https://dev.kloudlite.io", Token: "…"})
-pulls, err := kl.CodeRepos.Pulls(kloudlite.ListPulls{Repo: "acme/payments", State: "open"})
+workspaces, err := kl.Workspaces.List("")
 ```
 
 Python
@@ -42,7 +42,7 @@ Python
 ```python
 from kloudlite import Kloudlite
 kl = Kloudlite(base_url="https://dev.kloudlite.io", token="…")
-pulls = kl.code_repos.pulls(repo="acme/payments", state="open")
+workspaces = kl.workspaces.list()
 ```
 
 TypeScript
@@ -50,7 +50,7 @@ TypeScript
 ```ts
 import { Kloudlite } from "./index.ts";
 const kl = new Kloudlite({ baseUrl: "https://dev.kloudlite.io", token: "…" });
-const pulls = await kl.codeRepos.pulls({ repo: "acme/payments", state: "open" });
+const workspaces = await kl.workspaces.list();
 ```
 
 Ruby
@@ -58,17 +58,15 @@ Ruby
 ```ruby
 require_relative "kloudlite"
 kl = Kloudlite::Client.new(base_url: "https://dev.kloudlite.io", token: "…")
-pulls = kl.code_repos.pulls(repo: "acme/payments", state: "open")
+workspaces = kl.workspaces.list
 ```
 
 Java
 
 ```java
 Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudlite.io").token("…"));
-String pulls = kl.codeRepos().pulls(new Kloudlite.ListPulls().repo("acme/payments").state("open"));
+String workspaces = kl.workspaces().list(null);
 ```
-
-Each language folder has a runnable `example` (the fork-and-merge workflow).
 
 ## License
 

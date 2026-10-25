@@ -1,18 +1,17 @@
 // Kloudlite SDK for Java — one file, no dependencies (java.net.http, Java 11+).
 //
 // Auth is a Bearer token (a session or CLI token). Every module hangs off the
-// one client, and every repository is named by ONE "owner/name" string — the
-// owner half being a person's handle or a team slug.
+// one client.
 //
 // Java has no named arguments, so no call ever takes two inputs by position: a
 // method whose only input is the resource itself takes that one String
-// (get("acme/payments"), start("acme/dev")), and every other method takes ONE
+// (get("acme/dev"), start("acme/dev")), and every other method takes ONE
 // params object — a nested class named <Verb><Noun> with a fluent setter per
 // field. A missing required field is an IllegalArgumentException("<field> is
 // required") before anything is sent.
 //
 //   Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudlite.io").token("…"));
-//   String repo = kl.codeRepos().create(new Kloudlite.CreateRepo().repo("acme/payments"));
+//   String workspaces = kl.workspaces().list(null);
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper. The two
 // exceptions are sandboxes() and pipelines(), whose calls hand back live handles
@@ -60,23 +59,18 @@ public class Kloudlite {
 
     /**
      * How to reach the API: {@code baseUrl} is required; {@code token} null means anonymous
-     * (public data only); {@code hubUrl} is the hub listener models and datasets live on.
+     * (public data only).
      */
     public static final class Options {
-        private String baseUrl, hubUrl, token;
+        private String baseUrl, token;
 
         public Options baseUrl(String v) { baseUrl = v; return this; }
-        public Options hubUrl(String v) { hubUrl = v; return this; }
         public Options token(String v) { token = v; return this; }
     }
 
     private final String baseUrl;
-    private final String hubUrl; // null = no hub listener configured
     private final String token; // null = anonymous
     private final HttpClient http;
-    private final CodeRepos codeRepos = new CodeRepos();
-    private final HubRepos modelRepos = new HubRepos("model", "models");
-    private final HubRepos dataRepos = new HubRepos("dataset", "datasets");
     private final Workspaces workspaces = new Workspaces();
     private final Environments environments = new Environments();
     private final Sessions sessions = new Sessions();
@@ -87,24 +81,8 @@ public class Kloudlite {
 
     public Kloudlite(Options opts) {
         this.baseUrl = need(opts.baseUrl, "baseUrl").replaceAll("/+$", "");
-        this.hubUrl = opts.hubUrl == null ? null : opts.hubUrl.replaceAll("/+$", "");
         this.token = opts.token;
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
-    }
-
-    /** Code repositories: {@code /v1/repos}. */
-    public CodeRepos codeRepos() {
-        return codeRepos;
-    }
-
-    /** Model repositories, on the hub listener. */
-    public HubRepos modelRepos() {
-        return modelRepos;
-    }
-
-    /** Dataset repositories, on the hub listener. */
-    public HubRepos dataRepos() {
-        return dataRepos;
     }
 
     /** Btrfs-backed dev workspaces: {@code /v1/workspaces}. */
@@ -181,24 +159,8 @@ public class Kloudlite {
         return send(baseUrl, need(r.method, "method"), r.target(), r.body);
     }
 
-    /** The same round trips against the hub listener (models and datasets). */
-    public String hubRequest(String method, String path) throws IOException, InterruptedException {
-        return hub(method, path, null);
-    }
-
-    public String hubRequest(RawRequest r) throws IOException, InterruptedException {
-        return hub(need(r.method, "method"), r.target(), r.body);
-    }
-
     private String api(String method, String path, String jsonBody) throws IOException, InterruptedException {
         return send(baseUrl, method, path, jsonBody);
-    }
-
-    private String hub(String method, String path, String jsonBody) throws IOException, InterruptedException {
-        if (hubUrl == null) {
-            throw new IllegalStateException("this client has no hub URL; pass one to reach models and datasets");
-        }
-        return send(hubUrl, method, path, jsonBody);
     }
 
     private String send(String base, String method, String path, String jsonBody)
@@ -218,406 +180,6 @@ public class Kloudlite {
             throw new ApiException(resp.statusCode(), errorText(resp.body()));
         }
         return resp.body();
-    }
-
-    /**
-     * Every {@code repo} is one "owner/name" string; only owner-scoped calls ({@link #list})
-     * take a bare handle.
-     */
-    public class CodeRepos {
-        // repos
-        public String create(CreateRepo p) throws IOException, InterruptedException {
-            String[] on = split(need(p.repo, "repo"));
-            return api("POST", "/v1/repos", obj(
-                "owner", on[0], "name", on[1],
-                "visibility", or(p.visibility, "private"),
-                "description", or(p.description, "")));
-        }
-
-        public String list(String owner) throws IOException, InterruptedException {
-            return api("GET", "/v1/repos?owner=" + seg(owner), null);
-        }
-
-        public String get(String repo) throws IOException, InterruptedException {
-            return api("GET", path(repo, ""), null);
-        }
-
-        /** A field left unset is left unchanged. */
-        public String update(UpdateRepo p) throws IOException, InterruptedException {
-            return api("PATCH", path(need(p.repo, "repo"), ""),
-                obj("visibility", p.visibility, "description", p.description));
-        }
-
-        public String delete(String repo) throws IOException, InterruptedException {
-            return api("DELETE", path(repo, ""), null);
-        }
-
-        /**
-         * A new repo {@code to} copied from {@code repo}: objects and refs, never its pull
-         * requests or settings. An unset visibility means private, whatever the source was.
-         */
-        public String fork(ForkRepo p) throws IOException, InterruptedException {
-            String src = need(p.repo, "repo");
-            String[] on = split(need(p.to, "to"));
-            return api("POST", path(src, "/fork"), obj(
-                "owner", on[0], "name", on[1],
-                "visibility", or(p.visibility, "private"),
-                "description", or(p.description, "")));
-        }
-
-        /**
-         * A new repo whose contents are fetched from a PUBLIC git remote — {@code url} is a
-         * strict "https://" URL (GitHub is one host among any). Answers 202: the repo exists but
-         * the fetch runs in the background; poll {@link #importStatus}.
-         */
-        public String importGit(ImportRepo p) throws IOException, InterruptedException {
-            String[] on = split(need(p.repo, "repo"));
-            return api("POST", "/v1/repos/import", obj(
-                "owner", on[0], "name", on[1], "git", need(p.url, "url"),
-                "visibility", or(p.visibility, "private"),
-                "description", or(p.description, "")));
-        }
-
-        /** {from, state: queued|running|done|failed, detail?} for an imported repo. */
-        public String importStatus(String repo) throws IOException, InterruptedException {
-            return api("GET", path(repo, "/import"), null);
-        }
-
-        // branches
-        public String branches(String repo) throws IOException, InterruptedException {
-            return api("GET", path(repo, "/branches"), null);
-        }
-
-        /** {@code oid} is the head the caller saw; the delete is refused if the branch moved. */
-        public String deleteBranch(DeleteBranch p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo"), branch = need(p.branch, "branch"), oid = need(p.oid, "oid");
-            return api("DELETE", path(repo, "/branches/" + seg(branch) + "?oid=" + seg(oid)), null);
-        }
-
-        // protection
-        public String protection(String repo) throws IOException, InterruptedException {
-            return api("GET", path(repo, "/protection"), null);
-        }
-
-        public String protect(ProtectBranch p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo"), pattern = need(p.pattern, "pattern");
-            return api("POST", path(repo, "/protection"),
-                "{\"pattern\":" + quote(pattern) + ",\"remove\":" + p.remove
-                    + ",\"no_force\":" + p.noForce + ",\"no_delete\":" + p.noDelete + "}");
-        }
-
-        // pull requests
-        /** Unset filters are the server's defaults; with neither set this is a bare listing. */
-        public String pulls(ListPulls p) throws IOException, InterruptedException {
-            return api("GET", path(need(p.repo, "repo"), "/pulls"
-                + query("state", p.state, "limit", p.limit == null ? null : p.limit.toString())), null);
-        }
-
-        public String pull(GetPull p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            return api("GET", path(repo, "/pulls/" + need(p.number, "number")), null);
-        }
-
-        /**
-         * {@code headRepo} (another "owner/name") makes it a cross-repo pull: {@code head} then
-         * names a branch of that fork, proposed onto this repo's {@code base}.
-         */
-        public String openPull(OpenPull p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            String title = need(p.title, "title"), head = need(p.head, "head"), base = need(p.base, "base");
-            if (p.headRepo != null) split(p.headRepo);
-            return api("POST", path(repo, "/pulls"), obj(
-                "title", title, "head", head, "base", base,
-                "body", or(p.description, ""),
-                "head_repo", p.headRepo));
-        }
-
-        public String comment(CommentPull p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            long number = need(p.number, "number");
-            return api("POST", path(repo, "/pulls/" + number + "/comments"), obj("body", need(p.body, "body")));
-        }
-
-        /** The merge is a job (202); strategy is fast-forward (the default), squash, merge or rebase. */
-        public String merge(MergePull p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            long number = need(p.number, "number");
-            return api("POST", path(repo, "/pulls/" + number + "/merge?strategy="
-                + seg(or(p.strategy, "fast-forward"))), null);
-        }
-
-        public String close(ClosePull p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            return api("POST", path(repo, "/pulls/" + need(p.number, "number") + "/close"), null);
-        }
-
-        // commits
-        public String compare(CompareRefs p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo"), base = need(p.base, "base"), head = need(p.head, "head");
-            return api("GET", path(repo, "/compare?base=" + seg(base) + "&head=" + seg(head)), null);
-        }
-
-        /** One commit of file changes onto {@code branch}, or onto a new {@code newBranch} cut from it. */
-        public String commit(CommitChanges p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            return api("POST", path(repo, "/commits"), new Json()
-                .str("branch", need(p.branch, "branch"))
-                .str("message", need(p.message, "message"))
-                .raw("changes", need(p.changes, "changes"))
-                .str("expect", p.expect)
-                .str("newBranch", p.newBranch)
-                .toString());
-        }
-
-        public String signature(GetSignature p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            return api("GET", path(repo, "/commits/" + seg(need(p.sha, "sha")) + "/signature"), null);
-        }
-
-        private String path(String repo, String tail) {
-            String[] on = split(repo);
-            return "/v1/repos/" + seg(on[0]) + "/" + seg(on[1]) + tail;
-        }
-    }
-
-    // ── code repo params ───────────────────────────────────────────────────
-
-    /** {@link CodeRepos#create}: visibility defaults to private, description to empty. */
-    public static final class CreateRepo {
-        private String repo, visibility, description;
-
-        public CreateRepo repo(String v) { repo = v; return this; }
-        public CreateRepo visibility(String v) { visibility = v; return this; }
-        public CreateRepo description(String v) { description = v; return this; }
-    }
-
-    /** {@link CodeRepos#update}: only the fields set are changed. */
-    public static final class UpdateRepo {
-        private String repo, description, visibility;
-
-        public UpdateRepo repo(String v) { repo = v; return this; }
-        public UpdateRepo description(String v) { description = v; return this; }
-        public UpdateRepo visibility(String v) { visibility = v; return this; }
-    }
-
-    /** {@link CodeRepos#fork}: {@code repo} is the source, {@code to} the new "owner/name". */
-    public static final class ForkRepo {
-        private String repo, to, visibility, description;
-
-        public ForkRepo repo(String v) { repo = v; return this; }
-        public ForkRepo to(String v) { to = v; return this; }
-        public ForkRepo visibility(String v) { visibility = v; return this; }
-        public ForkRepo description(String v) { description = v; return this; }
-    }
-
-    /** {@link CodeRepos#importGit}: {@code url} is sent as the wire field {@code git}. */
-    public static final class ImportRepo {
-        private String repo, url, visibility, description;
-
-        public ImportRepo repo(String v) { repo = v; return this; }
-        public ImportRepo url(String v) { url = v; return this; }
-        public ImportRepo visibility(String v) { visibility = v; return this; }
-        public ImportRepo description(String v) { description = v; return this; }
-    }
-
-    public static final class DeleteBranch {
-        private String repo, branch, oid;
-
-        public DeleteBranch repo(String v) { repo = v; return this; }
-        public DeleteBranch branch(String v) { branch = v; return this; }
-        public DeleteBranch oid(String v) { oid = v; return this; }
-    }
-
-    /** {@link CodeRepos#protect}: {@code remove(true)} lifts the rule instead of adding it. */
-    public static final class ProtectBranch {
-        private String repo, pattern;
-        private boolean remove;
-        // Both on by default, as in every other SDK: a protected branch refuses force-pushes and deletes.
-        private boolean noForce = true, noDelete = true;
-
-        public ProtectBranch repo(String v) { repo = v; return this; }
-        public ProtectBranch pattern(String v) { pattern = v; return this; }
-        public ProtectBranch remove(boolean v) { remove = v; return this; }
-        public ProtectBranch noForce(boolean v) { noForce = v; return this; }
-        public ProtectBranch noDelete(boolean v) { noDelete = v; return this; }
-    }
-
-    public static final class ListPulls {
-        private String repo, state;
-        private Integer limit;
-
-        public ListPulls repo(String v) { repo = v; return this; }
-        public ListPulls state(String v) { state = v; return this; }
-        public ListPulls limit(int v) { limit = v; return this; }
-    }
-
-    public static final class GetPull {
-        private String repo;
-        private Long number;
-
-        public GetPull repo(String v) { repo = v; return this; }
-        public GetPull number(long v) { number = v; return this; }
-    }
-
-    public static final class OpenPull {
-        private String repo, title, head, base, headRepo, description;
-
-        public OpenPull repo(String v) { repo = v; return this; }
-        public OpenPull title(String v) { title = v; return this; }
-        public OpenPull head(String v) { head = v; return this; }
-        public OpenPull base(String v) { base = v; return this; }
-        public OpenPull headRepo(String v) { headRepo = v; return this; }
-        public OpenPull description(String v) { description = v; return this; }
-    }
-
-    public static final class CommentPull {
-        private String repo, body;
-        private Long number;
-
-        public CommentPull repo(String v) { repo = v; return this; }
-        public CommentPull number(long v) { number = v; return this; }
-        public CommentPull body(String v) { body = v; return this; }
-    }
-
-    public static final class MergePull {
-        private String repo, strategy;
-        private Long number;
-
-        public MergePull repo(String v) { repo = v; return this; }
-        public MergePull number(long v) { number = v; return this; }
-        public MergePull strategy(String v) { strategy = v; return this; }
-    }
-
-    public static final class ClosePull {
-        private String repo;
-        private Long number;
-
-        public ClosePull repo(String v) { repo = v; return this; }
-        public ClosePull number(long v) { number = v; return this; }
-    }
-
-    public static final class CompareRefs {
-        private String repo, base, head;
-
-        public CompareRefs repo(String v) { repo = v; return this; }
-        public CompareRefs base(String v) { base = v; return this; }
-        public CompareRefs head(String v) { head = v; return this; }
-    }
-
-    /**
-     * {@link CodeRepos#commit}: {@code changes} is the raw JSON array, each change
-     * {@code {"path", "contentBase64"?, "executable"?, "delete"?}}; {@code expect} is the head
-     * the caller saw, refused if the branch moved.
-     */
-    public static final class CommitChanges {
-        private String repo, branch, message, changes, expect, newBranch;
-
-        public CommitChanges repo(String v) { repo = v; return this; }
-        public CommitChanges branch(String v) { branch = v; return this; }
-        public CommitChanges message(String v) { message = v; return this; }
-        public CommitChanges changes(String changesJson) { changes = changesJson; return this; }
-        public CommitChanges expect(String v) { expect = v; return this; }
-        public CommitChanges newBranch(String v) { newBranch = v; return this; }
-    }
-
-    public static final class GetSignature {
-        private String repo, sha;
-
-        public GetSignature repo(String v) { repo = v; return this; }
-        public GetSignature sha(String v) { sha = v; return this; }
-    }
-
-    /**
-     * Model and dataset repositories, on the hub listener (Hugging Face Hub API).
-     * Management level: create, read, refs, visibility, delete — files move with
-     * git/huggingface_hub against the same hub URL. Every {@code repo} is one
-     * "owner/name" string, exactly as in {@link CodeRepos}.
-     */
-    public class HubRepos {
-        private final String kind;
-        private final String plural;
-
-        HubRepos(String kind, String plural) {
-            this.kind = kind;
-            this.plural = plural;
-        }
-
-        /** Private unless told otherwise; sent explicitly rather than trusting a server default. */
-        public String create(CreateHubRepo p) throws IOException, InterruptedException {
-            String[] on = split(need(p.repo, "repo"));
-            return hub("POST", "/api/repos/create",
-                "{\"name\":" + quote(on[1]) + ",\"organization\":" + quote(on[0])
-                    + ",\"type\":" + quote(kind) + ",\"private\":" + p.privateRepo + "}");
-        }
-
-        public String get(String repo) throws IOException, InterruptedException {
-            return hub("GET", path(repo, ""), null);
-        }
-
-        /** Branches and tags, as the hub spells them. */
-        public String refs(String repo) throws IOException, InterruptedException {
-            return hub("GET", path(repo, "/refs"), null);
-        }
-
-        public String setPrivate(SetPrivate p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            return hub("PUT", path(repo, "/settings"), "{\"private\":" + need(p.privateRepo, "privateRepo") + "}");
-        }
-
-        public String delete(String repo) throws IOException, InterruptedException {
-            String[] on = split(repo);
-            return hub("DELETE", "/api/repos/delete",
-                obj("name", on[1], "organization", on[0], "type", kind));
-        }
-
-        /**
-         * A new repo whose contents — large files included, through git-lfs — are fetched from a
-         * PUBLIC git remote; {@code url} is a strict "https://" URL (the Hugging Face Hub is one
-         * host among any). Answers 202; poll {@link #importStatus}.
-         */
-        public String importGit(ImportHubRepo p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo");
-            return hub("POST", path(repo, "/import"),
-                "{\"from\":" + quote(need(p.url, "url")) + ",\"private\":" + p.privateRepo + "}");
-        }
-
-        /** {from, state: queued|running|done|failed, detail?} for an imported repo. */
-        public String importStatus(String repo) throws IOException, InterruptedException {
-            return hub("GET", path(repo, "/import"), null);
-        }
-
-        private String path(String repo, String tail) {
-            String[] on = split(repo);
-            return "/api/" + plural + "/" + seg(on[0]) + "/" + seg(on[1]) + tail;
-        }
-    }
-
-    // ── hub repo params (`private` is a Java keyword, so its setter is privateRepo) ──
-
-    public static final class CreateHubRepo {
-        private String repo;
-        private boolean privateRepo = true;
-
-        public CreateHubRepo repo(String v) { repo = v; return this; }
-        public CreateHubRepo privateRepo(boolean v) { privateRepo = v; return this; }
-    }
-
-    public static final class SetPrivate {
-        private String repo;
-        private Boolean privateRepo;
-
-        public SetPrivate repo(String v) { repo = v; return this; }
-        public SetPrivate privateRepo(boolean v) { privateRepo = v; return this; }
-    }
-
-    /** {@link HubRepos#importGit}: the hub's import route takes {@code url} as {@code from}. */
-    public static final class ImportHubRepo {
-        private String repo, url;
-        private boolean privateRepo = true;
-
-        public ImportHubRepo repo(String v) { repo = v; return this; }
-        public ImportHubRepo url(String v) { url = v; return this; }
-        public ImportHubRepo privateRepo(boolean v) { privateRepo = v; return this; }
     }
 
     /**

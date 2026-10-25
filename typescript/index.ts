@@ -2,16 +2,15 @@
  * Kloudlite SDK for TypeScript — zero dependencies, built on `fetch`.
  *
  * Auth is a Bearer token (a session or CLI token). Every module hangs off the
- * one client, and every repository is named by ONE `"owner/name"` string — the
- * owner half being a person's handle or a team slug. Every method takes ONE
+ * one client. Every method takes ONE
  * options object, so no caller ever has to remember argument order:
  *
  *     import { Kloudlite } from "@kloudlite/sdk";
  *     const kl = new Kloudlite({ baseUrl: "https://dev.kloudlite.io", token: "…" });
- *     const repo = await kl.codeRepos.create({ repo: "acme/payments" });
+ *     const workspaces = await kl.workspaces.list();
  *
- * Option names are camelCase everywhere (`headRepo`, `quotaGb`, `snapshot`, `timeoutMs`); the
- * SDK maps them onto whatever the wire spells (`head_repo`, `quota_gb`, `snapshot_id`,
+ * Option names are camelCase everywhere (`quotaGb`, `snapshot`, `timeoutMs`); the
+ * SDK maps them onto whatever the wire spells (`quota_gb`, `snapshot_id`,
  * `timeout_ms`). {@link Kloudlite.request} is the low-level escape hatch and takes the wire as-is.
  */
 
@@ -20,8 +19,6 @@ const USER_AGENT = `kloudlite-sdk-typescript/${VERSION}`;
 
 export interface KloudliteOptions {
   baseUrl: string;
-  /** The hub listener (models and datasets), e.g. `https://hub.example.com`. */
-  hubUrl?: string;
   /** Omit for anonymous access to public data. */
   token?: string;
   /** Per-request timeout in milliseconds. Default 30 000. */
@@ -45,9 +42,6 @@ type Query = Record<string, string | number | boolean | undefined>;
 const STREAM = Symbol("stream");
 
 export class Kloudlite {
-  readonly codeRepos: CodeRepos;
-  readonly modelRepos: HubRepos;
-  readonly dataRepos: HubRepos;
   readonly workspaces: Workspaces;
   readonly environments: Environments;
   readonly sessions: Sessions;
@@ -56,18 +50,13 @@ export class Kloudlite {
   readonly sandboxes: Sandboxes;
   readonly pipelines: Pipelines;
   private readonly baseUrl: string;
-  private readonly hubUrl?: string;
   private readonly token?: string;
   private readonly timeoutMs: number;
 
   constructor(opts: KloudliteOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
-    this.hubUrl = opts.hubUrl?.replace(/\/+$/, "");
     this.token = opts.token;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
-    this.codeRepos = new CodeRepos(this);
-    this.modelRepos = new HubRepos(this, "model");
-    this.dataRepos = new HubRepos(this, "dataset");
     this.workspaces = new Workspaces(this);
     this.environments = new Environments(this);
     this.sessions = new Sessions(this);
@@ -88,12 +77,6 @@ export class Kloudlite {
    */
   request<T = unknown>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
     return this.send(this.baseUrl, method, path, body, query);
-  }
-
-  /** The same round trip against the hub listener (models and datasets). */
-  hubRequest<T = unknown>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
-    if (!this.hubUrl) throw new Error("this client has no hubUrl; pass one to reach models and datasets");
-    return this.send(this.hubUrl, method, path, body, query);
   }
 
   private async send<T>(base: string, method: string, path: string, body?: unknown, query?: Query): Promise<T> {
@@ -166,99 +149,9 @@ function url(base: string, path: string, query?: Query): string {
   return out;
 }
 
-export interface Repo {
-  _id: string;
-  owner: string;
-  name: string;
-  public: boolean;
-  description: string;
-  created_by: string;
-  created_at: number;
-}
-
-export interface Branch {
-  name: string;
-  oid: string;
-  default: boolean;
-}
-
-export interface FileChange {
-  path: string;
-  /** Base64-encoded bytes; absent when `delete` is set. */
-  contentBase64?: string;
-  /** Absent keeps the mode the file already has. */
-  executable?: boolean;
-  delete?: boolean;
-}
-
-export type Visibility = "public" | "private";
-export type MergeStrategy = "fast-forward" | "squash" | "merge" | "rebase";
-
 /** A repository, by its one `"owner/name"` string. */
 export interface RepoRef {
   repo: string;
-}
-
-/** One pull request of a repository. */
-export interface PullRef extends RepoRef {
-  number: number;
-}
-
-export interface CreateRepo extends RepoRef {
-  /** Default `"private"`. */
-  visibility?: Visibility;
-  /** Default `""`. */
-  description?: string;
-}
-
-export interface UpdateRepo extends RepoRef {
-  description?: string;
-  visibility?: Visibility;
-}
-
-export interface ForkRepo extends RepoRef {
-  /** Where the fork lands, `"owner/name"`. */
-  to: string;
-  visibility?: Visibility;
-  description?: string;
-}
-
-export interface ImportRepo extends RepoRef {
-  /** A strict `https://` git URL. */
-  url: string;
-  visibility?: Visibility;
-  description?: string;
-}
-
-export interface Protect extends RepoRef {
-  pattern: string;
-  remove?: boolean;
-  noForce?: boolean;
-  noDelete?: boolean;
-}
-
-export interface ListPulls extends RepoRef {
-  state?: string;
-  limit?: number;
-}
-
-export interface OpenPull extends RepoRef {
-  title: string;
-  head: string;
-  base: string;
-  /** Another `"owner/name"`: `head` is then a branch of that fork. */
-  headRepo?: string;
-  description?: string;
-}
-
-export interface Commit extends RepoRef {
-  branch: string;
-  message: string;
-  changes: FileChange[];
-  /** The head the caller saw; the commit is refused if the branch moved. */
-  expect?: string;
-  /** Land on a new branch cut from `branch` instead of on `branch` itself. */
-  newBranch?: string;
 }
 
 const seg = encodeURIComponent;
@@ -272,141 +165,6 @@ function split(repo: string): [string, string] {
     throw new Error(`a repository is named owner/name, got ${JSON.stringify(repo)}`);
   }
   return [owner, name];
-}
-
-/**
- * Code repositories: `/v1/repos`. Every `repo` is one `"owner/name"` string; only owner-scoped
- * calls (`list`) take a bare handle.
- */
-export class CodeRepos {
-  constructor(private readonly c: Kloudlite) {}
-
-  private path(repo: string, tail = ""): string {
-    const [owner, name] = split(repo);
-    return `/v1/repos/${seg(owner)}/${seg(name)}${tail}`;
-  }
-
-  // repos
-  create({ repo, visibility = "private", description = "" }: CreateRepo) {
-    const [owner, name] = split(repo);
-    return this.c.request<Repo>("POST", "/v1/repos", { owner, name, visibility, description });
-  }
-
-  list({ owner }: { owner: string }) {
-    return this.c.request<Repo[]>("GET", "/v1/repos", undefined, { owner });
-  }
-
-  get({ repo }: RepoRef) {
-    return this.c.request<Repo>("GET", this.path(repo));
-  }
-
-  update({ repo, description, visibility }: UpdateRepo) {
-    return this.c.request("PATCH", this.path(repo), { description, visibility });
-  }
-
-  delete({ repo }: RepoRef) {
-    return this.c.request("DELETE", this.path(repo));
-  }
-
-  /**
-   * A new repo `to` copied from `repo`: objects and refs, never its pull requests or settings.
-   * Private by default, whatever the source was.
-   */
-  fork({ repo, to, visibility = "private", description = "" }: ForkRepo) {
-    const [owner, name] = split(to);
-    return this.c.request<Repo>("POST", this.path(repo, "/fork"), { owner, name, visibility, description });
-  }
-
-  /**
-   * A new repo whose contents are fetched from a PUBLIC git remote — `url` is a strict
-   * `https://` URL (GitHub is one host among any). Answers 202: the repo exists but the fetch
-   * runs in the background; poll {@link importStatus}.
-   */
-  importGit({ repo, url, visibility = "private", description = "" }: ImportRepo) {
-    const [owner, name] = split(repo);
-    return this.c.request<Repo>("POST", "/v1/repos/import", { owner, name, git: url, visibility, description });
-  }
-
-  /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */
-  importStatus({ repo }: RepoRef) {
-    return this.c.request("GET", this.path(repo, "/import"));
-  }
-
-  // branches
-  branches({ repo }: RepoRef) {
-    return this.c.request<Branch[]>("GET", this.path(repo, "/branches"));
-  }
-
-  /** `oid` is the head the caller saw; the delete is refused if the branch moved. */
-  deleteBranch({ repo, branch, oid }: RepoRef & { branch: string; oid: string }) {
-    return this.c.request("DELETE", this.path(repo, `/branches/${seg(branch)}`), undefined, { oid });
-  }
-
-  // protection
-  protection({ repo }: RepoRef) {
-    return this.c.request("GET", this.path(repo, "/protection"));
-  }
-
-  protect({ repo, pattern, remove, noForce, noDelete }: Protect) {
-    return this.c.request("POST", this.path(repo, "/protection"), {
-      pattern, remove, no_force: noForce, no_delete: noDelete,
-    });
-  }
-
-  // pull requests
-  pulls({ repo, state, limit }: ListPulls) {
-    return this.c.request<unknown[]>("GET", this.path(repo, "/pulls"), undefined, { state, limit });
-  }
-
-  pull({ repo, number }: PullRef) {
-    return this.c.request("GET", this.path(repo, `/pulls/${number}`));
-  }
-
-  /**
-   * `headRepo` (another `"owner/name"`) makes it a cross-repo pull: `head` then names a branch
-   * of that fork, proposed onto this repo's `base`.
-   */
-  openPull({ repo, title, head, base, headRepo, description = "" }: OpenPull) {
-    if (headRepo !== undefined) split(headRepo);
-    return this.c.request("POST", this.path(repo, "/pulls"), {
-      body: description, title, head, base, head_repo: headRepo,
-    });
-  }
-
-  comment({ repo, number, body }: PullRef & { body: string }) {
-    return this.c.request("POST", this.path(repo, `/pulls/${number}/comments`), { body });
-  }
-
-  /** The merge is a job: the server answers 202 and the pull reports where it got to. */
-  async merge({ repo, number, strategy = "fast-forward" }: PullRef & { strategy?: MergeStrategy }) {
-    try {
-      return await this.c.request("POST", this.path(repo, `/pulls/${number}/merge`), undefined, { strategy });
-    } catch (e) {
-      if (e instanceof SyntaxError) return null; // 2xx with the plain-text body "merging"
-      throw e;
-    }
-  }
-
-  close({ repo, number }: PullRef) {
-    return this.c.request("POST", this.path(repo, `/pulls/${number}/close`));
-  }
-
-  // commits
-  compare({ repo, base, head }: RepoRef & { base: string; head: string }) {
-    return this.c.request("GET", this.path(repo, "/compare"), undefined, { base, head });
-  }
-
-  /** One commit of file changes; `expect` refuses the commit if the branch moved. */
-  commit({ repo, branch, message, changes, expect, newBranch }: Commit) {
-    // The commit endpoint is camelCase on the wire (`newBranch`, `contentBase64`).
-    return this.c.request<{ commit: string; branch: string }>("POST", this.path(repo, "/commits"), {
-      branch, message, changes, expect, newBranch,
-    });
-  }
-
-  signature({ repo, sha }: RepoRef & { sha: string }) {
-    return this.c.request("GET", this.path(repo, `/commits/${seg(sha)}/signature`));
-  }
 }
 
 /** A workspace: `"name"` (the caller's own), `"team/name"` (theirs in a team), or its id. */
@@ -1651,69 +1409,6 @@ export class Run {
     const i = keys.indexOf(job);
     if (i < 0) throw new Error(`run ${this.id} has no job ${JSON.stringify(job)}; its jobs are ${JSON.stringify(keys)}`);
     return i;
-  }
-}
-
-/**
- * Model and dataset repositories, on the hub listener (Hugging Face Hub API).
- * Management level: create, read, refs, visibility, delete — files move with
- * git/`huggingface_hub` against the same hub URL. Every `repo` is one
- * `"owner/name"` string, exactly as in {@link CodeRepos}.
- */
-export class HubRepos {
-  private readonly plural: string;
-
-  constructor(
-    private readonly c: Kloudlite,
-    private readonly kind: "model" | "dataset",
-  ) {
-    this.plural = kind === "model" ? "models" : "datasets";
-  }
-
-  private body(repo: string, extra?: Record<string, unknown>) {
-    const [owner, name] = split(repo);
-    return { name, organization: owner, type: this.kind, ...extra };
-  }
-
-  private path(repo: string, tail = ""): string {
-    const [owner, name] = split(repo);
-    return `/api/${this.plural}/${seg(owner)}/${seg(name)}${tail}`;
-  }
-
-  /** `private` (default `true`) is sent explicitly rather than trusting a server default. */
-  create({ repo, private: isPrivate = true }: RepoRef & { private?: boolean }) {
-    return this.c.hubRequest("POST", "/api/repos/create", this.body(repo, { private: isPrivate }));
-  }
-
-  get({ repo }: RepoRef) {
-    return this.c.hubRequest("GET", this.path(repo));
-  }
-
-  /** Branches and tags, as the hub spells them. */
-  refs({ repo }: RepoRef) {
-    return this.c.hubRequest("GET", this.path(repo, "/refs"));
-  }
-
-  setPrivate({ repo, private: isPrivate }: RepoRef & { private: boolean }) {
-    return this.c.hubRequest("PUT", this.path(repo, "/settings"), { private: isPrivate });
-  }
-
-  delete({ repo }: RepoRef) {
-    return this.c.hubRequest("DELETE", "/api/repos/delete", this.body(repo));
-  }
-
-  /**
-   * A new repo whose contents — large files included, through git-lfs — are fetched from a
-   * PUBLIC git remote; `url` is a strict `https://` URL (the Hugging Face Hub is one host among
-   * any). Answers 202; poll {@link importStatus}.
-   */
-  importGit({ repo, url, private: isPrivate = true }: RepoRef & { url: string; private?: boolean }) {
-    return this.c.hubRequest("POST", this.path(repo, "/import"), { from: url, private: isPrivate });
-  }
-
-  /** `{from, state: queued|running|done|failed, detail?}` for an imported repo. */
-  importStatus({ repo }: RepoRef) {
-    return this.c.hubRequest("GET", this.path(repo, "/import"));
   }
 }
 

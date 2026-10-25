@@ -1,19 +1,17 @@
 // Package kloudlite is the Kloudlite SDK for Go — stdlib only.
 //
 // Auth is a Bearer token (a session or CLI token). Every module hangs off the
-// one client, and every repository is named by ONE "owner/name" string — the
-// owner half being a person's handle or a team slug.
+// one client.
 //
 // No call takes two inputs by position. A method whose only input is the
-// resource itself takes that one string (Get(repo)); everything else takes ONE
+// resource itself takes that one string (Get(workspace)); everything else takes ONE
 // request struct named for the call, so every argument is spelled by name:
 //
 //	kl := kloudlite.New(kloudlite.Options{BaseURL: "https://dev.kloudlite.io", Token: "…"})
-//	repo, err := kl.CodeRepos.Create(kloudlite.CreateRepo{Repo: "acme/payments"})
+//	workspaces, err := kl.Workspaces.List("")
 //
 // The structs are the caller's vocabulary, not the wire's: the SDK builds the
-// bodies, paths and queries the server reads (Snapshot travels as snapshot_id,
-// URL as git, To as name).
+// bodies, paths and queries the server reads (Snapshot travels as snapshot_id).
 package kloudlite
 
 import (
@@ -38,16 +36,11 @@ type ApiError struct {
 func (e *ApiError) Error() string { return fmt.Sprintf("%d: %s", e.Status, e.Message) }
 
 // Ptr answers a pointer to v — for the few fields whose zero value is a real
-// choice (CreateHubRepo.Private, UpdateRepo.Description), where nil means
+// choice (SetTTL's ttlSecs), where nil means
 // "not set".
 func Ptr[T any](v T) *T { return &v }
 
 type Client struct {
-	CodeRepos *CodeRepos
-	// ModelRepos and DataRepos live on the hub listener; their calls fail with a
-	// plain error until Options.HubURL is given.
-	ModelRepos   *HubRepos
-	DataRepos    *HubRepos
 	Workspaces   *Workspaces
 	Environments *Environments
 	Sessions     *Sessions
@@ -57,18 +50,14 @@ type Client struct {
 	Pipelines    *Pipelines
 
 	baseURL string
-	hubURL  string
 	token   string
 	http    *http.Client
 }
 
-// Options configures New. An empty Token means anonymous access to public
-// data; HubURL (e.g. https://hub.example.com) is needed only for models and
-// datasets; a zero Timeout means 30 s.
+// Options configures New. A zero Timeout means 30 s.
 type Options struct {
 	BaseURL string
 	Token   string
-	HubURL  string
 	Timeout time.Duration
 }
 
@@ -80,13 +69,9 @@ func New(opts Options) *Client {
 	}
 	c := &Client{
 		baseURL: strings.TrimRight(opts.BaseURL, "/"),
-		hubURL:  strings.TrimRight(opts.HubURL, "/"),
 		token:   opts.Token,
 		http:    &http.Client{Timeout: timeout},
 	}
-	c.CodeRepos = &CodeRepos{c}
-	c.ModelRepos = &HubRepos{c: c, kind: "model", plural: "models"}
-	c.DataRepos = &HubRepos{c: c, kind: "dataset", plural: "datasets"}
 	c.Workspaces = &Workspaces{c}
 	c.Environments = &Environments{c}
 	c.Sessions = &Sessions{c}
@@ -123,20 +108,8 @@ func (c *Client) Request(method, path string, opts RequestOptions) error {
 	return c.call(method, path, opts.Query, opts.Body, opts.Out)
 }
 
-// HubRequest is the same round trip against the hub listener.
-func (c *Client) HubRequest(method, path string, opts RequestOptions) error {
-	return c.hub(method, path, opts.Query, opts.Body, opts.Out)
-}
-
 func (c *Client) call(method, path string, query url.Values, body, out any) error {
 	return c.send(c.baseURL, method, path, query, body, out)
-}
-
-func (c *Client) hub(method, path string, query url.Values, body, out any) error {
-	if c.hubURL == "" {
-		return fmt.Errorf("this client has no hub URL; set Options.HubURL to reach models and datasets")
-	}
-	return c.send(c.hubURL, method, path, query, body, out)
 }
 
 func (c *Client) send(base, method, path string, query url.Values, body, out any) error {
@@ -182,150 +155,6 @@ func (c *Client) send(base, method, path string, query url.Values, body, out any
 	return nil
 }
 
-// CodeRepos is the code-repository module: /v1/repos. Every repo argument is one
-// "owner/name" string; only owner-scoped calls (List) take a bare handle.
-type CodeRepos struct{ c *Client }
-
-type Repo struct {
-	ID          string `json:"_id"`
-	Owner       string `json:"owner"`
-	Name        string `json:"name"`
-	Public      bool   `json:"public"`
-	Description string `json:"description"`
-	CreatedBy   string `json:"created_by"`
-	CreatedAt   int64  `json:"created_at"`
-}
-
-type Branch struct {
-	Name    string `json:"name"`
-	Oid     string `json:"oid"`
-	Default bool   `json:"default"`
-}
-
-// FileChange is one file's worth of a commit. ContentBase64 carries the bytes
-// (absent when Delete is set); a nil Executable keeps the mode the file has.
-type FileChange struct {
-	Path          string `json:"path"`
-	ContentBase64 string `json:"contentBase64,omitempty"`
-	Executable    *bool  `json:"executable,omitempty"`
-	Delete        bool   `json:"delete,omitempty"`
-}
-
-// CreateRepo makes Repo ("owner/name"). An empty Visibility means private.
-type CreateRepo struct {
-	Repo        string
-	Visibility  string
-	Description string
-}
-
-// UpdateRepo changes what is set: a nil Description and an empty Visibility
-// are left alone (Ptr("") clears the description).
-type UpdateRepo struct {
-	Repo        string
-	Description *string
-	Visibility  string
-}
-
-// ForkRepo copies Repo into To ("owner/name"); private unless Visibility says
-// otherwise, whatever the source was.
-type ForkRepo struct {
-	Repo        string
-	To          string
-	Visibility  string
-	Description string
-}
-
-// ImportRepo makes Repo from a PUBLIC git remote; URL is a strict "https://"
-// URL (GitHub is one host among any).
-type ImportRepo struct {
-	Repo        string
-	URL         string
-	Visibility  string
-	Description string
-}
-
-// DeleteBranch carries the head Oid the caller saw; the delete is refused if
-// the branch moved.
-type DeleteBranch struct {
-	Repo   string
-	Branch string
-	Oid    string
-}
-
-// ProtectBranch sets (or with Remove, drops) the rule for Pattern.
-type ProtectBranch struct {
-	Repo     string
-	Pattern  string
-	Remove   bool
-	NoForce  bool
-	NoDelete bool
-}
-
-// ListPulls filters a repo's pulls; an empty State and a zero Limit mean the
-// server's defaults.
-type ListPulls struct {
-	Repo  string
-	State string
-	Limit int
-}
-
-type GetPull struct {
-	Repo   string
-	Number int64
-}
-
-// OpenPull proposes Head onto Base. HeadRepo (another "owner/name") makes it a
-// cross-repo pull: Head then names a branch of that fork.
-type OpenPull struct {
-	Repo        string
-	Title       string
-	Head        string
-	Base        string
-	HeadRepo    string
-	Description string
-}
-
-type CommentOnPull struct {
-	Repo   string
-	Number int64
-	Body   string
-}
-
-// MergePull's Strategy is fast-forward (the default when empty), squash, merge
-// or rebase.
-type MergePull struct {
-	Repo     string
-	Number   int64
-	Strategy string
-}
-
-type ClosePull struct {
-	Repo   string
-	Number int64
-}
-
-type CompareRefs struct {
-	Repo string
-	Base string
-	Head string
-}
-
-// CommitChanges is one commit of file changes; a non-empty Expect refuses the
-// commit if the branch moved, and NewBranch lands it on a new branch instead.
-type CommitChanges struct {
-	Repo      string
-	Branch    string
-	Message   string
-	Changes   []FileChange
-	Expect    string
-	NewBranch string
-}
-
-type GetSignature struct {
-	Repo string
-	SHA  string
-}
-
 func seg(s string) string { return url.PathEscape(s) }
 
 // splitRepo turns "owner/name" into its two halves, refused client-side when
@@ -344,399 +173,6 @@ func repoPath(repo, tail string) (string, error) {
 		return "", err
 	}
 	return "/v1/repos/" + seg(owner) + "/" + seg(name) + tail, nil
-}
-
-// newRepoBody is the create/fork/import wire shape: the destination split back
-// into the two fields the server reads.
-func newRepoBody(repo, visibility, description string) (map[string]string, error) {
-	owner, name, err := splitRepo(repo)
-	if err != nil {
-		return nil, err
-	}
-	if visibility == "" {
-		visibility = "private"
-	}
-	return map[string]string{
-		"owner": owner, "name": name,
-		"visibility": visibility, "description": description,
-	}, nil
-}
-
-func (r *CodeRepos) Create(req CreateRepo) (*Repo, error) {
-	body, err := newRepoBody(req.Repo, req.Visibility, req.Description)
-	if err != nil {
-		return nil, err
-	}
-	var out Repo
-	if err := r.c.call("POST", "/v1/repos", nil, body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (r *CodeRepos) List(owner string) ([]Repo, error) {
-	var out []Repo
-	err := r.c.call("GET", "/v1/repos", url.Values{"owner": {owner}}, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Get(repo string) (*Repo, error) {
-	p, err := repoPath(repo, "")
-	if err != nil {
-		return nil, err
-	}
-	var out Repo
-	if err := r.c.call("GET", p, nil, nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (r *CodeRepos) Update(req UpdateRepo) error {
-	p, err := repoPath(req.Repo, "")
-	if err != nil {
-		return err
-	}
-	// The wire shape: a nil description is absent, an empty one clears it.
-	body := struct {
-		Description *string `json:"description,omitempty"`
-		Visibility  string  `json:"visibility,omitempty"`
-	}{req.Description, req.Visibility}
-	return r.c.call("PATCH", p, nil, body, nil)
-}
-
-func (r *CodeRepos) Delete(repo string) error {
-	p, err := repoPath(repo, "")
-	if err != nil {
-		return err
-	}
-	return r.c.call("DELETE", p, nil, nil, nil)
-}
-
-// Fork makes a new repo To copied from Repo: objects and refs, never its pull
-// requests or settings. Private by default, whatever the source was.
-func (r *CodeRepos) Fork(req ForkRepo) (*Repo, error) {
-	p, err := repoPath(req.Repo, "/fork")
-	if err != nil {
-		return nil, err
-	}
-	body, err := newRepoBody(req.To, req.Visibility, req.Description)
-	if err != nil {
-		return nil, err
-	}
-	var out Repo
-	if err := r.c.call("POST", p, nil, body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ImportGit makes a new repo whose contents are fetched from a PUBLIC git
-// remote. The server answers 202: the repo exists but the fetch runs in the
-// background; poll ImportStatus.
-func (r *CodeRepos) ImportGit(req ImportRepo) (*Repo, error) {
-	body, err := newRepoBody(req.Repo, req.Visibility, req.Description)
-	if err != nil {
-		return nil, err
-	}
-	body["git"] = req.URL
-	var out Repo
-	if err := r.c.call("POST", "/v1/repos/import", nil, body, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ImportStatus answers {from, state: queued|running|done|failed, detail?}.
-func (r *CodeRepos) ImportStatus(repo string) (map[string]any, error) {
-	p, err := repoPath(repo, "/import")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = r.c.call("GET", p, nil, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Branches(repo string) ([]Branch, error) {
-	p, err := repoPath(repo, "/branches")
-	if err != nil {
-		return nil, err
-	}
-	var out []Branch
-	err = r.c.call("GET", p, nil, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) DeleteBranch(req DeleteBranch) error {
-	p, err := repoPath(req.Repo, "/branches/"+seg(req.Branch))
-	if err != nil {
-		return err
-	}
-	return r.c.call("DELETE", p, url.Values{"oid": {req.Oid}}, nil, nil)
-}
-
-func (r *CodeRepos) Protection(repo string) (any, error) {
-	p, err := repoPath(repo, "/protection")
-	if err != nil {
-		return nil, err
-	}
-	var out any
-	err = r.c.call("GET", p, nil, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Protect(req ProtectBranch) error {
-	p, err := repoPath(req.Repo, "/protection")
-	if err != nil {
-		return err
-	}
-	body := struct {
-		Pattern  string `json:"pattern"`
-		Remove   bool   `json:"remove,omitempty"`
-		NoForce  bool   `json:"no_force"`
-		NoDelete bool   `json:"no_delete"`
-	}{req.Pattern, req.Remove, req.NoForce, req.NoDelete}
-	return r.c.call("POST", p, nil, body, nil)
-}
-
-func (r *CodeRepos) Pulls(req ListPulls) ([]map[string]any, error) {
-	p, err := repoPath(req.Repo, "/pulls")
-	if err != nil {
-		return nil, err
-	}
-	q := url.Values{}
-	if req.State != "" {
-		q.Set("state", req.State)
-	}
-	if req.Limit > 0 {
-		q.Set("limit", fmt.Sprint(req.Limit))
-	}
-	var out []map[string]any
-	err = r.c.call("GET", p, q, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Pull(req GetPull) (map[string]any, error) {
-	p, err := repoPath(req.Repo, fmt.Sprintf("/pulls/%d", req.Number))
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = r.c.call("GET", p, nil, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) OpenPull(req OpenPull) (map[string]any, error) {
-	p, err := repoPath(req.Repo, "/pulls")
-	if err != nil {
-		return nil, err
-	}
-	if req.HeadRepo != "" {
-		if _, _, err := splitRepo(req.HeadRepo); err != nil {
-			return nil, err
-		}
-	}
-	body := struct {
-		Title       string `json:"title"`
-		Head        string `json:"head"`
-		Base        string `json:"base"`
-		HeadRepo    string `json:"head_repo,omitempty"`
-		Description string `json:"body"`
-	}{req.Title, req.Head, req.Base, req.HeadRepo, req.Description}
-	var out map[string]any
-	err = r.c.call("POST", p, nil, body, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Comment(req CommentOnPull) error {
-	p, err := repoPath(req.Repo, fmt.Sprintf("/pulls/%d/comments", req.Number))
-	if err != nil {
-		return err
-	}
-	return r.c.call("POST", p, nil, map[string]string{"body": req.Body}, nil)
-}
-
-// Merge asks for the merge as a job (the server answers 202).
-func (r *CodeRepos) Merge(req MergePull) error {
-	p, err := repoPath(req.Repo, fmt.Sprintf("/pulls/%d/merge", req.Number))
-	if err != nil {
-		return err
-	}
-	strategy := req.Strategy
-	if strategy == "" {
-		strategy = "fast-forward"
-	}
-	return r.c.call("POST", p, url.Values{"strategy": {strategy}}, nil, nil)
-}
-
-func (r *CodeRepos) Close(req ClosePull) error {
-	p, err := repoPath(req.Repo, fmt.Sprintf("/pulls/%d/close", req.Number))
-	if err != nil {
-		return err
-	}
-	return r.c.call("POST", p, nil, nil, nil)
-}
-
-func (r *CodeRepos) Compare(req CompareRefs) (map[string]any, error) {
-	p, err := repoPath(req.Repo, "/compare")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = r.c.call("GET", p, url.Values{"base": {req.Base}, "head": {req.Head}}, nil, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Commit(req CommitChanges) (map[string]any, error) {
-	p, err := repoPath(req.Repo, "/commits")
-	if err != nil {
-		return nil, err
-	}
-	body := struct {
-		Branch    string       `json:"branch"`
-		Message   string       `json:"message"`
-		Changes   []FileChange `json:"changes"`
-		Expect    string       `json:"expect,omitempty"`
-		NewBranch string       `json:"newBranch,omitempty"`
-	}{req.Branch, req.Message, req.Changes, req.Expect, req.NewBranch}
-	var out map[string]any
-	err = r.c.call("POST", p, nil, body, &out)
-	return out, err
-}
-
-func (r *CodeRepos) Signature(req GetSignature) (map[string]any, error) {
-	p, err := repoPath(req.Repo, "/commits/"+seg(req.SHA)+"/signature")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = r.c.call("GET", p, nil, nil, &out)
-	return out, err
-}
-
-// HubRepos is model and dataset repositories, on the hub listener (Hugging
-// Face Hub API). Management level: create, read, refs, visibility, delete —
-// files move with git/huggingface_hub against the same hub URL. Every repo
-// argument is one "owner/name" string, exactly as in CodeRepos.
-type HubRepos struct {
-	c      *Client
-	kind   string
-	plural string
-}
-
-// CreateHubRepo makes Repo; a nil Private means private (Ptr(false) for a
-// public one), never a server default.
-type CreateHubRepo struct {
-	Repo    string
-	Private *bool
-}
-
-type SetPrivate struct {
-	Repo    string
-	Private bool
-}
-
-// ImportHubRepo makes Repo from a PUBLIC git remote — large files included,
-// through git-lfs; URL is a strict "https://" URL (the Hugging Face Hub is one
-// host among any). A nil Private means private.
-type ImportHubRepo struct {
-	Repo    string
-	URL     string
-	Private *bool
-}
-
-// private resolves the nil-means-private default.
-func private(p *bool) bool { return p == nil || *p }
-
-func (h *HubRepos) body(repo string, extra map[string]any) (map[string]any, error) {
-	owner, name, err := splitRepo(repo)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]any{"name": name, "organization": owner, "type": h.kind}
-	for k, v := range extra {
-		out[k] = v
-	}
-	return out, nil
-}
-
-func (h *HubRepos) path(repo, tail string) (string, error) {
-	owner, name, err := splitRepo(repo)
-	if err != nil {
-		return "", err
-	}
-	return "/api/" + h.plural + "/" + seg(owner) + "/" + seg(name) + tail, nil
-}
-
-// Create sends private explicitly rather than trusting a server default.
-func (h *HubRepos) Create(req CreateHubRepo) (map[string]any, error) {
-	body, err := h.body(req.Repo, map[string]any{"private": private(req.Private)})
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = h.c.hub("POST", "/api/repos/create", nil, body, &out)
-	return out, err
-}
-
-func (h *HubRepos) Get(repo string) (map[string]any, error) {
-	p, err := h.path(repo, "")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = h.c.hub("GET", p, nil, nil, &out)
-	return out, err
-}
-
-// Refs answers branches and tags, as the hub spells them.
-func (h *HubRepos) Refs(repo string) (map[string]any, error) {
-	p, err := h.path(repo, "/refs")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = h.c.hub("GET", p, nil, nil, &out)
-	return out, err
-}
-
-func (h *HubRepos) SetPrivate(req SetPrivate) error {
-	p, err := h.path(req.Repo, "/settings")
-	if err != nil {
-		return err
-	}
-	return h.c.hub("PUT", p, nil, map[string]any{"private": req.Private}, nil)
-}
-
-func (h *HubRepos) Delete(repo string) error {
-	body, err := h.body(repo, nil)
-	if err != nil {
-		return err
-	}
-	return h.c.hub("DELETE", "/api/repos/delete", nil, body, nil)
-}
-
-// ImportGit answers 202; poll ImportStatus.
-func (h *HubRepos) ImportGit(req ImportHubRepo) (map[string]any, error) {
-	p, err := h.path(req.Repo, "/import")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = h.c.hub("POST", p, nil, map[string]any{"from": req.URL, "private": private(req.Private)}, &out)
-	return out, err
-}
-
-// ImportStatus answers {from, state: queued|running|done|failed, detail?}.
-func (h *HubRepos) ImportStatus(repo string) (map[string]any, error) {
-	p, err := h.path(repo, "/import")
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	err = h.c.hub("GET", p, nil, nil, &out)
-	return out, err
 }
 
 // Workspaces is btrfs-backed dev workspaces, over /v1/workspaces. A workspace
