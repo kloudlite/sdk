@@ -62,15 +62,6 @@ module Kloudlite
       [owner, name]
     end
 
-    # "owner/name" → its two halves, refused client-side when malformed.
-    def split(repo)
-      owner, name = repo.to_s.split("/", 2)
-      if owner.nil? || owner.empty? || name.nil? || name.empty? || name.include?("/")
-        raise ArgumentError, "a repository is named owner/name, got #{repo.inspect}"
-      end
-      [owner, name]
-    end
-
     def seg(s)
       URI.encode_uri_component(s.to_s)
     end
@@ -950,12 +941,11 @@ module Kloudlite
     end
   end
 
-  # CI pipelines, over /v1/pipelines: definitions live as YAML in an owner's "{owner}/pipelines"
-  # repository and run against that owner's repositories, each job in its own sandbox. A run is
-  # recorded on the repository it is about, so it is read back by that +repo:+ ("owner/name").
-  # +run+, +runs+ and +get_run+ answer Run handles.
+  # Pipelines, over /v1/pipelines: a JSON definition stored as numbered versions; a run executes
+  # one version, each job in its own sandbox. +run+, +runs+ and +get_run+ answer Run handles.
   #
-  #   run = kl.pipelines.run(owner: "acme", pipeline: "ci", repo: "acme/payments")
+  #   kl.pipelines.create(owner: "acme", definition: definition)
+  #   run = kl.pipelines.run(owner: "acme", pipeline: "test", inputs: { "target" => "staging" })
   #   run.follow(job: "test") { |chunk| print chunk }
   #   run.wait   # => "success"
   class Pipelines
@@ -965,36 +955,72 @@ module Kloudlite
       @c = client
     end
 
-    # The definitions on {owner}/pipelines's main branch, broken ones included:
-    # {"repo", "sha", "pipelines" => [{"name", "file", "valid", "errors", "repos", "on", "jobs"}],
-    # "errors"}. +owner+ (a handle or team slug) defaults to the caller.
-    def list(owner: nil)
-      @c.request("GET", "/v1/pipelines", query: { owner: owner })
+    # Save +definition+ (its "name" is the pipeline's) as version 1. A webhook trigger's URL is
+    # in the answer's "webhookUrl", this once. 409 if the name exists.
+    def create(owner:, definition:)
+      @c.request("POST", "/v1/pipelines/#{seg(owner)}", body: definition)
     end
 
-    # Start +owner+'s +pipeline+ by hand on +repo+ (a name, or "owner/name" — one of +owner+'s) at
-    # +ref+ (a branch, tag, full ref or sha; default main) and answer the Run at once (202),
-    # queued. +inputs+ are the ones the pipeline's on.manual.inputs declares. +environment+ runs
-    # every job that names none in that environment; +clone+ instead in a per-run copy of it,
-    # deleted when the run ends — one or the other. A definition that cannot run is an ApiError
-    # 422 whose message lists every reason, and nothing is recorded.
-    def run(owner:, pipeline:, repo:, ref: nil, inputs: nil, environment: nil, clone: nil)
+    # Replace the definition: a changed one is the next version, an equal one saves nothing. To
+    # roll back, send an old definition. A concurrent save is an ApiError 409 ("changed; retry").
+    def update(owner:, name:, definition:)
+      @c.request("PUT", "/v1/pipelines/#{seg(owner)}/#{seg(name)}", body: definition)
+    end
+
+    # +owner+'s pipelines by name: "name", "latestVersion", "updatedAtMs", "triggers".
+    def list(owner:)
+      @c.request("GET", "/v1/pipelines/#{seg(owner)}")
+    end
+
+    # The pipeline document of +version+ (default the latest), "definition" included.
+    def get(owner:, name:, version: nil)
+      @c.request("GET", "/v1/pipelines/#{seg(owner)}/#{seg(name)}", query: { version: version })
+    end
+
+    # The versions, oldest first: "version", "createdBy", "createdAtMs", "definitionSha256".
+    def versions(owner:, name:)
+      @c.request("GET", "/v1/pipelines/#{seg(owner)}/#{seg(name)}/versions")
+    end
+
+    # Delete the pipeline and its versions; finished runs stay. 409 while a run is queued or running.
+    def delete(owner:, name:)
+      @c.request("DELETE", "/v1/pipelines/#{seg(owner)}/#{seg(name)}")
+      nil
+    end
+
+    # Delete one version; 409 for the latest or one a queued or running run uses.
+    def delete_version(owner:, name:, version:)
+      @c.request("DELETE", "/v1/pipelines/#{seg(owner)}/#{seg(name)}/versions/#{Integer(version)}")
+      nil
+    end
+
+    # A new webhook secret; the old URL stops at once. {"webhookUrl"}, shown only here.
+    def rotate_webhook(owner:, name:)
+      @c.request("POST", "/v1/pipelines/#{seg(owner)}/#{seg(name)}/webhook/rotate")
+    end
+
+    # Start +pipeline+ by hand and answer the Run at once (202), queued. +version+ defaults to the
+    # newest; +inputs+ are string values of the inputs it declares. +environment+ runs every job
+    # that names none in that environment; +clone+ instead in a per-run copy of it — one or the
+    # other. A version that cannot run is an ApiError 422 whose message lists every reason, and
+    # nothing is recorded.
+    def run(owner:, pipeline:, version: nil, inputs: nil, environment: nil, clone: nil)
       raise ArgumentError, "pass environment: or clone:, not both" if environment && clone
 
-      body = { repo: repo, ref: ref, inputs: inputs,
+      body = { version: version, inputs: inputs,
                environment: clone ? { clone: clone } : environment }.compact
       Run.new(@c, @c.request("POST", "/v1/pipelines/#{seg(owner)}/#{seg(pipeline)}/runs", body: body))
     end
 
-    # +repo+'s runs, newest first; +pipeline+ keeps one pipeline's.
-    def runs(repo:, pipeline: nil, limit: nil)
-      docs = @c.request("GET", Run.path_of(repo), query: { pipeline: pipeline, limit: limit }) || []
+    # The pipeline's runs, newest first (+limit+ default 50, at most 200).
+    def runs(owner:, pipeline:, limit: nil)
+      docs = @c.request("GET", "/v1/pipelines/#{seg(owner)}/#{seg(pipeline)}/runs", query: { limit: limit }) || []
       docs.map { |doc| Run.new(@c, doc) }
     end
 
-    # One run of +repo+ by its id ("1760400000000-0a1b2c").
-    def get_run(repo:, run:)
-      Run.new(@c, @c.request("GET", Run.path_of(repo, "/#{seg(run)}")))
+    # One run by its id ("1760400000000-0a1b2c").
+    def get_run(owner:, pipeline:, run:)
+      Run.new(@c, @c.request("GET", "/v1/pipelines/#{seg(owner)}/#{seg(pipeline)}/runs/#{seg(run)}"))
     end
   end
 
@@ -1006,7 +1032,6 @@ module Kloudlite
   # name one by its index or its "key".
   class Run
     include Names
-    extend Names
 
     TERMINAL = %w[success failure cancelled].freeze
 
@@ -1020,11 +1045,9 @@ module Kloudlite
     def id = @doc["id"]
     def number = @doc["number"]
     def pipeline = @doc["pipeline"]
-    def pipelines_repo = @doc["pipelinesRepo"]
-    def pipelines_sha = @doc["pipelinesSha"]
-    def repo = @doc["repo"]
-    def ref = @doc["ref"]
-    def sha = @doc["sha"]
+    def owner = @doc["owner"]
+    def pipeline_version = @doc["pipelineVersion"]
+    def definition_sha256 = @doc["definitionSha256"]
     def event = @doc["event"]
     def inputs = @doc["inputs"] || {}
     def environment = @doc["environment"]
@@ -1107,13 +1130,7 @@ module Kloudlite
     end
 
     def inspect
-      "#<Kloudlite::Run #{repo}##{number} #{pipeline} #{state}>"
-    end
-
-    # "owner/name" → the repo's runs path. Shared with Pipelines.
-    def self.path_of(repo, tail = "")
-      owner, name = split(repo)
-      "/v1/repos/#{seg(owner)}/#{seg(name)}/runs#{tail}"
+      "#<Kloudlite::Run #{owner}/#{pipeline}##{number} #{state}>"
     end
 
     def self.now
@@ -1123,7 +1140,7 @@ module Kloudlite
     private
 
     def base
-      Run.path_of(repo, "/#{seg(id)}")
+      "/v1/pipelines/#{seg(owner)}/#{seg(pipeline)}/runs/#{seg(id)}"
     end
 
     # {"data", "next", "complete", "state"}: at most a page of the log from byte +offset+.

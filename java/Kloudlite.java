@@ -14,7 +14,7 @@
 //   String workspaces = kl.workspaces().list(null);
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper. The two
-// exceptions are sandboxes() and pipelines(), whose calls hand back live handles
+// exceptions are sandboxes() and pipelines().run/runs/getRun, which hand back live handles
 // (SandboxHandle, SandboxProcess, Run) — each still exposes its raw JSON.
 
 import java.io.IOException;
@@ -115,7 +115,7 @@ public class Kloudlite {
         return sandboxes;
     }
 
-    /** CI pipelines and their runs: {@code /v1/pipelines}, runs under {@code /v1/repos}. */
+    /** Pipelines and their runs: {@code /v1/pipelines}. */
     public Pipelines pipelines() {
         return pipelines;
     }
@@ -1644,51 +1644,88 @@ public class Kloudlite {
     }
 
     /**
-     * CI pipelines, over {@code /v1/pipelines}: definitions live as YAML in an owner's
-     * "{owner}/pipelines" repository and run against that owner's repositories, each job in its own
-     * sandbox. A run is recorded on the repository it is about, so it is read back by that
-     * {@code repo} ("owner/name"). {@link #run}, {@link #runs} and {@link #getRun} hand back
-     * {@link Run} handles.
+     * Pipelines, over {@code /v1/pipelines}: a JSON definition stored as numbered versions; a run
+     * executes one version, each job in its own sandbox. Definitions and documents travel as raw
+     * JSON strings. {@link #run}, {@link #runs} and {@link #getRun} hand back {@link Run} handles.
      *
      * <pre>
      *   Kloudlite.Run run = kl.pipelines().run(new Kloudlite.RunPipeline()
-     *       .owner("acme").pipeline("ci").repo("acme/payments"));
+     *       .owner("acme").pipeline("test").input("target", "staging"));
      *   try (Stream&lt;String&gt; log = run.follow("test")) { log.forEach(System.out::print); }
      *   String state = run.waitFor(); // "success"
      * </pre>
      */
     public class Pipelines {
-        /**
-         * The caller's own definitions; see {@link #list(String)}.
-         */
-        public String list() throws IOException, InterruptedException {
-            return list(null);
+        private String base(String owner, String name) {
+            return "/v1/pipelines/" + seg(need(owner, "owner")) + (name == null ? "" : "/" + seg(name));
         }
 
         /**
-         * The definitions on {owner}/pipelines's main branch, broken ones included:
-         * {@code {repo, sha, pipelines: [{name, file, valid, errors, repos, on, jobs}], errors}}.
-         * A null owner means the caller's own.
+         * Save {@code definition} (JSON; its {@code name} is the pipeline's) as version 1. A webhook
+         * trigger's URL is in the answer's {@code webhookUrl}, this once. 409 if the name exists.
          */
+        public String create(String owner, String definition) throws IOException, InterruptedException {
+            return api("POST", base(owner, null), need(definition, "definition"));
+        }
+
+        /**
+         * Replace the definition: a changed one is the next version, an equal one saves nothing.
+         * To roll back, send an old definition. A concurrent save is an {@link ApiException} 409
+         * ("changed; retry").
+         */
+        public String update(String owner, String name, String definition) throws IOException, InterruptedException {
+            return api("PUT", base(owner, need(name, "name")), need(definition, "definition"));
+        }
+
+        /** {@code owner}'s pipelines by name: {@code [{name, latestVersion, updatedAtMs, triggers}]}. */
         public String list(String owner) throws IOException, InterruptedException {
-            return api("GET", "/v1/pipelines" + query("owner", owner), null);
+            return api("GET", base(owner, null), null);
+        }
+
+        /** {@link #get(String, String, int)} of the latest version. */
+        public String get(String owner, String name) throws IOException, InterruptedException {
+            return api("GET", base(owner, need(name, "name")), null);
+        }
+
+        /** The pipeline document of {@code version}, {@code definition} included. */
+        public String get(String owner, String name, int version) throws IOException, InterruptedException {
+            return api("GET", base(owner, need(name, "name")) + query("version", Integer.toString(version)), null);
+        }
+
+        /** The versions, oldest first: {@code [{version, createdBy, createdAtMs, definitionSha256}]}. */
+        public String versions(String owner, String name) throws IOException, InterruptedException {
+            return api("GET", base(owner, need(name, "name")) + "/versions", null);
+        }
+
+        /** Delete the pipeline and its versions; finished runs stay. 409 while a run is queued or running. */
+        public void delete(String owner, String name) throws IOException, InterruptedException {
+            api("DELETE", base(owner, need(name, "name")), null);
+        }
+
+        /** Delete one version; 409 for the latest or one a queued or running run uses. */
+        public void deleteVersion(String owner, String name, int version) throws IOException, InterruptedException {
+            api("DELETE", base(owner, need(name, "name")) + "/versions/" + version, null);
+        }
+
+        /** A new webhook secret; the old URL stops at once. {@code {webhookUrl}}, shown only here. */
+        public String rotateWebhook(String owner, String name) throws IOException, InterruptedException {
+            return api("POST", base(owner, need(name, "name")) + "/webhook/rotate", null);
         }
 
         /**
-         * Start a run by hand and answer it at once (202), {@code queued}. A definition that cannot
+         * Start a run by hand and answer it at once (202), {@code queued}. A version that cannot
          * run is an {@link ApiException} 422 whose message lists every reason, and nothing is
          * recorded.
          */
         public Run run(RunPipeline p) throws IOException, InterruptedException {
             String body = p.body();
-            String owner = need(p.owner, "owner"), pipeline = need(p.pipeline, "pipeline");
-            return new Run(api("POST", "/v1/pipelines/" + seg(owner) + "/" + seg(pipeline) + "/runs", body));
+            return new Run(api("POST", base(p.owner, need(p.pipeline, "pipeline")) + "/runs", body));
         }
 
-        /** {@code repo}'s runs, newest first; a set {@code pipeline} keeps one pipeline's. */
+        /** The pipeline's runs, newest first. */
         public List<Run> runs(ListRuns p) throws IOException, InterruptedException {
             String limit = p.limit == null ? null : p.limit.toString();
-            String raw = api("GET", runsPath(need(p.repo, "repo"), "") + query("pipeline", p.pipeline, "limit", limit), null);
+            String raw = api("GET", base(p.owner, need(p.pipeline, "pipeline")) + "/runs" + query("limit", limit), null);
             List<String> docs;
             try {
                 docs = JsonReader.elements(raw);
@@ -1700,16 +1737,11 @@ public class Kloudlite {
             return out;
         }
 
-        /** One run of {@code repo} by its id ("1760400000000-0a1b2c"). */
+        /** One run by its id ("1760400000000-0a1b2c"). */
         public Run getRun(GetRun p) throws IOException, InterruptedException {
-            String repo = need(p.repo, "repo"), run = need(p.run, "run");
-            return new Run(api("GET", runsPath(repo, "/" + seg(run)), null));
+            String run = need(p.run, "run");
+            return new Run(api("GET", base(p.owner, need(p.pipeline, "pipeline")) + "/runs/" + seg(run), null));
         }
-    }
-
-    static String runsPath(String repo, String tail) {
-        String[] on = split(repo);
-        return "/v1/repos/" + seg(on[0]) + "/" + seg(on[1]) + "/runs" + tail;
     }
 
     /**
@@ -1730,24 +1762,22 @@ public class Kloudlite {
 
         private void set(String raw) throws ApiException {
             Map<String, Object> d = JsonReader.parsed(raw);
-            if (text(d.get("id")) == null || text(d.get("repo")) == null) {
-                throw new ApiException(502, "the answer named no run id and repo");
+            if (text(d.get("id")) == null || text(d.get("owner")) == null || text(d.get("pipeline")) == null) {
+                throw new ApiException(502, "the answer named no run id, owner and pipeline");
             }
             doc = d;
             json = raw;
         }
 
         public String id() { return text(doc.get("id")); }
-        /** Per repo, from 1: the name people say out loud. */
+        /** Per owner and pipeline, from 1: the name people say out loud. */
         public Long number() { return longOf(doc.get("number")); }
         public String pipeline() { return text(doc.get("pipeline")); }
-        public String pipelinesRepo() { return text(doc.get("pipelinesRepo")); }
-        public String pipelinesSha() { return text(doc.get("pipelinesSha")); }
-        /** "owner/name" of the repo the run is about. */
-        public String repo() { return text(doc.get("repo")); }
-        public String ref() { return text(doc.get("ref")); }
-        public String sha() { return text(doc.get("sha")); }
-        /** manual, push, pull_request, schedule or pipeline. */
+        public String owner() { return text(doc.get("owner")); }
+        /** The version the run was planned from; it cannot change. */
+        public Long pipelineVersion() { return longOf(doc.get("pipelineVersion")); }
+        public String definitionSha256() { return text(doc.get("definitionSha256")); }
+        /** manual, schedule, webhook or pipeline. */
         public String event() { return text(doc.get("event")); }
         @SuppressWarnings("unchecked")
         public Map<String, Object> inputs() {
@@ -1917,33 +1947,31 @@ public class Kloudlite {
         }
 
         private String path(String tail) {
-            return runsPath(repo(), "/" + seg(id()) + tail);
+            return "/v1/pipelines/" + seg(owner()) + "/" + seg(pipeline()) + "/runs/" + seg(id()) + tail;
         }
 
         @Override
         public String toString() {
-            return "Run " + repo() + "#" + number() + " " + pipeline() + " " + state();
+            return "Run " + owner() + "/" + pipeline() + "#" + number() + " " + state();
         }
     }
 
     // ── pipeline params ────────────────────────────────────────────────────
 
     /**
-     * {@link Pipelines#run}: {@code owner}'s {@code pipeline} on {@code repo} (a name, or
-     * "owner/name" — one of owner's), all three required, at {@code ref} (a branch, tag, full ref or
-     * sha; unset means main). {@code input} adds one of the inputs the pipeline's
-     * {@code on.manual.inputs} declares. {@code environment} runs every job that names none in that
-     * environment; {@code clone} instead in a per-run copy of it, deleted when the run ends — one or
-     * the other.
+     * {@link Pipelines#run}: {@code owner} and {@code pipeline} required; {@code version} defaults to
+     * the newest. {@code input} adds one input the pipeline declares. {@code environment} runs
+     * every job that names none in that environment; {@code clone} instead in a per-run copy of
+     * it, deleted when the run ends — one or the other.
      */
     public static final class RunPipeline {
-        private String owner, pipeline, repo, ref, environment, clone;
+        private String owner, pipeline, environment, clone;
+        private Integer version;
         private Map<String, String> inputs;
 
         public RunPipeline owner(String v) { owner = v; return this; }
         public RunPipeline pipeline(String v) { pipeline = v; return this; }
-        public RunPipeline repo(String v) { repo = v; return this; }
-        public RunPipeline ref(String v) { ref = v; return this; }
+        public RunPipeline version(int v) { version = v; return this; }
         /** Every input at once, replacing any set before. */
         public RunPipeline inputs(Map<String, String> v) { inputs = v == null ? null : new LinkedHashMap<>(v); return this; }
         public RunPipeline input(String key, String value) {
@@ -1962,29 +1990,29 @@ public class Kloudlite {
                 throw new IllegalArgumentException("pass environment or clone, not both");
             }
             return new Json()
-                .str("repo", need(repo, "repo"))
-                .str("ref", ref)
+                .raw("version", version == null ? null : version.toString())
                 .raw("inputs", inputs == null ? null : stringMap(inputs))
                 .raw("environment", clone != null ? obj("clone", clone) : environment == null ? null : quote(environment))
                 .toString();
         }
     }
 
-    /** {@link Pipelines#runs}: {@code repo} required; {@code pipeline} and {@code limit} filter. */
+    /** {@link Pipelines#runs}: {@code owner} and {@code pipeline} required; {@code limit} is optional. */
     public static final class ListRuns {
-        private String repo, pipeline;
+        private String owner, pipeline;
         private Integer limit;
 
-        public ListRuns repo(String v) { repo = v; return this; }
+        public ListRuns owner(String v) { owner = v; return this; }
         public ListRuns pipeline(String v) { pipeline = v; return this; }
         public ListRuns limit(int v) { limit = v; return this; }
     }
 
-    /** {@link Pipelines#getRun}: both required. */
+    /** {@link Pipelines#getRun}: all three required. */
     public static final class GetRun {
-        private String repo, run;
+        private String owner, pipeline, run;
 
-        public GetRun repo(String v) { repo = v; return this; }
+        public GetRun owner(String v) { owner = v; return this; }
+        public GetRun pipeline(String v) { pipeline = v; return this; }
         public GetRun run(String v) { run = v; return this; }
     }
 
@@ -2216,15 +2244,6 @@ public class Kloudlite {
 
     static String or(String v, String fallback) {
         return v == null ? fallback : v;
-    }
-
-    /** "owner/name" → its two halves, refused client-side when malformed. */
-    static String[] split(String repo) {
-        int at = repo == null ? -1 : repo.indexOf('/');
-        if (at <= 0 || at == repo.length() - 1 || repo.indexOf('/', at + 1) >= 0) {
-            throw new IllegalArgumentException("a repository is named owner/name, got " + repo);
-        }
-        return new String[] { repo.substring(0, at), repo.substring(at + 1) };
     }
 
     /** "name" → {null, name}; "team/name" → {team, name}. */
