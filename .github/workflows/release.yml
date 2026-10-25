@@ -116,7 +116,10 @@ jobs:
       - name: push
         if: env.PUBLISH == 'true'
         working-directory: ruby
-        run: gem push kloudlite-sdk-*.gem
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          if curl -sf "https://rubygems.org/api/v2/rubygems/kloudlite-sdk/versions/$v.json" >/dev/null; then echo "kloudlite-sdk $v is already published"; exit 0; fi
+          gem push kloudlite-sdk-*.gem
 
   java:
     needs: version
