@@ -1,14 +1,22 @@
-// Package kloudlite is the Kloudlite SDK for Go — stdlib only.
+// Package kloudlite is the Kloudlite SDK for Go — stdlib only. It needs Go 1.24
+// or later (go.mod says so; the code uses min/max and generics).
 //
-// Auth is a Bearer token (a session or CLI token). Every module hangs off the
-// one client.
+// Auth is a Bearer token (a CLI token). Every module hangs off the one client:
+//
+//	kl := kloudlite.New(kloudlite.Options{}) // the login of `kloudlite`; see below
+//	workspaces, err := kl.Workspaces.List("")
+//
+// Discovery: the API origin and the token each come from the first source that
+// has one: 1. Options.BaseURL / Options.Token; 2. the environment KLOUDLITE_URL /
+// KLOUDLITE_TOKEN; 3. "api" / "token" in config.json in KLOUDLITE_CONFIG_DIR,
+// else ~/.config/kloudlite. "/v1" is added to the origin. New returns a single
+// value, so a missing login is not returned there: the first call on the client
+// answers an error carrying "no Kloudlite login: pass token=, set
+// KLOUDLITE_TOKEN, or run kloudlite login" (see Client.Err).
 //
 // No call takes two inputs by position. A method whose only input is the
 // resource itself takes that one string (Get(workspace)); everything else takes ONE
-// request struct named for the call, so every argument is spelled by name:
-//
-//	kl := kloudlite.New(kloudlite.Options{BaseURL: "https://dev.kloudlite.io", Token: "…"})
-//	workspaces, err := kl.Workspaces.List("")
+// request struct named for the call, so every argument is spelled by name.
 //
 // The structs are the caller's vocabulary, not the wire's: the SDK builds the
 // bodies, paths and queries the server reads (Snapshot travels as snapshot_id).
@@ -17,15 +25,24 @@ package kloudlite
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-const Version = "0.1.0"
+const Version = "0.2.0"
+
+// NoLogin is the error of a client with no token.
+const NoLogin = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
+
+// ErrNotImplemented is what the parts of the API this SDK does not carry answer.
+var ErrNotImplemented = errors.New("not implemented")
 
 // ApiError is a non-2xx answer: Status is the HTTP code, Message the server's text.
 type ApiError struct {
@@ -46,41 +63,82 @@ type Client struct {
 	Sessions     *Sessions
 	Volumes      *Volumes
 	Secrets      *Secrets
+	Connectors   *Connectors
 	Sandboxes    *Sandboxes
 	Pipelines    *Pipelines
 
 	baseURL string
 	token   string
 	http    *http.Client
+	err     error
 }
 
-// Options configures New. A zero Timeout means 30 s.
+// Options configures New; every field is optional (see Discovery). A zero
+// Timeout means 30 s.
 type Options struct {
 	BaseURL string
 	Token   string
 	Timeout time.Duration
 }
 
-// New makes a client.
+// login reads config.json of the `kloudlite` login; empty when absent or unreadable.
+func login() map[string]any {
+	dir := os.Getenv("KLOUDLITE_CONFIG_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config", "kloudlite")
+	}
+	var doc map[string]any
+	if raw, err := os.ReadFile(filepath.Join(dir, "config.json")); err == nil {
+		_ = json.Unmarshal(raw, &doc)
+	}
+	return doc
+}
+
+// New makes a client, discovering what Options leaves empty.
 func New(opts Options) *Client {
 	timeout := opts.Timeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	c := &Client{
-		baseURL: strings.TrimRight(opts.BaseURL, "/"),
-		token:   opts.Token,
-		http:    &http.Client{Timeout: timeout},
+	base, token := opts.BaseURL, opts.Token
+	if base == "" {
+		base = os.Getenv("KLOUDLITE_URL")
+	}
+	if token == "" {
+		token = os.Getenv("KLOUDLITE_TOKEN")
+	}
+	if base == "" || token == "" {
+		cfg := login()
+		if s, _ := cfg["api"].(string); base == "" {
+			base = s
+		}
+		if s, _ := cfg["token"].(string); token == "" {
+			token = s
+		}
+	}
+	base = strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1") // paths carry /v1
+	c := &Client{baseURL: base, token: token, http: &http.Client{Timeout: timeout}}
+	switch {
+	case token == "":
+		c.err = errors.New(NoLogin)
+	case base == "":
+		c.err = errors.New("no Kloudlite API URL: pass BaseURL, set KLOUDLITE_URL, or run kloudlite login")
 	}
 	c.Workspaces = &Workspaces{c}
 	c.Environments = &Environments{c}
 	c.Sessions = &Sessions{c}
 	c.Volumes = &Volumes{c}
 	c.Secrets = &Secrets{c}
+	c.Connectors = &Connectors{c}
 	c.Sandboxes = &Sandboxes{c}
 	c.Pipelines = &Pipelines{c}
 	return c
 }
+
+// Err is the discovery error New could not return (no login, no API URL); every
+// call answers it too, before sending anything.
+func (c *Client) Err() error { return c.err }
 
 // Quota answers the ceiling and what is against it; an empty owner means the caller's own.
 func (c *Client) Quota(owner string) (map[string]any, error) {
@@ -109,11 +167,19 @@ func (c *Client) Request(method, path string, opts RequestOptions) error {
 }
 
 func (c *Client) call(method, path string, query url.Values, body, out any) error {
-	return c.send(c.baseURL, method, path, query, body, out)
+	raw, _, err := c.do(c.http, method, path, query, body, "application/json")
+	if err != nil || out == nil || len(raw) == 0 {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
-func (c *Client) send(base, method, path string, query url.Values, body, out any) error {
-	u := base + path
+// do is the one round trip: the raw answer and its headers, an *ApiError for a non-2xx status.
+func (c *Client) do(hc *http.Client, method, path string, query url.Values, body any, accept string) ([]byte, http.Header, error) {
+	if c.err != nil {
+		return nil, nil, c.err
+	}
+	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -121,38 +187,44 @@ func (c *Client) send(base, method, path string, query url.Values, body, out any
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(method, u, rdr)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	req.Header.Set("User-Agent", "kloudlite-sdk-go/"+Version)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	resp, err := c.http.Do(req)
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := hc.Do(req)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return &ApiError{Status: resp.StatusCode, Message: errorText(raw)}
+		return nil, nil, &ApiError{Status: resp.StatusCode, Message: errorText(raw)}
 	}
-	if out != nil && len(raw) > 0 {
-		return json.Unmarshal(raw, out)
+	return raw, resp.Header, nil
+}
+
+func unmarshal(raw []byte, out any) error { return json.Unmarshal(raw, out) }
+
+// remarshal copies a decoded JSON value into out.
+func remarshal(in, out any) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
 	}
-	return nil
+	return json.Unmarshal(b, out)
 }
 
 func seg(s string) string { return url.PathEscape(s) }
@@ -165,15 +237,12 @@ func seg(s string) string { return url.PathEscape(s) }
 type Workspaces struct{ c *Client }
 
 // CreateWorkspace carries what a create takes. Workspace is "name" or
-// "team/name"; Repo seeds from a PLATFORM repo ("owner/name", with Branch);
-// Packages are nixpkgs attributes, optionally pinned ("attr@version"). An
-// empty Image means the platform default.
+// "team/name"; Packages are nixpkgs attributes, optionally pinned
+// ("attr@version"). An empty Image means the platform default.
 type CreateWorkspace struct {
 	Workspace string
 	QuotaGb   int64
 	Image     string
-	Repo      string
-	Branch    string
 	Packages  []string
 	// TtlSecs (600..=2592000) deletes the workspace after that many seconds
 	// unused; 0 is never.
@@ -182,10 +251,19 @@ type CreateWorkspace struct {
 	Env map[string]string
 }
 
-type PushWorkspace struct {
+// TakeWorkspaceSnapshot pushes a snapshot. Volume names the volume and is
+// required on its first push; TtlSecs (3600..=31536000) or Never set its
+// expiry. Zero fields are left out.
+type TakeWorkspaceSnapshot struct {
 	Workspace string
 	Message   string
+	Volume    string
+	TtlSecs   int64
+	Never     bool
 }
+
+// PushWorkspace is the old name of TakeWorkspaceSnapshot.
+type PushWorkspace = TakeWorkspaceSnapshot
 
 // CloneWorkspace makes To from Workspace's state; Task is optional.
 type CloneWorkspace struct {
@@ -198,8 +276,11 @@ type CloneWorkspace struct {
 // whose workspace is long gone. Absent overrides mean "whatever the snapshot
 // froze".
 type RestoreWorkspace struct {
+	// Snapshot is a volume name, name@N or a snapshot id. Team (or To as
+	// "team/name") is required for a team's volume.
 	Snapshot string
 	To       string
+	Team     string
 	Image    string
 	Packages []string
 	QuotaGb  int64
@@ -210,26 +291,23 @@ type SetPackages struct {
 	Packages  []string
 }
 
+// workspaceBody is the create body of a workspace, also under a session.
+type workspaceBody struct {
+	Name     string            `json:"name"`
+	QuotaGb  int64             `json:"quota_gb"`
+	Team     string            `json:"team,omitempty"`
+	Image    string            `json:"image,omitempty"`
+	Packages []string          `json:"packages,omitempty"`
+	TtlSecs  int64             `json:"ttl_secs,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+}
+
 func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 	team, name, err := owned(req.Workspace)
 	if err != nil {
 		return nil, err
 	}
-	packages := req.Packages
-	if packages == nil {
-		packages = []string{}
-	}
-	body := struct {
-		Name     string            `json:"name"`
-		QuotaGb  int64             `json:"quota_gb"`
-		Team     string            `json:"team,omitempty"`
-		Image    string            `json:"image,omitempty"`
-		Repo     string            `json:"repo,omitempty"`
-		Branch   string            `json:"branch,omitempty"`
-		Packages []string          `json:"packages"`
-		TtlSecs  int64             `json:"ttl_secs,omitempty"`
-		Env      map[string]string `json:"env,omitempty"`
-	}{name, req.QuotaGb, team, req.Image, req.Repo, req.Branch, packages, req.TtlSecs, req.Env}
+	body := workspaceBody{name, req.QuotaGb, team, req.Image, req.Packages, req.TtlSecs, req.Env}
 	var out map[string]any
 	err = w.c.call("POST", "/v1/workspaces", nil, body, &out)
 	return out, err
@@ -243,11 +321,23 @@ func (w *Workspaces) SetTTL(workspace string, ttlSecs *int64) (map[string]any, e
 	return out, err
 }
 
+// EnvOptions are SetEnv's optional halves. RestartOnEnvChange true restarts a
+// running workspace for the change; unset, it is only marked restart_required.
+type EnvOptions struct {
+	RestartOnEnvChange *bool
+}
+
 // SetEnv replaces the whole env (literals or "${{ secrets.NAME }}" references); it
 // takes effect on the next start.
-func (w *Workspaces) SetEnv(workspace string, env map[string]string) (map[string]any, error) {
+func (w *Workspaces) SetEnv(workspace string, env map[string]string, opts ...EnvOptions) (map[string]any, error) {
+	body := map[string]any{"env": env}
+	for _, o := range opts {
+		if o.RestartOnEnvChange != nil {
+			body["restartOnEnvChange"] = *o.RestartOnEnvChange
+		}
+	}
 	var out map[string]any
-	err := w.at("PUT", workspace, "/env", map[string]map[string]string{"env": env}, &out)
+	err := w.at("PUT", workspace, "/env", body, &out)
 	return out, err
 }
 
@@ -285,15 +375,39 @@ func (w *Workspaces) Stop(workspace string) error {
 	return w.at("POST", workspace, "/stop", nil, nil)
 }
 
-// Push cuts a SNAPSHOT of the working copy — the one durable, restorable state.
-func (w *Workspaces) Push(req PushWorkspace) (map[string]any, error) {
-	var body any
-	if req.Message != "" {
-		body = map[string]string{"message": req.Message}
-	}
+// Restart restarts a running workspace so it gets the current env (202); 409
+// when it is not running.
+func (w *Workspaces) Restart(workspace string) error {
+	return w.at("POST", workspace, "/restart", nil, nil)
+}
+
+// TakeSnapshot cuts a SNAPSHOT of the working copy — the one durable,
+// restorable state (202).
+func (w *Workspaces) TakeSnapshot(req TakeWorkspaceSnapshot) (map[string]any, error) {
 	var out map[string]any
-	err := w.at("POST", req.Workspace, "/push", body, &out)
+	err := w.at("POST", req.Workspace, "/snapshots", snapshotBody(req.Message, req.Volume, req.TtlSecs, req.Never), &out)
 	return out, err
+}
+
+// Push is the old name of TakeSnapshot.
+func (w *Workspaces) Push(req PushWorkspace) (map[string]any, error) { return w.TakeSnapshot(req) }
+
+// snapshotBody is the body of a snapshot push; unset fields are left out.
+func snapshotBody(message, volume string, ttlSecs int64, never bool) any {
+	body := map[string]any{}
+	if message != "" {
+		body["message"] = message
+	}
+	if volume != "" {
+		body["volume"] = volume
+	}
+	if ttlSecs != 0 {
+		body["ttl_secs"] = ttlSecs
+	}
+	if never {
+		body["never"] = true
+	}
+	return body
 }
 
 // Clone makes a new workspace from this one's state, cut at the moment of the
@@ -309,15 +423,23 @@ func (w *Workspaces) Clone(req CloneWorkspace) (map[string]any, error) {
 }
 
 func (w *Workspaces) Restore(req RestoreWorkspace) (map[string]any, error) {
+	team, name, err := owned(req.To)
+	if err != nil {
+		return nil, err
+	}
+	if req.Team != "" {
+		team = req.Team
+	}
 	body := struct {
 		Name       string   `json:"name"`
 		SnapshotID string   `json:"snapshot_id"`
+		Team       string   `json:"team,omitempty"`
 		Image      string   `json:"image,omitempty"`
 		Packages   []string `json:"packages,omitempty"`
 		QuotaGb    int64    `json:"quota_gb,omitempty"`
-	}{req.To, req.Snapshot, req.Image, req.Packages, req.QuotaGb}
+	}{name, req.Snapshot, team, req.Image, req.Packages, req.QuotaGb}
 	var out map[string]any
-	err := w.c.call("POST", "/v1/workspaces/restore", nil, body, &out)
+	err = w.c.call("POST", "/v1/workspaces/restore", nil, body, &out)
 	return out, err
 }
 
@@ -729,15 +851,26 @@ type CreateEnvironment struct {
 	TtlSecs int64
 }
 
+// SetServices replaces the service list. RestartOnEnvChange true restarts a
+// running service for a changed env; unset, it is only marked restartRequired.
 type SetServices struct {
-	Environment string
-	Services    []Service
+	Environment        string
+	Services           []Service
+	RestartOnEnvChange *bool
 }
 
-type PushEnvironment struct {
+// TakeEnvironmentSnapshot pushes a snapshot; Volume names the volume and is
+// required on its first push. Zero fields are left out.
+type TakeEnvironmentSnapshot struct {
 	Environment string
 	Message     string
+	Volume      string
+	TtlSecs     int64
+	Never       bool
 }
+
+// PushEnvironment is the old name of TakeEnvironmentSnapshot.
+type PushEnvironment = TakeEnvironmentSnapshot
 
 // CloneEnvironment makes To ("name" or "team/name"): a copy of the live disk,
 // or with Snapshot of one of Environment's snapshots.
@@ -747,6 +880,7 @@ type CloneEnvironment struct {
 	Snapshot    string
 	Services    []Service
 	QuotaGb     int64
+	TtlSecs     int64
 }
 
 // RestoreEnvironment puts Environment back to one of its own snapshots. A
@@ -765,9 +899,6 @@ func (e *Environments) Create(req CreateEnvironment) (map[string]any, error) {
 	}
 	if req.TtlSecs != 0 {
 		body["ttl_secs"] = req.TtlSecs
-	}
-	if body["services"] == nil {
-		body["services"] = []Service{}
 	}
 	var out map[string]any
 	err = e.c.call("POST", "/v1/environments", nil, body, &out)
@@ -795,7 +926,17 @@ func (e *Environments) Get(environment string) (map[string]any, error) {
 // SetServices replaces the WHOLE service list. A removed service keeps its
 // folders, so adding it back finds its data.
 func (e *Environments) SetServices(req SetServices) error {
-	return e.at("PATCH", req.Environment, "", map[string]any{"services": fillServices(req.Services)}, nil)
+	body := map[string]any{"services": fillServices(req.Services)}
+	if req.RestartOnEnvChange != nil {
+		body["restartOnEnvChange"] = *req.RestartOnEnvChange
+	}
+	return e.at("PATCH", req.Environment, "", body, nil)
+}
+
+// Restart restarts one service so it gets the current env (202); 409 when the
+// environment is not running.
+func (e *Environments) Restart(environment, service string) error {
+	return e.at("POST", environment, "/services/"+seg(service)+"/restart", nil, nil)
 }
 
 func (e *Environments) Start(environment string) error {
@@ -819,22 +960,24 @@ func (e *Environments) Delete(environment string) error {
 	return e.at("DELETE", environment, "", nil, nil)
 }
 
-// Push cuts a SNAPSHOT of every service's data — the one durable, restorable
-// state.
-func (e *Environments) Push(req PushEnvironment) (map[string]any, error) {
-	var body any
-	if req.Message != "" {
-		body = map[string]string{"message": req.Message}
-	}
+// TakeSnapshot cuts a SNAPSHOT of every service's data — the one durable,
+// restorable state (202).
+func (e *Environments) TakeSnapshot(req TakeEnvironmentSnapshot) (map[string]any, error) {
 	var out map[string]any
-	err := e.at("POST", req.Environment, "/push", body, &out)
+	err := e.at("POST", req.Environment, "/snapshots", snapshotBody(req.Message, req.Volume, req.TtlSecs, req.Never), &out)
 	return out, err
 }
+
+// Push is the old name of TakeSnapshot.
+func (e *Environments) Push(req PushEnvironment) (map[string]any, error) { return e.TakeSnapshot(req) }
 
 func (e *Environments) Clone(req CloneEnvironment) (map[string]any, error) {
 	body, err := envBody(req.To, req.Services, req.QuotaGb, req.Snapshot)
 	if err != nil {
 		return nil, err
+	}
+	if req.TtlSecs != 0 {
+		body["ttl_secs"] = req.TtlSecs
 	}
 	var out map[string]any
 	err = e.at("POST", req.Environment, "/clone", body, &out)
@@ -843,11 +986,11 @@ func (e *Environments) Clone(req CloneEnvironment) (map[string]any, error) {
 
 // Restore restores services and data (202).
 func (e *Environments) Restore(req RestoreEnvironment) error {
-	discard := req.Discard
-	if discard == nil {
-		discard = []string{}
+	body := map[string]any{"snapshot_id": req.Snapshot}
+	if req.Discard != nil {
+		body["discard"] = req.Discard
 	}
-	return e.at("POST", req.Environment, "/restore", map[string]any{"snapshot_id": req.Snapshot, "discard": discard}, nil)
+	return e.at("POST", req.Environment, "/restore", body, nil)
 }
 
 func (e *Environments) at(method, environment, tail string, body, out any) error {
@@ -890,7 +1033,7 @@ func envBody(env string, services []Service, quotaGb int64, snapshot string) (ma
 	if owner != "" {
 		body["owner"] = owner
 	}
-	if services != nil {
+	if len(services) > 0 {
 		body["services"] = fillServices(services)
 	}
 	if quotaGb > 0 {
@@ -928,7 +1071,7 @@ func fillServices(in []Service) []Service {
 // one team, connected to one environment. Many people's sessions connect to
 // the same environment and collaborate through it; an intercept a session takes
 // is environment-wide, and the session owns it — only it can release it, and
-// removing the workspace or deleting the session releases it.
+// deleting the workspace or the session releases it.
 //
 // A session is named like an environment — "name" (personal) or "team/name" —
 // or by its id (ses-…); a workspace by its id, name or "team/name", sent
@@ -946,17 +1089,23 @@ type CreateSession struct {
 	TtlSecs int64
 }
 
-// AddToSession puts Workspace in Session. A workspace is in at most one
-// session; while in one it resolves that session's environment.
-type AddToSession struct {
+// CreateSessionWorkspace creates a workspace managed by Session, in its team;
+// CreateWorkspace.Workspace is a bare name.
+type CreateSessionWorkspace struct {
+	Session string
+	CreateWorkspace
+}
+
+type DeleteSessionWorkspace struct {
 	Session   string
 	Workspace string
 }
 
-// RemoveFromSession releases whatever Workspace intercepts in Session first.
-type RemoveFromSession struct {
-	Session   string
-	Workspace string
+// CreateSessionSandbox creates a sandbox managed by Session, in its team and
+// reaching its environment; CreateSandbox.Team must be the session's.
+type CreateSessionSandbox struct {
+	Session string
+	CreateSandbox
 }
 
 // InterceptService sends everything that calls Service in the environment to
@@ -1033,14 +1182,41 @@ func (s *Sessions) Connect(session string, environment *string) (map[string]any,
 	return out, err
 }
 
-func (s *Sessions) Add(req AddToSession) (map[string]any, error) {
+// Stop stops the session and every workspace in it (202, {"stopped": [ids]});
+// sandboxes and the environment are untouched.
+func (s *Sessions) Stop(session string) (map[string]any, error) {
 	var out map[string]any
-	err := s.at("POST", req.Session, "/workspaces", map[string]string{"workspace": req.Workspace}, &out)
+	err := s.at("POST", session, "/stop", nil, &out)
 	return out, err
 }
 
-func (s *Sessions) Remove(req RemoveFromSession) error {
+// CreateWorkspace creates a workspace managed by the session (201); the session
+// controls it from then on.
+func (s *Sessions) CreateWorkspace(req CreateSessionWorkspace) (map[string]any, error) {
+	w := req.CreateWorkspace
+	body := workspaceBody{w.Workspace, w.QuotaGb, "", w.Image, w.Packages, w.TtlSecs, w.Env}
+	var out map[string]any
+	err := s.at("POST", req.Session, "/workspaces", body, &out)
+	return out, err
+}
+
+// DeleteWorkspace deletes a workspace the session manages, releasing its
+// intercepts first (204); snapshots stay.
+func (s *Sessions) DeleteWorkspace(req DeleteSessionWorkspace) error {
 	return s.at("DELETE", req.Session, "/workspaces/"+seg(req.Workspace), nil, nil)
+}
+
+// CreateSandbox creates a sandbox managed by the session (202).
+func (s *Sessions) CreateSandbox(req CreateSessionSandbox) (*Sandbox, error) {
+	body, err := req.CreateSandbox.body()
+	if err != nil {
+		return nil, err
+	}
+	sb := &Sandbox{c: s.c}
+	if err := s.at("POST", req.Session, "/sandboxes", body, &sb.SandboxDoc); err != nil {
+		return nil, err
+	}
+	return sb, nil
 }
 
 func (s *Sessions) Intercept(req InterceptService) (map[string]any, error) {
@@ -1110,10 +1286,59 @@ func (v *Volumes) DeleteSnapshot(req DeleteSnapshot) error {
 	return v.c.call("DELETE", "/v1/volumes/"+seg(req.Volume)+"/snapshots/"+seg(req.Snapshot), nil, nil, nil)
 }
 
-// Delete takes a DETACHED volume with all its snapshots; refused while a
-// working copy remains.
-func (v *Volumes) Delete(volume string) error {
+// DeleteByID takes a DETACHED volume (by id) with all its snapshots; refused
+// while a working copy remains.
+func (v *Volumes) DeleteByID(volume string) error {
 	return v.c.call("DELETE", "/v1/volumes/"+seg(volume), nil, nil, nil)
+}
+
+func named(owner, name, tail string) string {
+	return "/v1/volumes/" + seg(owner) + "/" + seg(name) + tail
+}
+
+// Get answers one named volume; owner is your handle or a team slug.
+func (v *Volumes) Get(owner, name string) (map[string]any, error) {
+	var out map[string]any
+	err := v.c.call("GET", named(owner, name, ""), nil, nil, &out)
+	return out, err
+}
+
+// Versions answers the versions of a named volume, newest first.
+func (v *Volumes) Versions(owner, name string) ([]map[string]any, error) {
+	var out []map[string]any
+	err := v.c.call("GET", named(owner, name, "/versions"), nil, nil, &out)
+	return out, err
+}
+
+// Delete deletes a named volume and every snapshot on it (204); the name is
+// free again.
+func (v *Volumes) Delete(owner, name string) error {
+	return v.c.call("DELETE", named(owner, name, ""), nil, nil, nil)
+}
+
+// DeleteVersion deletes version n (204); deleting the last one deletes the volume.
+func (v *Volumes) DeleteVersion(owner, name string, n int) error {
+	return v.c.call("DELETE", named(owner, name, fmt.Sprintf("/versions/%d", n)), nil, nil, nil)
+}
+
+// Connectors are the provider accounts linked to an owner, over /v1/connectors.
+type Connectors struct{ c *Client }
+
+// List answers the connectors by name; owner is a handle or team slug, empty
+// is your own.
+func (c *Connectors) List(owner string) ([]map[string]any, error) {
+	q := url.Values{}
+	if owner != "" {
+		q.Set("owner", owner)
+	}
+	var out []map[string]any
+	err := c.c.call("GET", "/v1/connectors", q, nil, &out)
+	return out, err
+}
+
+// Delete removes a connector (204); a team's needs an admin.
+func (c *Connectors) Delete(name string) error {
+	return c.c.call("DELETE", "/v1/connectors/"+seg(name), nil, nil, nil)
 }
 
 // The server answers errors as {"error": …} or plain text; take either.

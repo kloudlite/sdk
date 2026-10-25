@@ -1,28 +1,34 @@
-// Kloudlite SDK for Java — one file, no dependencies (java.net.http, Java 11+).
+// Kloudlite SDK for Java — one file, no dependencies (java.net.http). Needs Java 11 or later.
 //
-// Auth is a Bearer token (a session or CLI token). Every module hangs off the
-// one client.
+// Auth is a Bearer token (a CLI token). Every module hangs off the one client:
 //
-// Java has no named arguments, so no call ever takes two inputs by position: a
-// method whose only input is the resource itself takes that one String
-// (get("acme/dev"), start("acme/dev")), and every other method takes ONE
-// params object — a nested class named <Verb><Noun> with a fluent setter per
-// field. A missing required field is an IllegalArgumentException("<field> is
-// required") before anything is sent.
-//
-//   Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudlite.io").token("…"));
+//   Kloudlite kl = new Kloudlite();   // the login of `kloudlite`; see "Discovery" below
 //   String workspaces = kl.workspaces().list(null);
+//
+// Discovery: the API origin and the token each come from the first source that has one:
+// 1. Options.baseUrl() / Options.token(); 2. the environment KLOUDLITE_URL / KLOUDLITE_TOKEN;
+// 3. "api" / "token" in config.json in KLOUDLITE_CONFIG_DIR, else ~/.config/kloudlite. "/v1" is
+// added to the origin. With no token the constructor throws IllegalStateException carrying the
+// sentence "no Kloudlite login: pass token(), set KLOUDLITE_TOKEN, or run kloudlite login".
+//
+// Java has no named arguments, so no call ever takes two inputs by position unless both are
+// plain names (get("acme/dev"), connect("dev", "shop")): every other method takes ONE params
+// object — a nested class named <Verb><Noun> with a fluent setter per field. A missing
+// required field is an IllegalArgumentException("<field> is required") before anything is sent.
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper. The two
 // exceptions are sandboxes() and pipelines().run/runs/getRun, which hand back live handles
-// (SandboxHandle, SandboxProcess, Run) — each still exposes its raw JSON.
+// (SandboxHandle, Run) — each still exposes its raw JSON.
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
@@ -30,7 +36,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,12 +43,19 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Spliterator;
 import java.util.Spliterators;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 public class Kloudlite {
-    public static final String VERSION = "0.1.0";
+    public static final String VERSION = "0.2.0";
+    static final String NO_LOGIN = "no Kloudlite login: pass token(), set KLOUDLITE_TOKEN, or run kloudlite login";
+
+    static {
+        String v = System.getProperty("java.specification.version", "0");
+        if (v.startsWith("1.") || Integer.parseInt(v) < 11) {
+            throw new IllegalStateException("Kloudlite.java needs Java 11 or later, found " + v);
+        }
+    }
 
     /** A non-2xx answer: {@code status} is the HTTP code, {@code message} the server's text. */
     public static class ApiException extends IOException {
@@ -57,10 +69,7 @@ public class Kloudlite {
         }
     }
 
-    /**
-     * How to reach the API: {@code baseUrl} is required; {@code token} null means anonymous
-     * (public data only).
-     */
+    /** How to reach the API; every field is optional and falls back as the header's "Discovery" says. */
     public static final class Options {
         private String baseUrl, token;
 
@@ -69,20 +78,55 @@ public class Kloudlite {
     }
 
     private final String baseUrl;
-    private final String token; // null = anonymous
+    private final String token;
     private final HttpClient http;
     private final Workspaces workspaces = new Workspaces();
     private final Environments environments = new Environments();
     private final Sessions sessions = new Sessions();
     private final Volumes volumes = new Volumes();
     private final Secrets secrets = new Secrets();
+    private final Connectors connectors = new Connectors();
     private final Sandboxes sandboxes = new Sandboxes();
     private final Pipelines pipelines = new Pipelines();
 
+    /** The login of {@code kloudlite}: argument-free discovery. */
+    public Kloudlite() {
+        this(new Options());
+    }
+
     public Kloudlite(Options opts) {
-        this.baseUrl = need(opts.baseUrl, "baseUrl").replaceAll("/+$", "");
-        this.token = opts.token;
+        String url = blankToNull(opts.baseUrl), tok = blankToNull(opts.token);
+        if (url == null) url = blankToNull(System.getenv("KLOUDLITE_URL"));
+        if (tok == null) tok = blankToNull(System.getenv("KLOUDLITE_TOKEN"));
+        if (url == null || tok == null) {
+            Map<String, Object> cfg = login();
+            if (url == null) url = blankToNull(text(cfg.get("api")));
+            if (tok == null) tok = blankToNull(text(cfg.get("token")));
+        }
+        if (tok == null) throw new IllegalStateException(NO_LOGIN);
+        if (url == null) {
+            throw new IllegalStateException(
+                "no Kloudlite API URL: pass baseUrl(), set KLOUDLITE_URL, or run kloudlite login");
+        }
+        url = url.replaceAll("/+$", "");
+        this.baseUrl = url.endsWith("/v1") ? url.substring(0, url.length() - 3) : url; // paths carry /v1
+        this.token = tok;
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
+    }
+
+    private static String blankToNull(String v) {
+        return v == null || v.isEmpty() ? null : v;
+    }
+
+    /** {@code config.json} of the {@code kloudlite} login; empty when it is absent or unreadable. */
+    private static Map<String, Object> login() {
+        String dir = blankToNull(System.getenv("KLOUDLITE_CONFIG_DIR"));
+        Path p = dir != null ? Path.of(dir) : Path.of(System.getProperty("user.home"), ".config", "kloudlite");
+        try {
+            return JsonReader.parsed(Files.readString(p.resolve("config.json")));
+        } catch (IOException | RuntimeException e) {
+            return Map.of();
+        }
     }
 
     /** Btrfs-backed dev workspaces: {@code /v1/workspaces}. */
@@ -110,7 +154,12 @@ public class Kloudlite {
         return volumes;
     }
 
-    /** Throwaway gVisor sandboxes with a tool server: {@code /v1/sandboxes}. */
+    /** The provider accounts linked to an owner: {@code /v1/connectors}. */
+    public Connectors connectors() {
+        return connectors;
+    }
+
+    /** Throwaway gVisor sandboxes that run one command: {@code /v1/sandboxes}. */
     public Sandboxes sandboxes() {
         return sandboxes;
     }
@@ -152,34 +201,35 @@ public class Kloudlite {
 
     /** A bodiless round trip — method and path are the one positional pair, being HTTP's own. */
     public String request(String method, String path) throws IOException, InterruptedException {
-        return send(baseUrl, method, path, null);
+        return api(method, path, null);
     }
 
     public String request(RawRequest r) throws IOException, InterruptedException {
-        return send(baseUrl, need(r.method, "method"), r.target(), r.body);
+        return api(need(r.method, "method"), r.target(), r.body);
     }
 
     private String api(String method, String path, String jsonBody) throws IOException, InterruptedException {
-        return send(baseUrl, method, path, jsonBody);
+        return exchange(method, path, jsonBody, "application/json", Duration.ofSeconds(30)).body();
     }
 
-    private String send(String base, String method, String path, String jsonBody)
-            throws IOException, InterruptedException {
+    /** One round trip; {@code timeout} null means none (a followed log). */
+    private HttpResponse<String> exchange(String method, String path, String jsonBody, String accept,
+            Duration timeout) throws IOException, InterruptedException {
         HttpRequest.Builder b = HttpRequest.newBuilder()
-            .uri(URI.create(base + path))
-            .timeout(Duration.ofSeconds(30))
+            .uri(URI.create(baseUrl + path))
             .header("User-Agent", "kloudlite-sdk-java/" + VERSION)
-            .header("Accept", "application/json")
+            .header("Accept", accept)
             .method(method, jsonBody == null
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofString(jsonBody));
+        if (timeout != null) b.timeout(timeout);
         if (jsonBody != null) b.header("Content-Type", "application/json");
-        if (token != null) b.header("Authorization", "Bearer " + token);
+        b.header("Authorization", "Bearer " + token);
         HttpResponse<String> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
         if (resp.statusCode() < 200 || resp.statusCode() > 299) {
             throw new ApiException(resp.statusCode(), errorText(resp.body()));
         }
-        return resp.body();
+        return resp;
     }
 
     /**
@@ -189,10 +239,7 @@ public class Kloudlite {
      * history, restore targets and deletion.
      */
     public class Workspaces {
-        /**
-         * {@code workspace} is split into the body's {@code name} and {@code team}; {@code repo}
-         * seeds it from a PLATFORM repo (with {@code branch}).
-         */
+        /** {@code workspace} ("name" or "team/name") is split into the body's {@code name} and {@code team}. 202. */
         public String create(CreateWorkspace p) throws IOException, InterruptedException {
             String[] on = owned(need(p.workspace, "workspace"));
             return api("POST", "/v1/workspaces", new Json()
@@ -200,9 +247,7 @@ public class Kloudlite {
                 .num("quota_gb", need(p.quotaGb, "quotaGb"))
                 .str("team", on[0])
                 .str("image", p.image)
-                .str("repo", p.repo)
-                .str("branch", p.branch)
-                .raw("packages", strings(p.packages == null ? List.of() : p.packages))
+                .raw("packages", p.packages == null ? null : strings(p.packages))
                 .num("ttl_secs", p.ttlSecs)
                 .raw("env", p.env == null ? null : stringMap(p.env))
                 .toString());
@@ -210,7 +255,15 @@ public class Kloudlite {
 
         /** Replace the whole env (literals or {@code "${{ secrets.NAME }}"}); takes effect on the next start. */
         public String setEnv(String workspace, Map<String, String> env) throws IOException, InterruptedException {
-            return api("PUT", path(need(workspace, "workspace"), "/env"), "{\"env\":" + stringMap(env) + "}");
+            return setEnv(workspace, env, null);
+        }
+
+        /** As {@link #setEnv(String, Map)}; {@code restartOnEnvChange} true also restarts a running workspace. */
+        public String setEnv(String workspace, Map<String, String> env, Boolean restartOnEnvChange)
+                throws IOException, InterruptedException {
+            return api("PUT", path(need(workspace, "workspace"), "/env"), new Json()
+                .raw("env", stringMap(need(env, "env")))
+                .bool("restartOnEnvChange", restartOnEnvChange).toString());
         }
 
         /** Seconds unused before the workspace is deleted (600..=2592000); {@code null} clears it. Not for a sandbox or a bench. */
@@ -241,10 +294,24 @@ public class Kloudlite {
             return api("POST", path(workspace, "/stop"), null);
         }
 
-        /** Cut a SNAPSHOT of the working copy — the one durable, restorable state. */
-        public String push(PushWorkspace p) throws IOException, InterruptedException {
-            return api("POST", path(need(p.workspace, "workspace"), "/push"),
-                p.message == null ? null : obj("message", p.message));
+        /** Restart a running workspace so it gets the current env (202); 409 when not running. */
+        public String restart(String workspace) throws IOException, InterruptedException {
+            return api("POST", path(workspace, "/restart"), null);
+        }
+
+        /**
+         * Push a SNAPSHOT of the working copy — the one durable, restorable state (202).
+         * {@code volume} names the volume and is required on its first push.
+         */
+        public String takeSnapshot(TakeWorkspaceSnapshot p) throws IOException, InterruptedException {
+            return api("POST", path(need(p.workspace, "workspace"), "/snapshots"), new Json()
+                .str("message", p.message).str("volume", p.volume)
+                .num("ttl_secs", p.ttlSecs).bool("never", p.never).toString());
+        }
+
+        /** The old name of {@link #takeSnapshot}. */
+        public String push(TakeWorkspaceSnapshot p) throws IOException, InterruptedException {
+            return takeSnapshot(p);
         }
 
         /**
@@ -257,14 +324,18 @@ public class Kloudlite {
         }
 
         /**
-         * A new workspace {@code to} grafted onto a PUSHED snapshot — also one whose workspace is
-         * long gone. Unset overrides mean "whatever the snapshot froze".
+         * A new workspace {@code to} grafted onto a PUSHED snapshot (a volume name, {@code name@N}
+         * or a snapshot id) — also one whose workspace is long gone. {@code team} (or
+         * {@code to} as "team/name") is required for a team's volume. Unset overrides mean
+         * "whatever the snapshot froze".
          */
         public String restore(RestoreWorkspace p) throws IOException, InterruptedException {
-            String snapshot = need(p.snapshot, "snapshot"), to = need(p.to, "to");
+            String snapshot = need(p.snapshot, "snapshot");
+            String[] on = owned(need(p.to, "to"));
             return api("POST", "/v1/workspaces/restore", new Json()
-                .str("name", to)
+                .str("name", on[1])
                 .str("snapshot_id", snapshot)
+                .str("team", p.team != null ? p.team : on[0])
                 .str("image", p.image)
                 .raw("packages", p.packages == null ? null : strings(p.packages))
                 .num("quota_gb", p.quotaGb)
@@ -311,7 +382,7 @@ public class Kloudlite {
 
     /** {@link Workspaces#create}: {@code workspace} and {@code quotaGb} are required. */
     public static final class CreateWorkspace {
-        private String workspace, image, repo, branch;
+        private String workspace, image;
         private Long quotaGb, ttlSecs;
         private List<String> packages;
         private Map<String, String> env;
@@ -319,8 +390,6 @@ public class Kloudlite {
         public CreateWorkspace workspace(String v) { workspace = v; return this; }
         public CreateWorkspace quotaGb(long v) { quotaGb = v; return this; }
         public CreateWorkspace image(String v) { image = v; return this; }
-        public CreateWorkspace repo(String v) { repo = v; return this; }
-        public CreateWorkspace branch(String v) { branch = v; return this; }
         /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
         public CreateWorkspace packages(String... v) { packages = Arrays.asList(v); return this; }
         /** Seconds unused (600..=2592000) before the workspace is deleted; unset, never. */
@@ -329,11 +398,17 @@ public class Kloudlite {
         public CreateWorkspace env(Map<String, String> v) { env = v; return this; }
     }
 
-    public static final class PushWorkspace {
-        private String workspace, message;
+    /** {@link Workspaces#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set the expiry. */
+    public static final class TakeWorkspaceSnapshot {
+        private String workspace, message, volume;
+        private Long ttlSecs;
+        private Boolean never;
 
-        public PushWorkspace workspace(String v) { workspace = v; return this; }
-        public PushWorkspace message(String v) { message = v; return this; }
+        public TakeWorkspaceSnapshot workspace(String v) { workspace = v; return this; }
+        public TakeWorkspaceSnapshot message(String v) { message = v; return this; }
+        public TakeWorkspaceSnapshot volume(String v) { volume = v; return this; }
+        public TakeWorkspaceSnapshot ttlSecs(long v) { ttlSecs = v; return this; }
+        public TakeWorkspaceSnapshot never(boolean v) { never = v; return this; }
     }
 
     public static final class CloneWorkspace {
@@ -344,14 +419,15 @@ public class Kloudlite {
         public CloneWorkspace task(String v) { task = v; return this; }
     }
 
-    /** {@link Workspaces#restore}: {@code snapshot} is sent as {@code snapshot_id}, {@code to} as {@code name}. */
+    /** {@link Workspaces#restore}: {@code snapshot} is sent as {@code snapshot_id}, {@code to} as {@code name} (and {@code team}). */
     public static final class RestoreWorkspace {
-        private String snapshot, to, image;
+        private String snapshot, to, team, image;
         private List<String> packages;
         private Long quotaGb;
 
         public RestoreWorkspace snapshot(String v) { snapshot = v; return this; }
         public RestoreWorkspace to(String v) { to = v; return this; }
+        public RestoreWorkspace team(String v) { team = v; return this; }
         public RestoreWorkspace image(String v) { image = v; return this; }
         public RestoreWorkspace packages(String... v) { packages = Arrays.asList(v); return this; }
         public RestoreWorkspace quotaGb(long v) { quotaGb = v; return this; }
@@ -735,7 +811,7 @@ public class Kloudlite {
          */
         public String create(CreateEnvironment p) throws IOException, InterruptedException {
             return api("POST", "/v1/environments",
-                body(need(p.environment, "environment"), p.quotaGb, p.snapshot, p.services, true, p.ttlSecs));
+                body(need(p.environment, "environment"), p.quotaGb, p.snapshot, p.services, p.ttlSecs));
         }
 
         /** The caller's environments and their teams'; a non-null owner narrows to one handle or team. */
@@ -750,7 +826,9 @@ public class Kloudlite {
         /** Replace the WHOLE service list. A removed service keeps its folders, so re-adding finds its data. */
         public String setServices(SetServices p) throws IOException, InterruptedException {
             String env = need(p.environment, "environment");
-            return api("PATCH", path(env, ""), "{\"services\":" + array(need(p.services, "services")) + "}");
+            return api("PATCH", path(env, ""), new Json()
+                .raw("services", array(need(p.services, "services")))
+                .bool("restartOnEnvChange", p.restartOnEnvChange).toString());
         }
 
         public String start(String environment) throws IOException, InterruptedException {
@@ -759,6 +837,12 @@ public class Kloudlite {
 
         public String stop(String environment) throws IOException, InterruptedException {
             return api("POST", path(environment, "/stop"), null);
+        }
+
+        /** Restart one service so it gets the current env (202); 409 when the environment is not running. */
+        public String restart(String environment, String service) throws IOException, InterruptedException {
+            return api("POST", path(need(environment, "environment"),
+                "/services/" + seg(need(service, "service")) + "/restart"), null);
         }
 
         /** Seconds unused before the environment is deleted (600..=2592000); {@code null} clears it. */
@@ -771,19 +855,29 @@ public class Kloudlite {
             return api("DELETE", path(environment, ""), null);
         }
 
-        /** Cut a SNAPSHOT of every service's data — the one durable, restorable state. */
-        public String push(PushEnvironment p) throws IOException, InterruptedException {
-            return api("POST", path(need(p.environment, "environment"), "/push"),
-                p.message == null ? null : obj("message", p.message));
+        /**
+         * Push a SNAPSHOT of every service's data and the service list (202). {@code volume} names
+         * the volume and is required on its first push.
+         */
+        public String takeSnapshot(TakeEnvironmentSnapshot p) throws IOException, InterruptedException {
+            return api("POST", path(need(p.environment, "environment"), "/snapshots"), new Json()
+                .str("message", p.message).str("volume", p.volume)
+                .num("ttl_secs", p.ttlSecs).bool("never", p.never).toString());
+        }
+
+        /** The old name of {@link #takeSnapshot}. */
+        public String push(TakeEnvironmentSnapshot p) throws IOException, InterruptedException {
+            return takeSnapshot(p);
         }
 
         /**
          * A new environment {@code to} ("name" or "team/name"): a copy of the live disk, or of one
-         * of this environment's snapshots when {@code snapshot} is set.
+         * of this environment's snapshots when {@code snapshot} is set ({@code services} and
+         * {@code quotaGb} apply only then).
          */
         public String clone(CloneEnvironment p) throws IOException, InterruptedException {
             String env = need(p.environment, "environment");
-            return api("POST", path(env, "/clone"), body(need(p.to, "to"), p.quotaGb, p.snapshot, p.services, false, null));
+            return api("POST", path(env, "/clone"), body(need(p.to, "to"), p.quotaGb, p.snapshot, p.services, p.ttlSecs));
         }
 
         /**
@@ -794,19 +888,20 @@ public class Kloudlite {
         public String restore(RestoreEnvironment p) throws IOException, InterruptedException {
             String env = need(p.environment, "environment"), snapshot = need(p.snapshot, "snapshot");
             return api("POST", path(env, "/restore"),
-                "{\"snapshot_id\":" + quote(snapshot) + ",\"discard\":" + strings(p.discard) + "}");
+                new Json().str("snapshot_id", snapshot)
+                    .raw("discard", p.discard.isEmpty() ? null : strings(p.discard)).toString());
         }
 
         private String path(String environment, String tail) {
             return at("/v1/environments/", environment, tail);
         }
 
-        private String body(String env, Long quotaGb, String snapshot, List<Service> services, boolean always, Long ttlSecs) {
+        private String body(String env, Long quotaGb, String snapshot, List<Service> services, Long ttlSecs) {
             String[] on = owned(env);
             String b = obj("name", on[1], "owner", on[0], "snapshot_id", snapshot);
             StringBuilder out = new StringBuilder(b.substring(0, b.length() - 1));
             if (quotaGb != null) out.append(",\"quota_gb\":").append(quotaGb);
-            if (always || !services.isEmpty()) out.append(",\"services\":").append(array(services));
+            if (!services.isEmpty()) out.append(",\"services\":").append(array(services));
             if (ttlSecs != null) out.append(",\"ttl_secs\":").append(ttlSecs);
             return out.append('}').toString();
         }
@@ -838,28 +933,38 @@ public class Kloudlite {
     public static final class SetServices {
         private String environment;
         private List<Service> services;
+        private Boolean restartOnEnvChange;
 
         public SetServices environment(String v) { environment = v; return this; }
         public SetServices services(Service... v) { services = Arrays.asList(v); return this; }
+        /** True also restarts a service whose env changed; unset, it is only marked {@code restartRequired}. */
+        public SetServices restartOnEnvChange(boolean v) { restartOnEnvChange = v; return this; }
     }
 
-    public static final class PushEnvironment {
-        private String environment, message;
+    /** {@link Environments#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set the expiry. */
+    public static final class TakeEnvironmentSnapshot {
+        private String environment, message, volume;
+        private Long ttlSecs;
+        private Boolean never;
 
-        public PushEnvironment environment(String v) { environment = v; return this; }
-        public PushEnvironment message(String v) { message = v; return this; }
+        public TakeEnvironmentSnapshot environment(String v) { environment = v; return this; }
+        public TakeEnvironmentSnapshot message(String v) { message = v; return this; }
+        public TakeEnvironmentSnapshot volume(String v) { volume = v; return this; }
+        public TakeEnvironmentSnapshot ttlSecs(long v) { ttlSecs = v; return this; }
+        public TakeEnvironmentSnapshot never(boolean v) { never = v; return this; }
     }
 
     public static final class CloneEnvironment {
         private String environment, to, snapshot;
         private List<Service> services = List.of();
-        private Long quotaGb;
+        private Long quotaGb, ttlSecs;
 
         public CloneEnvironment environment(String v) { environment = v; return this; }
         public CloneEnvironment to(String v) { to = v; return this; }
         public CloneEnvironment snapshot(String v) { snapshot = v; return this; }
         public CloneEnvironment services(Service... v) { services = Arrays.asList(v); return this; }
         public CloneEnvironment quotaGb(long v) { quotaGb = v; return this; }
+        public CloneEnvironment ttlSecs(long v) { ttlSecs = v; return this; }
     }
 
     public static final class RestoreEnvironment {
@@ -921,16 +1026,39 @@ public class Kloudlite {
                 environment == null ? "{\"environment\":null}" : obj("environment", environment));
         }
 
-        /** A workspace is in at most one session; while in one it resolves that session's environment. */
-        public String add(AddToSession p) throws IOException, InterruptedException {
-            String session = need(p.session, "session");
-            return api("POST", path(session, "/workspaces"), obj("workspace", need(p.workspace, "workspace")));
+        /** Stop the session and every workspace in it (202, {@code {"stopped": [ids]}}); sandboxes and the environment are untouched. */
+        public String stop(String session) throws IOException, InterruptedException {
+            return api("POST", path(session, "/stop"), null);
         }
 
-        /** Releases whatever the workspace intercepts in this session first. */
-        public String remove(RemoveFromSession p) throws IOException, InterruptedException {
-            String session = need(p.session, "session");
-            return api("DELETE", path(session, "/workspaces/" + seg(need(p.workspace, "workspace"))), null);
+        /**
+         * Create a workspace {@code p.workspace} (a bare name) managed by the session, in its team
+         * (201). The session controls it from then on; it takes the inputs of
+         * {@link Workspaces#create}.
+         */
+        public String createWorkspace(String session, CreateWorkspace p) throws IOException, InterruptedException {
+            return api("POST", path(need(session, "session"), "/workspaces"), new Json()
+                .str("name", need(p.workspace, "workspace"))
+                .num("quota_gb", need(p.quotaGb, "quotaGb"))
+                .str("image", p.image)
+                .raw("packages", p.packages == null ? null : strings(p.packages))
+                .num("ttl_secs", p.ttlSecs)
+                .raw("env", p.env == null ? null : stringMap(p.env))
+                .toString());
+        }
+
+        /** Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay. */
+        public String deleteWorkspace(String session, String workspace) throws IOException, InterruptedException {
+            return api("DELETE", path(need(session, "session"), "/workspaces/" + seg(need(workspace, "workspace"))), null);
+        }
+
+        /**
+         * Create a sandbox managed by the session (202), in its team and reaching its
+         * environment. Same inputs as {@link Sandboxes#create} ({@code team} must be the session's).
+         */
+        public SandboxHandle createSandbox(String session, CreateSandbox p) throws IOException, InterruptedException {
+            String body = p.body();
+            return new SandboxHandle(api("POST", path(need(session, "session"), "/sandboxes"), body));
         }
 
         /**
@@ -973,20 +1101,6 @@ public class Kloudlite {
         public CreateSession ttlSecs(long v) { ttlSecs = v; return this; }
     }
 
-    public static final class AddToSession {
-        private String session, workspace;
-
-        public AddToSession session(String v) { session = v; return this; }
-        public AddToSession workspace(String v) { workspace = v; return this; }
-    }
-
-    public static final class RemoveFromSession {
-        private String session, workspace;
-
-        public RemoveFromSession session(String v) { session = v; return this; }
-        public RemoveFromSession workspace(String v) { workspace = v; return this; }
-    }
-
     /** {@code ports} keeps the map's own iteration order on the wire — use a LinkedHashMap to fix it. */
     public static final class InterceptService {
         private String session, service, workspace;
@@ -1008,27 +1122,61 @@ public class Kloudlite {
     /**
      * An owner's named secrets, over {@code /v1/secrets}. A value goes in and never comes back:
      * {@code list} answers names with who and when. Reference one from a workspace env as
-     * {@code "${{ secrets.NAME }}"}.
+     * {@code "${{ secrets.NAME }}"}. {@code scope} is "mine" (the default: your own secret in the
+     * team {@code owner}, or your personal one for your own handle) or "team" (the team's shared
+     * secret; needs an admin).
      */
     public class Secrets {
         public void set(String owner, String name, String value) throws IOException, InterruptedException {
-            api("PUT", "/v1/secrets/" + seg(need(owner, "owner")) + "/" + seg(need(name, "name")),
-                "{\"value\":" + quote(need(value, "value")) + "}");
+            set(owner, name, value, "mine");
+        }
+
+        public void set(String owner, String name, String value, String scope) throws IOException, InterruptedException {
+            api("PUT", secretPath(owner, scope, need(name, "name")), "{\"value\":" + quote(need(value, "value")) + "}");
         }
 
         public String list(String owner) throws IOException, InterruptedException {
-            return api("GET", "/v1/secrets/" + seg(need(owner, "owner")), null);
+            return list(owner, "mine");
+        }
+
+        public String list(String owner, String scope) throws IOException, InterruptedException {
+            return api("GET", secretPath(owner, scope, null), null);
         }
 
         /** A 409 while a workspace or environment still references it; the body names them. */
         public void delete(String owner, String name) throws IOException, InterruptedException {
-            api("DELETE", "/v1/secrets/" + seg(need(owner, "owner")) + "/" + seg(need(name, "name")), null);
+            delete(owner, name, "mine");
+        }
+
+        public void delete(String owner, String name, String scope) throws IOException, InterruptedException {
+            api("DELETE", secretPath(owner, scope, need(name, "name")), null);
+        }
+
+        private String secretPath(String owner, String scope, String name) {
+            if (!"mine".equals(scope) && !"team".equals(scope)) {
+                throw new IllegalArgumentException("scope is \"mine\" or \"team\", got " + scope);
+            }
+            return "/v1/secrets/" + seg(need(owner, "owner")) + ("mine".equals(scope) ? "/mine" : "")
+                + (name == null ? "" : "/" + seg(name));
+        }
+    }
+
+    /** The provider accounts linked to an owner, over {@code /v1/connectors}. */
+    public class Connectors {
+        /** Connectors by name; a non-null {@code owner} (a handle or team slug) replaces your own. */
+        public String list(String owner) throws IOException, InterruptedException {
+            return api("GET", "/v1/connectors" + query("owner", owner), null);
+        }
+
+        /** Remove a connector (204); a team's needs an admin. */
+        public void delete(String name) throws IOException, InterruptedException {
+            api("DELETE", "/v1/connectors/" + seg(need(name, "name")), null);
         }
     }
 
     /**
      * The btrfs volumes behind workspaces and environments: snapshot history, restore targets,
-     * and the two deletes — over {@code /v1/volumes}.
+     * and the deletes — over {@code /v1/volumes}.
      */
     public class Volumes {
         /** Either filter may be unset: kind is "workspace" or "environment", owner a handle or team slug. */
@@ -1054,9 +1202,33 @@ public class Kloudlite {
             return api("DELETE", "/v1/volumes/" + seg(volume) + "/snapshots/" + seg(snapshot), null);
         }
 
-        /** Takes a DETACHED volume with all its snapshots; refused while a working copy remains. */
-        public String delete(String volume) throws IOException, InterruptedException {
-            return api("DELETE", "/v1/volumes/" + seg(volume), null);
+        /** Takes a DETACHED volume (by id) with all its snapshots; refused while a working copy remains. */
+        public String deleteById(String volume) throws IOException, InterruptedException {
+            return api("DELETE", "/v1/volumes/" + seg(need(volume, "volume")), null);
+        }
+
+        /** One named volume; {@code owner} is your handle or a team slug. */
+        public String get(String owner, String name) throws IOException, InterruptedException {
+            return api("GET", named(owner, name, ""), null);
+        }
+
+        /** The versions of a named volume, newest first. */
+        public String versions(String owner, String name) throws IOException, InterruptedException {
+            return api("GET", named(owner, name, "/versions"), null);
+        }
+
+        /** Delete a named volume and every snapshot on it (204); the name is free again. */
+        public String delete(String owner, String name) throws IOException, InterruptedException {
+            return api("DELETE", named(owner, name, ""), null);
+        }
+
+        /** Delete version {@code n} (204); deleting the last one deletes the volume. */
+        public String deleteVersion(String owner, String name, int n) throws IOException, InterruptedException {
+            return api("DELETE", named(owner, name, "/versions/" + n), null);
+        }
+
+        private String named(String owner, String name, String tail) {
+            return "/v1/volumes/" + seg(need(owner, "owner")) + "/" + seg(need(name, "name")) + tail;
         }
     }
 
@@ -1077,53 +1249,57 @@ public class Kloudlite {
     }
 
     /**
-     * Throwaway sandboxes, over {@code /v1/sandboxes}: one isolated machine running a tool server,
-     * gone when the caller terminates it or its own timeout passes. A sandbox is named by its id.
-     * Unlike every other module these calls hand back handles — {@link SandboxHandle} and
-     * {@link SandboxProcess} — because a process is driven, not read once; each still exposes
-     * its raw JSON.
+     * Throwaway sandboxes, over {@code /v1/sandboxes}: one isolated machine that runs ONE command
+     * ({@code cmd}) and ends when it exits or after its own timeout. A sandbox is named by its id.
+     * Unlike most modules these calls hand back a {@link SandboxHandle}, because a sandbox is
+     * waited on, not read once; it still exposes its raw JSON.
      *
      * <pre>
-     *   Kloudlite.SandboxHandle sb = kl.sandboxes().create(new Kloudlite.CreateSandbox().image("python:3.12"));
-     *   Kloudlite.SandboxProcess p = sb.exec(new Kloudlite.SandboxExec().cmd(List.of("bash", "-c", "while read l; do echo $l; done")));
-     *   p.stdin().write("foo bar\n");
-     *   p.stdin().writeEof();
-     *   int code = p.waitFor(null);
-     *   String out = p.stdout().read();
-     *   sb.terminate();
+     *   Kloudlite.SandboxHandle sb = kl.sandboxes().create(new Kloudlite.CreateSandbox()
+     *       .cmd(List.of("python3", "-c", "print(6 * 7)")).packages("python3"));
+     *   Integer code = sb.waitFor(null);
+     *   System.out.print(sb.logs());
      * </pre>
      */
     public class Sandboxes {
-        /** Returns at once, the sandbox still {@code starting}; {@link SandboxHandle#exec} waits for it. */
+        /** Returns at once (202), the sandbox usually still {@code pending}. */
         public SandboxHandle create(CreateSandbox p) throws IOException, InterruptedException {
             return new SandboxHandle(api("POST", "/v1/sandboxes", p.body()));
         }
 
+        /** One sandbox by id (a name does not resolve). */
         public SandboxHandle get(String sandbox) throws IOException, InterruptedException {
             return new SandboxHandle(api("GET", "/v1/sandboxes/" + seg(need(sandbox, "sandbox")), null));
         }
 
-        /** The caller's sandboxes, newest first; a non-null team scopes to their sandboxes in that team. */
+        /** ONE page of the caller's sandboxes, newest first; a non-null team scopes to that team. {@link #listPage} picks the page. */
         public List<SandboxHandle> list(String team) throws IOException, InterruptedException {
-            String raw = api("GET", "/v1/sandboxes" + query("team", team), null);
+            return listPage(new ListSandboxes().team(team)).sandboxes;
+        }
+
+        /** A page ({@code limit} 1..=200, default 50) and the cursor of the next one. */
+        public SandboxPage listPage(ListSandboxes p) throws IOException, InterruptedException {
+            HttpResponse<String> resp = exchange("GET", "/v1/sandboxes"
+                + query("team", p.team, "limit", p.limit == null ? null : p.limit.toString(), "cursor", p.cursor),
+                null, "application/json", Duration.ofSeconds(30));
             List<SandboxHandle> out = new ArrayList<>();
             List<String> docs;
             try {
-                docs = JsonReader.elements(raw);
+                docs = JsonReader.elements(resp.body());
             } catch (IllegalArgumentException e) {
                 throw new ApiException(502, "the sandbox listing was not a JSON array");
             }
             for (String doc : docs) out.add(new SandboxHandle(doc));
-            return out;
+            return new SandboxPage(out, resp.headers().firstValue("X-Next-Cursor").orElse(null));
         }
 
         /**
-         * Create a sandbox, run {@code cmd} in it, wait for the command, read all its output — and
-         * terminate the sandbox whatever happened, a failed terminate surfacing beside (never
-         * instead of) the failure that came first.
+         * One command in a fresh sandbox: create, wait for it to exit, read the output, and
+         * terminate — ALWAYS, also when anything before it failed (a failed terminate surfaces
+         * beside, never instead of, the failure that came first). The sandbox keeps one stream,
+         * so {@code stdout} holds the output and error output together and {@code stderr} is "".
          */
         public RunResult run(RunSandbox p) throws IOException, InterruptedException {
-            p.exec.body(); // a missing cmd is refused before the sandbox exists
             // A command allowed longer than the sandbox's default lifetime must not be cut by it:
             // the sandbox outlives the wait by a minute, within the server's 10 s..24 h.
             if (p.timeout != null && !p.timeout.isZero()) {
@@ -1133,11 +1309,8 @@ public class Kloudlite {
             SandboxHandle sb = create(p.create);
             Throwable failed = null;
             try {
-                SandboxProcess proc = sb.exec(p.exec);
-                int code = proc.waitFor(p.timeout);
-                StringBuilder out = new StringBuilder(), err = new StringBuilder();
-                proc.follow(out, err);
-                return new RunResult(code, out.toString(), err.toString(), sb.id());
+                Integer code = sb.waitFor(p.timeout);
+                return new RunResult(code, sb.logs(), "", sb.id());
             } catch (Throwable t) {
                 failed = t;
                 throw t;
@@ -1152,10 +1325,22 @@ public class Kloudlite {
         }
     }
 
+    /** What {@link Sandboxes#listPage} answers: the page and the {@code X-Next-Cursor} for the next (null on the last). */
+    public static final class SandboxPage {
+        public final List<SandboxHandle> sandboxes;
+        public final String nextCursor;
+
+        SandboxPage(List<SandboxHandle> sandboxes, String nextCursor) {
+            this.sandboxes = sandboxes;
+            this.nextCursor = nextCursor;
+        }
+    }
+
     /**
      * One sandbox: the doc as last read ({@link #json}, with {@link #id}, {@link #phase} —
-     * {@code pending|starting|running|terminated} — and, once terminated, {@link #reason}).
-     * Nothing re-reads it behind the caller's back except the waits; {@link #refresh} does.
+     * {@code pending|starting|running|terminated} — and, once terminated, {@link #reason} and
+     * {@link #exitCode}). Nothing re-reads it behind the caller's back except the waits;
+     * {@link #refresh} does.
      */
     public final class SandboxHandle {
         private volatile String json;
@@ -1177,6 +1362,11 @@ public class Kloudlite {
         /** Terminated, Timeout, Idle, Exited, Failed, Unplaceable, SourceGone, Lost or EnvironmentGone; null until terminated. */
         public String reason() { return text(doc.get("reason")); }
         public String message() { return text(doc.get("message")); }
+        /** The command's exit code; null until it has exited (and when the sandbox ended some other way). */
+        public Integer exitCode() {
+            Long c = longOf(doc.get("exit_code"));
+            return c == null ? null : (Integer) c.intValue();
+        }
         /** The doc's raw JSON, as the server last answered it. */
         public String json() { return json; }
 
@@ -1208,57 +1398,62 @@ public class Kloudlite {
             }
         }
 
-        /**
-         * Start {@code cmd} as a process — always detached, so nothing here is bounded by a
-         * request timeout. Waits for the sandbox to run first unless it is already known running.
-         */
-        public SandboxProcess exec(SandboxExec p) throws IOException, InterruptedException {
-            String body = p.body();
-            if (!"running".equals(phase())) waitRunning();
-            String pid = text(JsonReader.parsed(tool("exec", body)).get("id"));
-            if (pid == null) throw new ApiException(502, "the exec answer named no process id");
-            return new SandboxProcess(this, pid);
+        /** The main process's output (stdout and stderr together): live while it runs, the last 256 KiB after. 409 while there is none yet. */
+        public String logs() throws IOException, InterruptedException {
+            return logs(false);
         }
 
-        /** The read tool's JSON answer; paths are relative to {@code ~/workspace}. */
-        public String read(String path) throws IOException, InterruptedException {
-            return tool("read", obj("path", need(path, "path")));
+        /** {@code follow} true holds until the process ends. */
+        public String logs(boolean follow) throws IOException, InterruptedException {
+            return exchange("GET", path("/logs") + (follow ? "?follow=true" : ""), null, "text/plain",
+                follow ? null : Duration.ofSeconds(30)).body();
         }
 
-        /** The write tool's JSON answer; paths are relative to {@code ~/workspace}. */
-        public String write(WriteFile p) throws IOException, InterruptedException {
-            String path = need(p.path, "path"), content = need(p.content, "content");
-            return tool("write", obj("path", path, "content", content));
+        /** Not in this SDK: {@code GET /v1/sandboxes/{id}/attach} is a WebSocket and this client uses only the JDK. */
+        public void attach() {
+            throw new UnsupportedOperationException("sandbox attach is a WebSocket and is not in the Java SDK");
         }
 
-        /** Ask for the end (202); the doc turns {@code terminated} shortly after. Returns this handle. */
+        /** Stop it for good (202, or 200 if already ended); the record stays until {@link #delete}. Returns this handle. */
         public SandboxHandle terminate() throws IOException, InterruptedException {
-            set(api("POST", path("/terminate"), null));
+            String raw = api("POST", path("/terminate"), null);
+            if (raw != null && !raw.isBlank()) set(raw);
             return this;
         }
 
+        /** {@link #waitFor(Duration)} with no limit. */
+        public Integer waitFor() throws IOException, InterruptedException {
+            return waitFor(null);
+        }
+
         /**
-         * Poll until {@code terminated} and answer the reason. A null or zero limit waits as long
-         * as it takes; the limit passing is an {@link HttpTimeoutException}.
+         * Block until it has ended and answer its exit code (null when it ended some other way
+         * than the command exiting; {@link #reason} says how). Waits in steps of at most 20 s, the
+         * most the api holds one open; a null or zero limit waits as long as it takes and the
+         * limit passing is an {@link HttpTimeoutException}.
          */
-        public String waitFor(Duration timeout) throws IOException, InterruptedException {
+        public Integer waitFor(Duration timeout) throws IOException, InterruptedException {
             long deadline = deadline(timeout);
-            for (long pause = 500; ; pause = nap(deadline, pause)) {
-                refresh();
-                if ("terminated".equals(phase())) return reason();
-                if (expired(deadline)) {
-                    throw new HttpTimeoutException("sandbox " + id() + " did not terminate within " + timeout);
+            while (true) {
+                long left = Math.min(20_000, remainingMs(deadline));
+                if (left <= 0) {
+                    throw new HttpTimeoutException("sandbox " + id() + " still " + phase() + " after " + timeout);
                 }
+                Map<String, Object> out = JsonReader.parsed(api("POST", path("/wait"),
+                    new Json().num("timeout_ms", left).toString()));
+                Map<String, Object> merged = new LinkedHashMap<>(doc);
+                for (String k : new String[] {"phase", "reason", "exit_code", "message"}) {
+                    if (out.containsKey(k)) merged.put(k, out.get(k));
+                }
+                doc = merged;
+                json = JsonReader.write(merged);
+                if ("terminated".equals(phase())) return exitCode();
             }
         }
 
-        /** Delete the record (204). */
+        /** Delete the record (204); a sandbox still running dies with it. */
         public void delete() throws IOException, InterruptedException {
             api("DELETE", path(""), null);
-        }
-
-        String tool(String name, String argsJson) throws IOException, InterruptedException {
-            return api("POST", path("/tools/" + seg(name)), argsJson);
         }
 
         String path(String tail) {
@@ -1272,364 +1467,114 @@ public class Kloudlite {
         }
     }
 
-    /**
-     * A process started by {@link SandboxHandle#exec}: {@link #stdin} feeds it, {@link #stdout} and
-     * {@link #stderr} follow its output from the start, {@link #waitFor} answers its exit code.
-     */
-    public final class SandboxProcess {
-        private final SandboxHandle sandbox;
-        private final String id;
-        private final Stdin stdin = new Stdin();
-        private final Output stdout = new Output("stdout"), stderr = new Output("stderr");
-        private volatile Integer returncode;
-
-        SandboxProcess(SandboxHandle sandbox, String id) {
-            this.sandbox = sandbox;
-            this.id = id;
-        }
-
-        public String id() { return id; }
-        public SandboxHandle sandbox() { return sandbox; }
-        public Stdin stdin() { return stdin; }
-        public Output stdout() { return stdout; }
-        public Output stderr() { return stderr; }
-        /** The exit code last seen, -1 for an exit with none (a signal); null until it has exited. */
-        public Integer returncode() { return returncode; }
-
-        /**
-         * Block until the process exits and answer its exit code (-1 when it had none). Polls in
-         * slices of at most 20 s, the server's own bound; a null or zero limit waits as long as it
-         * takes, and the limit passing is an {@link HttpTimeoutException}.
-         */
-        public int waitFor(Duration timeout) throws IOException, InterruptedException {
-            long deadline = deadline(timeout);
-            while (true) {
-                long slice = Math.max(0, Math.min(20_000, remainingMs(deadline)));
-                Map<String, Object> got = JsonReader.parsed(sandbox.tool("process_wait",
-                    new Json().str("id", id).num("timeout_ms", slice).toString()));
-                if ("exited".equals(got.get("state"))) return settle(got.get("exit_code"));
-                if (expired(deadline)) {
-                    throw new HttpTimeoutException("process " + id + " did not exit within " + timeout);
-                }
-            }
-        }
-
-        /** The exit code if the process has exited (-1 when it had none), else null; never blocks. */
-        public Integer poll() throws IOException, InterruptedException {
-            Map<String, Object> got = JsonReader.parsed(sandbox.tool("process_wait",
-                new Json().str("id", id).num("timeout_ms", 0L).toString()));
-            return "exited".equals(got.get("state")) ? settle(got.get("exit_code")) : null;
-        }
-
-        /** TERM, reaching the process group. */
-        public String kill() throws IOException, InterruptedException {
-            return kill(null);
-        }
-
-        /** {@code signal} is TERM (the tool's default) or KILL; it reaches the process group. */
-        public String kill(String signal) throws IOException, InterruptedException {
-            return sandbox.tool("process_kill", obj("id", id, "signal", signal));
-        }
-
-        private int settle(Object code) {
-            int c = code instanceof Number ? ((Number) code).intValue() : -1;
-            returncode = c;
-            return c;
-        }
-
-        /** Both streams in one pass over the process stream, until its exit frame. */
-        void follow(StringBuilder out, StringBuilder err) throws IOException, InterruptedException {
-            try (Frames frames = new Frames()) {
-                for (String[] f = frames.next(); f != null; f = frames.next()) {
-                    ("stderr".equals(f[0]) ? err : out).append(f[1]);
-                }
-            }
-        }
-
-        /** The process's stdin. Every write is delivered when the call returns. */
-        public final class Stdin {
-            public void write(byte[] data) throws IOException, InterruptedException {
-                sandbox.tool("process_write", obj("id", id,
-                    "data_base64", Base64.getEncoder().encodeToString(need(data, "data"))));
-            }
-
-            /** Sent as UTF-8. */
-            public void write(String data) throws IOException, InterruptedException {
-                write(need(data, "data").getBytes(StandardCharsets.UTF_8));
-            }
-
-            /** Close stdin: a read loop in the process sees end-of-file. */
-            public void writeEof() throws IOException, InterruptedException {
-                sandbox.tool("process_close_stdin", obj("id", id));
-            }
-
-            /** Nothing to do — kept so a Modal-shaped caller reads the same. */
-            public void drain() {}
-        }
-
-        /** One of the process's output streams, followed from its first byte. */
-        public final class Output {
-            private final String name;
-
-            Output(String name) {
-                this.name = name;
-            }
-
-            /** Everything the stream carries, blocking until the process exits. */
-            public String read() throws IOException, InterruptedException {
-                StringBuilder out = new StringBuilder(), err = new StringBuilder();
-                follow(out, err);
-                return ("stderr".equals(name) ? err : out).toString();
-            }
-
-            /**
-             * Lines as they arrive, without their {@code \n}; a trailing partial line comes last.
-             * The stream ends when the process exits; close it to stop following early. A failure
-             * mid-stream is an {@link UncheckedIOException}.
-             */
-            public Stream<String> lines() throws IOException, InterruptedException {
-                Frames frames = new Frames();
-                Iterator<String> it = new Iterator<>() {
-                    private final StringBuilder buf = new StringBuilder();
-                    private String ready;
-                    private boolean end;
-
-                    @Override
-                    public boolean hasNext() {
-                        while (ready == null && !end) {
-                            int nl = buf.indexOf("\n");
-                            if (nl >= 0) {
-                                ready = buf.substring(0, nl);
-                                buf.delete(0, nl + 1);
-                                break;
-                            }
-                            String[] f = frames.nextUnchecked();
-                            if (f == null) {
-                                end = true;
-                                if (buf.length() > 0) ready = buf.toString();
-                                buf.setLength(0);
-                            } else if (name.equals(f[0])) {
-                                buf.append(f[1]);
-                            }
-                        }
-                        return ready != null;
-                    }
-
-                    @Override
-                    public String next() {
-                        if (!hasNext()) throw new NoSuchElementException();
-                        String line = ready;
-                        ready = null;
-                        return line;
-                    }
-                };
-                return StreamSupport.stream(Spliterators.spliteratorUnknownSize(it,
-                    Spliterator.ORDERED | Spliterator.NONNULL), false).onClose(frames::close);
-            }
-        }
-
-        /**
-         * The NDJSON process stream as {stream, data} frames, ending at the exit frame. A
-         * connection that ends before it is reopened from the byte cursors read so far (counting
-         * what the server reports dropped from its ring), a few times at most.
-         */
-        private final class Frames implements AutoCloseable {
-            private long since, sinceErr;
-            private int reopened;
-            private Stream<String> body;
-            private Iterator<String> lines;
-            private boolean done;
-
-            Frames() throws IOException, InterruptedException {
-                open();
-            }
-
-            private void open() throws IOException, InterruptedException {
-                HttpRequest.Builder b = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl + sandbox.path("/processes/" + seg(id) + "/stream")
-                        + "?since=" + since + "&since_err=" + sinceErr))
-                    // No request timeout: the stream lasts as long as the process does.
-                    .header("User-Agent", "kloudlite-sdk-java/" + VERSION)
-                    .header("Accept", "application/x-ndjson")
-                    .GET();
-                if (token != null) b.header("Authorization", "Bearer " + token);
-                HttpResponse<Stream<String>> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofLines());
-                if (resp.statusCode() < 200 || resp.statusCode() > 299) {
-                    String text;
-                    try (Stream<String> s = resp.body()) {
-                        text = s.collect(Collectors.joining("\n"));
-                    }
-                    throw new ApiException(resp.statusCode(), errorText(text));
-                }
-                body = resp.body();
-                lines = body.iterator();
-            }
-
-            /** The next output frame, or null once the process has exited. */
-            String[] next() throws IOException, InterruptedException {
-                while (!done) {
-                    String line = null;
-                    try {
-                        if (lines.hasNext()) line = lines.next();
-                    } catch (UncheckedIOException e) {
-                        line = null; // a dropped connection: reopened below like a clean end
-                    }
-                    if (line == null) {
-                        body.close();
-                        if (++reopened > 3) {
-                            throw new ApiException(502, "the stream of process " + id + " ended before it exited");
-                        }
-                        open();
-                        continue;
-                    }
-                    if (line.isBlank()) continue;
-                    Map<String, Object> f = JsonReader.parsed(line);
-                    if (f.containsKey("exit")) {
-                        done = true;
-                        settle(f.get("exit"));
-                        body.close();
-                        return null;
-                    }
-                    if (f.get("dropped") instanceof Number) since += ((Number) f.get("dropped")).longValue();
-                    if (f.get("dropped_err") instanceof Number) sinceErr += ((Number) f.get("dropped_err")).longValue();
-                    Object stream = f.get("stream"), data = f.get("data");
-                    if (stream instanceof String && data instanceof String) {
-                        long n = ((String) data).getBytes(StandardCharsets.UTF_8).length;
-                        if ("stderr".equals(stream)) sinceErr += n;
-                        else since += n;
-                        return new String[] {(String) stream, (String) data};
-                    }
-                }
-                return null;
-            }
-
-            String[] nextUnchecked() {
-                try {
-                    return next();
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new UncheckedIOException(new InterruptedIOException("interrupted following process " + id));
-                }
-            }
-
-            @Override
-            public void close() {
-                if (body != null) body.close();
-            }
-        }
-    }
-
     // ── sandbox params ─────────────────────────────────────────────────────
 
     /**
-     * {@link Sandboxes#create}: every field optional, an unset one being the server's default
-     * (a 300 s timeout, 1 core, 2 GB of memory, 10 GB of disk, the internet reachable).
-     * {@code fromWorkspace} is an id, a name or "team/name"; {@code fromSnapshot} a snapshot id.
+     * {@link Sandboxes#create}: {@code cmd} is required, every other field optional, an unset one
+     * being the server's default (a 300 s timeout, 1 core, 2 GB of memory, 10 GB of disk, the
+     * internet reachable). {@code fromWorkspace} is an id, a name or "team/name";
+     * {@code fromSnapshot} a volume name, {@code name@N} or snapshot id (exclusive with it).
      */
     public static final class CreateSandbox {
-        private String image, fromWorkspace, fromSnapshot, team, network, session;
-        private List<String> packages;
-        private Duration timeout, idleTimeout;
+        private String image, fromWorkspace, fromSnapshot, team, network;
+        private List<String> cmd, packages;
+        private Boolean tty, stdin;
+        private Duration timeout;
         private Map<String, String> env;
         private Long cpu, memoryGb, diskGb;
 
+        /** The program, then its arguments: a non-empty list. */
+        public CreateSandbox cmd(List<String> argv) { cmd = argv; return this; }
         public CreateSandbox image(String v) { image = v; return this; }
         /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
         public CreateSandbox packages(String... v) { packages = Arrays.asList(v); return this; }
         public CreateSandbox fromWorkspace(String v) { fromWorkspace = v; return this; }
         public CreateSandbox fromSnapshot(String v) { fromSnapshot = v; return this; }
         public CreateSandbox team(String v) { team = v; return this; }
-        /** The sandbox's whole lifetime, sent in whole seconds (rounded up). */
+        /** Run the command on a pty. */
+        public CreateSandbox tty(boolean v) { tty = v; return this; }
+        /** Keep input open for {@code attach}. */
+        public CreateSandbox stdin(boolean v) { stdin = v; return this; }
+        /** The sandbox's whole lifetime (10 s..24 h), sent in whole seconds (rounded up). */
         public CreateSandbox timeout(Duration v) { timeout = v; return this; }
-        /** Terminate once nothing has touched it for this long. */
-        public CreateSandbox idleTimeout(Duration v) { idleTimeout = v; return this; }
         /** "internet" or "none". */
         public CreateSandbox network(String v) { network = v; return this; }
         public CreateSandbox env(Map<String, String> v) { env = v; return this; }
         public CreateSandbox cpu(int cores) { cpu = (long) cores; return this; }
         public CreateSandbox memoryGb(int v) { memoryGb = (long) v; return this; }
         public CreateSandbox diskGb(int v) { diskGb = (long) v; return this; }
-        /**
-         * Make it a member of one of your sessions in {@code team} from birth — an id, a name or
-         * "team/name"; the session's environment is the only way a sandbox reaches one.
-         */
-        public CreateSandbox session(String v) { session = v; return this; }
 
         String body() {
+            if (cmd == null || cmd.isEmpty()) {
+                throw new IllegalArgumentException(
+                    "cmd is required: the program and its arguments as a non-empty list of strings");
+            }
             return new Json()
-                .str("team", team)
+                .raw("cmd", strings(cmd))
                 .str("image", image)
                 .raw("packages", packages == null ? null : strings(packages))
                 .str("from_workspace", fromWorkspace)
                 .str("from_snapshot", fromSnapshot)
+                .str("team", team)
+                .bool("tty", tty)
+                .bool("stdin", stdin)
                 .num("timeout_secs", seconds(timeout))
-                .num("idle_timeout_secs", seconds(idleTimeout))
                 .str("network", network)
                 .raw("env", env == null ? null : stringMap(env))
                 .num("cpu", cpu)
                 .num("memory_gb", memoryGb)
                 .num("disk_gb", diskGb)
-                .str("session", session)
                 .toString();
         }
     }
 
-    /** {@link SandboxHandle#exec}: {@code cmd} — a shell string or an argv list — is required. */
-    public static final class SandboxExec {
-        private String cmd, cwd; // cmd held as JSON: a string or an array
-        private Map<String, String> env;
+    /** {@link Sandboxes#listPage}: every field optional; {@code limit} is 1..=200. */
+    public static final class ListSandboxes {
+        private String team, cursor;
+        private Integer limit;
 
-        public SandboxExec cmd(String shell) { cmd = shell == null ? null : quote(shell); return this; }
-        public SandboxExec cmd(List<String> argv) { cmd = argv == null ? null : strings(argv); return this; }
-        public SandboxExec cwd(String v) { cwd = v; return this; }
-        public SandboxExec env(Map<String, String> v) { env = v; return this; }
-
-        String body() {
-            return new Json().raw("cmd", need(cmd, "cmd")).str("cwd", cwd)
-                .raw("env", env == null ? null : stringMap(env)).bool("detach", true).toString();
-        }
+        public ListSandboxes team(String v) { team = v; return this; }
+        public ListSandboxes limit(int v) { limit = v; return this; }
+        public ListSandboxes cursor(String v) { cursor = v; return this; }
     }
 
     /**
-     * {@link Sandboxes#run}: the command ({@code cmd} required, {@code cwd}, {@code env}), how long
-     * to wait for it ({@code timeout}; unset waits until it exits), and every
-     * {@link CreateSandbox} field — except that {@code env} and {@code timeout} here are the
-     * COMMAND's, as in every other SDK, so the sandbox keeps its default lifetime.
+     * {@link Sandboxes#run}: the command ({@code cmd} required), how long to wait for it
+     * ({@code timeout}; unset waits until it exits, and a set one also sizes the sandbox's own
+     * lifetime to cover it plus a minute), and every other {@link CreateSandbox} field.
      */
     public static final class RunSandbox {
         private final CreateSandbox create = new CreateSandbox();
-        private final SandboxExec exec = new SandboxExec();
         private Duration timeout;
 
-        public RunSandbox cmd(String shell) { exec.cmd(shell); return this; }
-        public RunSandbox cmd(List<String> argv) { exec.cmd(argv); return this; }
-        public RunSandbox cwd(String v) { exec.cwd(v); return this; }
-        public RunSandbox env(Map<String, String> v) { exec.env(v); return this; }
+        public RunSandbox cmd(List<String> argv) { create.cmd(argv); return this; }
         public RunSandbox timeout(Duration v) { timeout = v; return this; }
         public RunSandbox image(String v) { create.image(v); return this; }
         public RunSandbox packages(String... v) { create.packages(v); return this; }
         public RunSandbox fromWorkspace(String v) { create.fromWorkspace(v); return this; }
         public RunSandbox fromSnapshot(String v) { create.fromSnapshot(v); return this; }
         public RunSandbox team(String v) { create.team(v); return this; }
-        public RunSandbox idleTimeout(Duration v) { create.idleTimeout(v); return this; }
+        public RunSandbox tty(boolean v) { create.tty(v); return this; }
+        public RunSandbox stdin(boolean v) { create.stdin(v); return this; }
         public RunSandbox network(String v) { create.network(v); return this; }
+        public RunSandbox env(Map<String, String> v) { create.env(v); return this; }
         public RunSandbox cpu(int cores) { create.cpu(cores); return this; }
         public RunSandbox memoryGb(int v) { create.memoryGb(v); return this; }
         public RunSandbox diskGb(int v) { create.diskGb(v); return this; }
-        public RunSandbox session(String v) { create.session(v); return this; }
     }
 
     /** What {@link Sandboxes#run} answers; {@link #toString} is its JSON. */
     public static final class RunResult {
-        /** -1 when the process exited without one (a signal). */
-        public final int exitCode;
-        public final String stdout, stderr;
+        /** Null when the sandbox ended some other way than the command exiting. */
+        public final Integer exitCode;
+        /** The output and the error output together. */
+        public final String stdout;
+        /** Always "": the sandbox keeps one stream. */
+        public final String stderr;
         /** The sandbox's id — already terminated. */
         public final String sandbox;
 
-        RunResult(int exitCode, String stdout, String stderr, String sandbox) {
+        RunResult(Integer exitCode, String stdout, String stderr, String sandbox) {
             this.exitCode = exitCode;
             this.stdout = stdout;
             this.stderr = stderr;
@@ -1638,8 +1583,8 @@ public class Kloudlite {
 
         @Override
         public String toString() {
-            return new Json().num("exit_code", (long) exitCode).str("stdout", stdout)
-                .str("stderr", stderr).str("sandbox", sandbox).toString();
+            return new Json().raw("exit_code", exitCode == null ? "null" : exitCode.toString())
+                .str("stdout", stdout).str("stderr", stderr).str("sandbox", sandbox).toString();
         }
     }
 
@@ -2102,6 +2047,23 @@ public class Kloudlite {
             }
         }
 
+        /** The JSON text of a value parsed by this reader (maps, lists, strings, numbers, booleans, null). */
+        static String write(Object v) {
+            if (v == null) return "null";
+            if (v instanceof String) return quote((String) v);
+            if (v instanceof Map) {
+                List<String> parts = new ArrayList<>();
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) v).entrySet()) parts.add(quote((String) e.getKey()) + ":" + write(e.getValue()));
+                return "{" + String.join(",", parts) + "}";
+            }
+            if (v instanceof List) {
+                List<String> parts = new ArrayList<>();
+                for (Object x : (List<?>) v) parts.add(write(x));
+                return "[" + String.join(",", parts) + "]";
+            }
+            return v.toString();
+        }
+
         /** Each element of a top-level array, as its own raw JSON text. */
         static List<String> elements(String json) {
             JsonReader r = new JsonReader(json);
@@ -2194,19 +2156,16 @@ public class Kloudlite {
                     continue;
                 }
                 char e = take();
-                switch (e) {
-                    case 'n' -> b.append('\n');
-                    case 't' -> b.append('\t');
-                    case 'r' -> b.append('\r');
-                    case 'b' -> b.append('\b');
-                    case 'f' -> b.append('\f');
-                    case 'u' -> {
-                        if (i + 4 > s.length()) throw bad();
-                        b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
-                        i += 4;
-                    }
-                    default -> b.append(e); // \" \\ \/
-                }
+                if (e == 'n') b.append('\n');
+                else if (e == 't') b.append('\t');
+                else if (e == 'r') b.append('\r');
+                else if (e == 'b') b.append('\b');
+                else if (e == 'f') b.append('\f');
+                else if (e == 'u') {
+                    if (i + 4 > s.length()) throw bad();
+                    b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                    i += 4;
+                } else b.append(e); // \" \\ \/
             }
         }
 
@@ -2337,17 +2296,13 @@ public class Kloudlite {
     static String quote(String s) {
         StringBuilder b = new StringBuilder("\"");
         for (char c : s.toCharArray()) {
-            switch (c) {
-                case '"' -> b.append("\\\"");
-                case '\\' -> b.append("\\\\");
-                case '\n' -> b.append("\\n");
-                case '\r' -> b.append("\\r");
-                case '\t' -> b.append("\\t");
-                default -> {
-                    if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
-                    else b.append(c);
-                }
-            }
+            if (c == '"') b.append("\\\"");
+            else if (c == '\\') b.append("\\\\");
+            else if (c == '\n') b.append("\\n");
+            else if (c == '\r') b.append("\\r");
+            else if (c == '\t') b.append("\\t");
+            else if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+            else b.append(c);
         }
         return b.append('"').toString();
     }
