@@ -2,7 +2,7 @@
 //
 // Auth is a Bearer token (a CLI token). Every module hangs off the one client:
 //
-//   Kloudlite kl = new Kloudlite();   // the login of `kloudlite`; see "Discovery" below
+//   Kloudlite kl = new Kloudlite();   // import io.kloudlite.Kloudlite; the login of `kloudlite`; see "Discovery" below
 //   String workspaces = kl.workspaces().list(null);
 //
 // Discovery: the API origin and the token each come from the first source that has one:
@@ -19,6 +19,8 @@
 // Methods return the raw JSON body as a String; bring your own JSON mapper. The two
 // exceptions are sandboxes() and pipelines().run/runs/getRun, which hand back live handles
 // (SandboxHandle, Run) — each still exposes its raw JSON.
+
+package io.kloudlite;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
