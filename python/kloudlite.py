@@ -37,7 +37,7 @@ import urllib.request
 
 __all__ = ["Kloudlite", "ApiError", "SandboxTerminated"]
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 USER_AGENT = f"kloudlite-sdk-python/{VERSION}"
 NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 

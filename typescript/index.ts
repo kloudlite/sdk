@@ -27,7 +27,7 @@ if (typeof fetch !== "function" || typeof AbortSignal?.timeout !== "function") {
   throw new Error("kloudlite SDK needs fetch and AbortSignal.timeout: Node 20.16+ or Bun");
 }
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 const USER_AGENT = `kloudlite-sdk-typescript/${VERSION}`;
 const NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login";
 
