@@ -49,7 +49,7 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 public class Kloudlite {
-    public static final String VERSION = "0.2.1";
+    public static final String VERSION = "0.2.2";
     static final String NO_LOGIN = "no Kloudlite login: pass token(), set KLOUDLITE_TOKEN, or run kloudlite login";
 
     static {

@@ -25,7 +25,7 @@ require "timeout"
 require "uri"
 
 module Kloudlite
-  VERSION = "0.2.1"
+  VERSION = "0.2.2"
   USER_AGENT = "kloudlite-sdk-ruby/#{VERSION}".freeze
   NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 

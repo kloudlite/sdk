@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.1"
+const Version = "0.2.2"
 
 // NoLogin is the error of a client with no token.
 const NoLogin = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
