@@ -15,7 +15,7 @@
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
 # resource is always the keyword named after it (workspace:, environment:, session:,
-# volume:, snapshot:, sandbox:, run:), and a new object made from an existing one is to:.
+# volume:, snapshot:, capsule:, run:), and a new object made from an existing one is to:.
 
 raise LoadError, "kloudlite.rb needs Ruby 3.0 or later, found #{RUBY_VERSION}" if RUBY_VERSION < "3.0"
 
@@ -40,14 +40,14 @@ module Kloudlite
     end
   end
 
-  # A sandbox that ended while the caller waited for it to run; +reason+ is the server's
+  # A capsule that ended while the caller waited for it to run; +reason+ is the server's
   # (Timeout, Idle, Unplaceable, …). An ApiError so one rescue covers both.
-  class SandboxTerminated < ApiError
+  class CapsuleTerminated < ApiError
     attr_reader :reason
 
-    def initialize(sandbox, reason, detail)
+    def initialize(capsule, reason, detail)
       @reason = reason
-      text = "sandbox #{sandbox} is terminated (#{reason || 'unknown'})"
+      text = "capsule #{capsule} is terminated (#{reason || 'unknown'})"
       text += ": #{detail}" unless detail.nil? || detail.to_s.empty?
       super(409, text)
     end
@@ -79,7 +79,7 @@ module Kloudlite
 
   class Client
     attr_reader :workspaces, :environments, :sessions, :volumes,
-                :secrets, :connectors, :sandboxes, :pipelines
+                :secrets, :connectors, :capsules, :pipelines
 
     def initialize(base_url: nil, token: nil, timeout: 30)
       base_url = presence(base_url) || presence(ENV["KLOUDLITE_URL"])
@@ -101,7 +101,7 @@ module Kloudlite
       @volumes = Volumes.new(self)
       @secrets = Secrets.new(self)
       @connectors = Connectors.new(self)
-      @sandboxes = Sandboxes.new(self)
+      @capsules = Capsules.new(self)
       @pipelines = Pipelines.new(self)
     end
 
@@ -245,7 +245,7 @@ module Kloudlite
     end
 
     # Seconds unused before the workspace is deleted (600..=2592000); nil clears it. Not for a
-    # sandbox or a bench.
+    # capsule or a bench.
     def set_ttl(workspace:, ttl_secs:)
       at("PUT", workspace, "/ttl", body: { ttl_secs: ttl_secs })
     end
@@ -547,7 +547,7 @@ module Kloudlite
       at("PUT", session, "/environment", body: { environment: environment })
     end
 
-    # Stop the session and every workspace in it (202, {"stopped" => [ids]}); sandboxes and the
+    # Stop the session and every workspace in it (202, {"stopped" => [ids]}); capsules and the
     # environment are untouched.
     def stop(session:)
       at("POST", session, "/stop")
@@ -566,10 +566,10 @@ module Kloudlite
       at("DELETE", session, "/workspaces/#{seg(workspace)}")
     end
 
-    # Create a sandbox managed by the session (202), in its team and reaching its environment.
-    # Same inputs as Sandboxes#create (+team+ must be the session's).
-    def create_sandbox(session:, cmd:, **options)
-      Sandbox.new(@c, at("POST", session, "/sandboxes", body: Sandboxes.body(cmd: cmd, **options)))
+    # Create a capsule managed by the session (202), in its team and reaching its environment.
+    # Same inputs as Capsules#create (+team+ must be the session's).
+    def create_capsule(session:, cmd:, **options)
+      Capsule.new(@c, at("POST", session, "/capsules", body: Capsules.body(cmd: cmd, **options)))
     end
 
     # Send everything that calls +service+ in the environment to +workspace+ (a member), +ports+
@@ -709,19 +709,19 @@ module Kloudlite
     end
   end
 
-  # Throwaway, isolated machines that run ONE command, over /v1/sandboxes. A sandbox starts from
+  # Throwaway, isolated machines that run ONE command, over /v1/capsules. A capsule starts from
   # an image, from one of your workspaces (+from_workspace+) or from a pushed snapshot
   # (+from_snapshot+), runs +cmd+, and ends when it exits or after +timeout_s+ (server default
-  # 300). Every call answers a Sandbox handle.
+  # 300). Every call answers a Capsule handle.
   #
-  #   sb = kl.sandboxes.create(cmd: ["python3", "-c", "print(6 * 7)"], packages: ["python3"])
+  #   sb = kl.capsules.create(cmd: ["python3", "-c", "print(6 * 7)"], packages: ["python3"])
   #   code = sb.wait
   #   puts code, sb.logs
-  class Sandboxes
+  class Capsules
     include Names
 
-    # The POST /v1/sandboxes body; refuses a missing +cmd+ before anything is sent. Shared with
-    # Sessions#create_sandbox — not public surface.
+    # The POST /v1/capsules body; refuses a missing +cmd+ before anything is sent. Shared with
+    # Sessions#create_capsule — not public surface.
     def self.body(cmd:, image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil,
                   tty: nil, stdin: nil, timeout_s: nil, network: nil, env: nil, cpu: nil,
                   memory_gb: nil, disk_gb: nil)
@@ -738,41 +738,41 @@ module Kloudlite
       @c = client
     end
 
-    # Ask for a sandbox and return at once (202); it is usually still "pending". +cmd+ (required)
+    # Ask for a capsule and return at once (202); it is usually still "pending". +cmd+ (required)
     # is the program then its arguments. +tty+ runs it on a pty; +stdin+ keeps input open for
     # attach. +timeout_s+ is 10..=86400. +from_workspace+ is an id, "name" or "team/name";
     # +from_snapshot+ a volume name, "name@N" or snapshot id (exclusive with it). +network+ is
-    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A session's sandbox is made with
-    # Sessions#create_sandbox. Unset keywords are omitted, so the server's defaults apply.
+    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A session's capsule is made with
+    # Sessions#create_capsule. Unset keywords are omitted, so the server's defaults apply.
     def create(cmd:, **options)
-      Sandbox.new(@c, @c.request("POST", "/v1/sandboxes", body: Sandboxes.body(cmd: cmd, **options)))
+      Capsule.new(@c, @c.request("POST", "/v1/capsules", body: Capsules.body(cmd: cmd, **options)))
     end
 
-    # One sandbox by id (a name does not resolve).
-    def get(sandbox:)
-      Sandbox.new(@c, @c.request("GET", "/v1/sandboxes/#{seg(sandbox)}"))
+    # One capsule by id (a name does not resolve).
+    def get(capsule:)
+      Capsule.new(@c, @c.request("GET", "/v1/capsules/#{seg(capsule)}"))
     end
 
-    # ONE page of the caller's sandboxes, newest first (+limit+ 1..=200, default 50); +team+
+    # ONE page of the caller's capsules, newest first (+limit+ 1..=200, default 50); +team+
     # scopes to that team. +list_page+ also answers the next cursor.
     def list(team: nil, limit: nil, cursor: nil)
       list_page(team: team, limit: limit, cursor: cursor).first
     end
 
-    # [sandboxes, next_cursor]: a page, and the X-Next-Cursor to pass as +cursor+ for the next
+    # [capsules, next_cursor]: a page, and the X-Next-Cursor to pass as +cursor+ for the next
     # one (nil on the last page).
     def list_page(team: nil, limit: nil, cursor: nil)
-      resp = @c.__send__(:perform, "GET", "/v1/sandboxes", nil,
+      resp = @c.__send__(:perform, "GET", "/v1/capsules", nil,
                          { team: team, limit: limit, cursor: cursor }, "application/json", 30)
       docs = resp.body.to_s.empty? ? [] : JSON.parse(resp.body)
-      [(docs || []).map { |d| Sandbox.new(@c, d) }, resp["X-Next-Cursor"]]
+      [(docs || []).map { |d| Capsule.new(@c, d) }, resp["X-Next-Cursor"]]
     end
 
-    # One command in a fresh sandbox: create, wait for it to exit, read the output, and
+    # One command in a fresh capsule: create, wait for it to exit, read the output, and
     # terminate — ALWAYS, also when anything before it raised. Answers
-    # {"exit_code", "stdout", "stderr", "sandbox"}: the sandbox keeps one stream, so "stdout"
+    # {"exit_code", "stdout", "stderr", "capsule"}: the capsule keeps one stream, so "stdout"
     # holds the output and error output together and "stderr" is "". +timeout_s+ bounds the wait
-    # (TimeoutError; nil waits as long as it takes) and, when given, sizes the sandbox's own
+    # (TimeoutError; nil waits as long as it takes) and, when given, sizes the capsule's own
     # lifetime to cover it plus a minute. +options+ are the other keywords of +create+.
     def run(cmd:, timeout_s: nil, **options)
       options[:timeout_s] = (timeout_s.ceil + 60).clamp(10, 86_400) if timeout_s && !options.key?(:timeout_s)
@@ -789,14 +789,14 @@ module Kloudlite
         raise
       end
       sb.terminate
-      { "exit_code" => code, "stdout" => out, "stderr" => "", "sandbox" => sb.id }
+      { "exit_code" => code, "stdout" => out, "stderr" => "", "capsule" => sb.id }
     end
   end
 
-  # A handle on one sandbox: id, phase ("pending", "starting", "running", "terminated"), reason
+  # A handle on one capsule: id, phase ("pending", "starting", "running", "terminated"), reason
   # once terminated, exit_code, and the whole server doc as of the last answer — +refresh+
   # re-reads it. Fields read as sb["phase"] or through the named readers.
-  class Sandbox
+  class Capsule
     include Names
 
     attr_reader :doc
@@ -822,27 +822,27 @@ module Kloudlite
       self
     end
 
-    # Poll (0.5 s backing off to 2 s) until running. A sandbox that terminates first raises
-    # SandboxTerminated naming the reason; +timeout_s+ passing raises TimeoutError.
+    # Poll (0.5 s backing off to 2 s) until running. A capsule that terminates first raises
+    # CapsuleTerminated naming the reason; +timeout_s+ passing raises TimeoutError.
     def wait_running(timeout_s: 120)
       poll_until(timeout_s, "running") do
-        raise SandboxTerminated.new(id, reason, message) if phase == "terminated"
+        raise CapsuleTerminated.new(id, reason, message) if phase == "terminated"
         phase == "running"
       end
     end
 
     # The main process's output (stdout and stderr together) as text: the live output while it
-    # runs, the last 256 KiB after. +follow+ holds until the process ends. 409 while the sandbox
+    # runs, the last 256 KiB after. +follow+ holds until the process ends. 409 while the capsule
     # has no output yet (still starting).
     def logs(follow: false)
       @c.__send__(:perform, "GET", "#{base}/logs", nil, { follow: follow ? "true" : nil },
                   "text/plain", follow ? nil : 30).body.to_s.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
-    # Not in this SDK: GET /v1/sandboxes/{id}/attach is a WebSocket and this client uses only
+    # Not in this SDK: GET /v1/capsules/{id}/attach is a WebSocket and this client uses only
     # the standard library.
     def attach(cols: nil, rows: nil)
-      raise NotImplementedError, "sandbox attach is a WebSocket and is not in the Ruby SDK"
+      raise NotImplementedError, "capsule attach is a WebSocket and is not in the Ruby SDK"
     end
 
     # Stop it for good (202, or 200 if already ended); the record stays until +delete+. Returns
@@ -856,10 +856,10 @@ module Kloudlite
     # the command exiting; +reason+ says how). Waits in steps of at most 20 s, the most the api
     # holds one open; TimeoutError past +timeout_s+.
     def wait(timeout_s: nil)
-      deadline = timeout_s && (Sandbox.now + timeout_s)
+      deadline = timeout_s && (Capsule.now + timeout_s)
       loop do
-        left_ms = deadline ? ((deadline - Sandbox.now) * 1000).to_i : 20_000
-        raise TimeoutError, "sandbox #{id} still #{phase} after #{timeout_s} s" if left_ms <= 0
+        left_ms = deadline ? ((deadline - Capsule.now) * 1000).to_i : 20_000
+        raise TimeoutError, "capsule #{id} still #{phase} after #{timeout_s} s" if left_ms <= 0
 
         out = @c.request("POST", "#{base}/wait", body: { timeout_ms: [left_ms, 20_000].min }) || {}
         @doc = @doc.merge(out.slice("phase", "reason", "exit_code", "message"))
@@ -867,30 +867,30 @@ module Kloudlite
       end
     end
 
-    # Delete the record (204); a sandbox still running dies with it.
+    # Delete the record (204); a capsule still running dies with it.
     def delete
       @c.request("DELETE", base)
       nil
     end
 
     def inspect
-      "#<Kloudlite::Sandbox #{id} #{phase}#{reason ? " #{reason}" : ''}>"
+      "#<Kloudlite::Capsule #{id} #{phase}#{reason ? " #{reason}" : ''}>"
     end
 
     private
 
     def base
-      "/v1/sandboxes/#{seg(id)}"
+      "/v1/capsules/#{seg(id)}"
     end
 
     def poll_until(timeout_s, what)
-      deadline = timeout_s && (Sandbox.now + timeout_s)
+      deadline = timeout_s && (Capsule.now + timeout_s)
       delay = 0.5
       loop do
         refresh
         return self if yield
-        left = deadline && (deadline - Sandbox.now)
-        raise TimeoutError, "sandbox #{id} was not #{what} within #{timeout_s}s (phase #{phase})" if left && left <= 0
+        left = deadline && (deadline - Capsule.now)
+        raise TimeoutError, "capsule #{id} was not #{what} within #{timeout_s}s (phase #{phase})" if left && left <= 0
         sleep(left ? [delay, left].min : delay)
         delay = [delay * 2, 2.0].min
       end
@@ -903,7 +903,7 @@ module Kloudlite
   end
 
   # Pipelines, over /v1/pipelines: a JSON definition stored as numbered versions; a run executes
-  # one version, each job in its own sandbox. +run+, +runs+ and +get_run+ answer Run handles.
+  # one version, each job in its own capsule. +run+, +runs+ and +get_run+ answer Run handles.
   #
   #   kl.pipelines.create(owner: "acme", definition: definition)
   #   run = kl.pipelines.run(owner: "acme", pipeline: "test", inputs: { "target" => "staging" })
@@ -988,7 +988,7 @@ module Kloudlite
   # One pipeline run: the doc the server last answered (camelCase, as the wire spells it), plus
   # the verbs. Fields read as run["state"] or through the named readers; +state+ is queued,
   # running, success, failure or cancelled. Each of +jobs+ is a Hash with "key", "job", "matrix",
-  # "needs", "state" (pending, running, success, failure, skipped, cancelled), "sandbox",
+  # "needs", "state" (pending, running, success, failure, skipped, cancelled), "capsule",
   # "startedAtMs", "finishedAtMs", "exitCode", "failedStep" and "detail"; +logs+ and +follow+
   # name one by its index or its "key".
   class Run
@@ -1032,7 +1032,7 @@ module Kloudlite
     end
 
     # Ask it to stop: a queued run is cancelled at once, a running one once its worker has ended
-    # its sandboxes — +wait+ sees it reach cancelled. Returns self with the answered doc.
+    # its capsules — +wait+ sees it reach cancelled. Returns self with the answered doc.
     def cancel
       @doc = @c.request("POST", "#{base}/cancel") || @doc
       self

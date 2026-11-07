@@ -7,6 +7,8 @@ access to public data), returns decoded JSON (the Java client returns the raw
 JSON string) and raises an error carrying the HTTP status and the server's
 message.
 
+A capsule is a disposable container that runs one command or one shell and is deleted when it exits. Pipeline jobs run in capsules.
+
 The full manual is at <https://dev.kloudlite.io/docs>.
 
 ## Install

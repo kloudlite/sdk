@@ -4,7 +4,7 @@
 <dependency>
   <groupId>io.kloudlite</groupId>
   <artifactId>kloudlite-sdk</artifactId>
-  <version>0.2.2</version>
+  <version>0.3.0</version>
 </dependency>
 ```
 

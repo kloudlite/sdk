@@ -1,7 +1,7 @@
 package kloudlite
 
 // Pipelines: /v1/pipelines. A pipeline is a JSON definition stored as numbered versions;
-// a run executes one version, each job in its own sandbox:
+// a run executes one version, each job in its own capsule:
 //
 //	run, err := kl.Pipelines.Run(kloudlite.RunPipeline{Owner: "acme", Pipeline: "test", Inputs: map[string]string{"target": "staging"}})
 //	err = run.Follow(kloudlite.FollowLogs{Job: "test"}, func(chunk string) bool {
@@ -145,7 +145,7 @@ type RunJob struct {
 	Matrix       map[string]any `json:"matrix"`
 	Needs        []string       `json:"needs"`
 	State        string         `json:"state"`
-	Sandbox      string         `json:"sandbox"`
+	Capsule      string         `json:"capsule"`
 	StartedAtMs  int64          `json:"startedAtMs"`
 	FinishedAtMs int64          `json:"finishedAtMs"`
 	ExitCode     *int           `json:"exitCode"`
@@ -318,7 +318,7 @@ func (r *Run) Refresh() error {
 }
 
 // Cancel asks the run to stop: a queued run is cancelled at once, a running
-// one once its worker has ended its sandboxes — Wait sees it reach cancelled.
+// one once its worker has ended its capsules — Wait sees it reach cancelled.
 func (r *Run) Cancel() error {
 	var d RunDoc
 	if err := r.c.call("POST", r.path("/cancel"), nil, nil, &d); err != nil {

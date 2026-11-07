@@ -87,7 +87,7 @@ export class Kloudlite {
   readonly volumes: Volumes;
   readonly secrets: Secrets;
   readonly connectors: Connectors;
-  readonly sandboxes: Sandboxes;
+  readonly capsules: Capsules;
   readonly pipelines: Pipelines;
   private readonly baseUrl: string;
   private readonly token: string;
@@ -114,7 +114,7 @@ export class Kloudlite {
     this.volumes = new Volumes(this);
     this.secrets = new Secrets(this);
     this.connectors = new Connectors(this);
-    this.sandboxes = new Sandboxes(this);
+    this.capsules = new Capsules(this);
     this.pipelines = new Pipelines(this);
   }
 
@@ -230,7 +230,7 @@ export class Workspaces {
     });
   }
 
-  /** Seconds unused before the workspace is deleted (600..=2592000); `null` clears it. Not for a sandbox or a bench. */
+  /** Seconds unused before the workspace is deleted (600..=2592000); `null` clears it. Not for a capsule or a bench. */
   setTtl({ workspace, ttlSecs }: WorkspaceRef & { ttlSecs: number | null }) {
     return this.at("PUT", workspace, "/ttl", { ttl_secs: ttlSecs });
   }
@@ -707,7 +707,7 @@ export class Sessions {
     return this.at("PUT", session, "/environment", { environment });
   }
 
-  /** Stop the session and every workspace in it (202, `{stopped: [ids]}`); sandboxes and the environment are untouched. */
+  /** Stop the session and every workspace in it (202, `{stopped: [ids]}`); capsules and the environment are untouched. */
   stop({ session }: SessionRef) {
     return this.at("POST", session, "/stop");
   }
@@ -728,12 +728,12 @@ export class Sessions {
   }
 
   /**
-   * Create a sandbox managed by the session (202), in its team and reaching its environment.
-   * Same inputs as {@link Sandboxes.create} (`team` must be the session's).
+   * Create a capsule managed by the session (202), in its team and reaching its environment.
+   * Same inputs as {@link Capsules.create} (`team` must be the session's).
    */
-  async createSandbox({ session, ...opts }: SessionRef & CreateSandbox): Promise<Sandbox> {
-    const doc = await this.at<SandboxDoc>("POST", session, "/sandboxes", sandboxBody(opts));
-    return new Sandbox(this.c, doc);
+  async createCapsule({ session, ...opts }: SessionRef & CreateCapsule): Promise<Capsule> {
+    const doc = await this.at<CapsuleDoc>("POST", session, "/capsules", capsuleBody(opts));
+    return new Capsule(this.c, doc);
   }
 
   /**
@@ -868,23 +868,23 @@ function named(owner: string, name: string, tail = ""): string {
   return `/v1/volumes/${seg(owner)}/${seg(name)}${tail}`;
 }
 
-export type SandboxPhase = "pending" | "starting" | "running" | "terminated";
+export type CapsulePhase = "pending" | "starting" | "running" | "terminated";
 
-/** Why a sandbox ended; set once its phase is `terminated`. */
-export type SandboxReason =
+/** Why a capsule ended; set once its phase is `terminated`. */
+export type CapsuleReason =
   | "Terminated" | "Timeout" | "Idle" | "Exited" | "Failed" | "Unplaceable" | "SourceGone" | "Lost"
   | "EnvironmentGone";
 
-/** A sandbox as `/v1/sandboxes` answers it — wire spelling, as every other doc here. */
-export interface SandboxDoc {
+/** A capsule as `/v1/capsules` answers it — wire spelling, as every other doc here. */
+export interface CapsuleDoc {
   id: string;
   owner: string;
   team: string | null;
   region: string;
   image: string;
   packages: string[];
-  phase: SandboxPhase;
-  reason: SandboxReason | null;
+  phase: CapsulePhase;
+  reason: CapsuleReason | null;
   /** The command's exit code once it exited; `null` when it ended another way. */
   exit_code: number | null;
   message: string | null;
@@ -902,7 +902,7 @@ export interface SandboxDoc {
 }
 
 /** `cmd` is required; every other field is optional and absent means the server's default. */
-export interface CreateSandbox {
+export interface CreateCapsule {
   /** The program and its arguments, a non-empty array of strings. */
   cmd: string[];
   image?: string;
@@ -928,21 +928,21 @@ export interface CreateSandbox {
 }
 
 /**
- * {@link Sandboxes.run}: every {@link CreateSandbox} field; `timeoutS` is how long to wait for the
- * command (absent: until it exits) and, when given, sizes the sandbox's own lifetime to cover it
+ * {@link Capsules.run}: every {@link CreateCapsule} field; `timeoutS` is how long to wait for the
+ * command (absent: until it exits) and, when given, sizes the capsule's own lifetime to cover it
  * plus a minute.
  */
-export type RunSandbox = CreateSandbox;
+export type RunCapsule = CreateCapsule;
 
 export interface RunResult {
-  /** `null` when the sandbox ended some other way than the command exiting. */
+  /** `null` when the capsule ended some other way than the command exiting. */
   exitCode: number | null;
-  /** The sandbox keeps one stream, so this holds the output and error output together. */
+  /** The capsule keeps one stream, so this holds the output and error output together. */
   stdout: string;
   /** Always `""`. */
   stderr: string;
-  /** The sandbox's id — already terminated. */
-  sandbox: string;
+  /** The capsule's id — already terminated. */
+  capsule: string;
 }
 
 /** A wait that ran out its `timeoutS` — the thing waited on carries on. */
@@ -955,8 +955,8 @@ export class TimeoutError extends Error {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** The `POST /v1/sandboxes` body; refuses a missing `cmd` before anything is sent. */
-function sandboxBody(o: CreateSandbox) {
+/** The `POST /v1/capsules` body; refuses a missing `cmd` before anything is sent. */
+function capsuleBody(o: CreateCapsule) {
   if (!Array.isArray(o.cmd) || o.cmd.length === 0 || !o.cmd.every((a) => typeof a === "string")) {
     throw new Error("cmd is required: the program and its arguments as a non-empty array of strings");
   }
@@ -970,56 +970,56 @@ function sandboxBody(o: CreateSandbox) {
 }
 
 /**
- * Throwaway, isolated machines that run ONE command, over `/v1/sandboxes`. A sandbox starts from
+ * Throwaway, isolated machines that run ONE command, over `/v1/capsules`. A capsule starts from
  * an image, from one of your workspaces (`fromWorkspace`) or from a pushed snapshot
  * (`fromSnapshot`), runs `cmd`, and ends when it exits or after `timeoutS` (server default 300):
  *
- *     const sb = await kl.sandboxes.create({ cmd: ["python3", "-c", "print(6 * 7)"], packages: ["python3"] });
+ *     const sb = await kl.capsules.create({ cmd: ["python3", "-c", "print(6 * 7)"], packages: ["python3"] });
  *     const code = await sb.wait();
  *     console.log(code, await sb.logs());
  *
- * A session's sandbox is made with {@link Sessions.createSandbox}.
+ * A session's capsule is made with {@link Sessions.createCapsule}.
  */
-export class Sandboxes {
+export class Capsules {
   constructor(private readonly c: Kloudlite) {}
 
   /** Returns immediately (202), usually still `pending`; nothing waits for it to run. */
-  async create(opts: CreateSandbox): Promise<Sandbox> {
-    const doc = await this.c.request<SandboxDoc>("POST", "/v1/sandboxes", sandboxBody(opts));
-    return new Sandbox(this.c, doc);
+  async create(opts: CreateCapsule): Promise<Capsule> {
+    const doc = await this.c.request<CapsuleDoc>("POST", "/v1/capsules", capsuleBody(opts));
+    return new Capsule(this.c, doc);
   }
 
-  /** One sandbox by id (a name does not resolve). */
-  async get({ sandbox }: { sandbox: string }): Promise<Sandbox> {
-    return new Sandbox(this.c, await this.c.request<SandboxDoc>("GET", `/v1/sandboxes/${seg(sandbox)}`));
+  /** One capsule by id (a name does not resolve). */
+  async get({ capsule }: { capsule: string }): Promise<Capsule> {
+    return new Capsule(this.c, await this.c.request<CapsuleDoc>("GET", `/v1/capsules/${seg(capsule)}`));
   }
 
   /**
-   * ONE page of the caller's sandboxes, newest first (`limit` 1..=200, default 50); `team` scopes
+   * ONE page of the caller's capsules, newest first (`limit` 1..=200, default 50); `team` scopes
    * to that team. {@link listPage} also answers the next cursor.
    */
-  async list(o: { team?: string; limit?: number; cursor?: string } = {}): Promise<Sandbox[]> {
-    return (await this.listPage(o)).sandboxes;
+  async list(o: { team?: string; limit?: number; cursor?: string } = {}): Promise<Capsule[]> {
+    return (await this.listPage(o)).capsules;
   }
 
   /** A page, and the `X-Next-Cursor` to pass as `cursor` for the next one (`null` on the last page). */
-  async listPage({ team, limit, cursor }: { team?: string; limit?: number; cursor?: string } = {}): Promise<{ sandboxes: Sandbox[]; nextCursor: string | null }> {
-    const r = await this.c[RAW]("GET", "/v1/sandboxes", undefined, { team, limit, cursor });
+  async listPage({ team, limit, cursor }: { team?: string; limit?: number; cursor?: string } = {}): Promise<{ capsules: Capsule[]; nextCursor: string | null }> {
+    const r = await this.c[RAW]("GET", "/v1/capsules", undefined, { team, limit, cursor });
     return {
-      sandboxes: ((r.body as SandboxDoc[] | null) ?? []).map((d) => new Sandbox(this.c, d)),
+      capsules: ((r.body as CapsuleDoc[] | null) ?? []).map((d) => new Capsule(this.c, d)),
       nextCursor: r.headers.get("X-Next-Cursor"),
     };
   }
 
   /**
-   * One command in a fresh sandbox: create, wait for it to exit, read the output, and terminate —
+   * One command in a fresh capsule: create, wait for it to exit, read the output, and terminate —
    * ALWAYS, also when anything before it threw (a terminate that fails after an earlier error never
    * hides it). `timeoutS` bounds the wait ({@link TimeoutError}; absent waits as long as it takes).
    */
-  async run(opts: RunSandbox): Promise<RunResult> {
+  async run(opts: RunCapsule): Promise<RunResult> {
     const { timeoutS } = opts;
-    // A command allowed longer than the sandbox's default lifetime must not be cut by it: the
-    // sandbox outlives the wait by a minute, within the server's 10 s..24 h.
+    // A command allowed longer than the capsule's default lifetime must not be cut by it: the
+    // capsule outlives the wait by a minute, within the server's 10 s..24 h.
     const lifetime = timeoutS == null ? opts.timeoutS : Math.min(86_400, Math.max(10, Math.ceil(timeoutS) + 60));
     const sb = await this.create({ ...opts, timeoutS: lifetime });
     let exitCode: number | null, stdout: string;
@@ -1031,32 +1031,32 @@ export class Sandboxes {
       throw e;
     }
     await sb.terminate();
-    return { exitCode, stdout, stderr: "", sandbox: sb.id };
+    return { exitCode, stdout, stderr: "", capsule: sb.id };
   }
 }
 
 /**
- * A handle on one sandbox: `id`, `phase` (`pending`, `starting`, `running`, `terminated`),
+ * A handle on one capsule: `id`, `phase` (`pending`, `starting`, `running`, `terminated`),
  * `reason` once terminated, `exitCode`, and the whole server {@link doc} as of the last answer —
  * {@link refresh} re-reads it.
  */
-export class Sandbox {
+export class Capsule {
   constructor(
     private readonly c: Kloudlite,
     /** The last doc the server answered; {@link refresh} re-reads it. */
-    public doc: SandboxDoc,
+    public doc: CapsuleDoc,
   ) {}
 
   get id(): string {
     return this.doc.id;
   }
 
-  get phase(): SandboxPhase {
+  get phase(): CapsulePhase {
     return this.doc.phase;
   }
 
   /** Why it ended — `null` until it is `terminated`. */
-  get reason(): SandboxReason | null {
+  get reason(): CapsuleReason | null {
     return this.doc.reason ?? null;
   }
 
@@ -1066,7 +1066,7 @@ export class Sandbox {
   }
 
   async refresh(): Promise<this> {
-    this.doc = await this.c.request<SandboxDoc>("GET", this.path());
+    this.doc = await this.c.request<CapsuleDoc>("GET", this.path());
     return this;
   }
 
@@ -1081,7 +1081,7 @@ export class Sandbox {
       if (this.phase === "running") return this;
       if (this.phase === "terminated") throw this.ended();
       const left = deadline - Date.now();
-      if (left <= delay) throw new TimeoutError(`sandbox ${this.id} not running after ${timeoutS}s (phase ${this.phase})`);
+      if (left <= delay) throw new TimeoutError(`capsule ${this.id} not running after ${timeoutS}s (phase ${this.phase})`);
       await sleep(delay);
     }
   }
@@ -1089,7 +1089,7 @@ export class Sandbox {
   /**
    * The main process's output (stdout and stderr together) as text: the live output while it
    * runs, the last 256 KiB after. `follow: true` holds until the process ends. 409 while the
-   * sandbox has no output yet (still starting).
+   * capsule has no output yet (still starting).
    */
   async logs({ follow = false }: { follow?: boolean } = {}): Promise<string> {
     const r = await this.c[RAW]("GET", this.path("/logs"), undefined, { follow: follow ? "true" : undefined },
@@ -1097,14 +1097,14 @@ export class Sandbox {
     return r.body as string;
   }
 
-  /** Not in this SDK: `GET /v1/sandboxes/{id}/attach` is a WebSocket and this client uses only `fetch`. */
+  /** Not in this SDK: `GET /v1/capsules/{id}/attach` is a WebSocket and this client uses only `fetch`. */
   attach(_o: { cols?: number; rows?: number } = {}): never {
-    throw new Error("sandbox attach is a WebSocket and is not in the TypeScript SDK");
+    throw new Error("capsule attach is a WebSocket and is not in the TypeScript SDK");
   }
 
   /** Stop it for good (202, or 200 if already ended); the record stays until {@link delete}. */
   async terminate(): Promise<this> {
-    this.doc = (await this.c.request<SandboxDoc>("POST", this.path("/terminate"))) ?? this.doc;
+    this.doc = (await this.c.request<CapsuleDoc>("POST", this.path("/terminate"))) ?? this.doc;
     return this;
   }
 
@@ -1117,8 +1117,8 @@ export class Sandbox {
     const deadline = timeoutS === undefined ? undefined : Date.now() + timeoutS * 1000;
     for (;;) {
       const leftMs = deadline === undefined ? 20_000 : Math.trunc(deadline - Date.now());
-      if (leftMs <= 0) throw new TimeoutError(`sandbox ${this.id} still ${this.phase} after ${timeoutS} s`);
-      const out = await this.c.request<Partial<SandboxDoc> | null>("POST", this.path("/wait"), { timeout_ms: Math.min(leftMs, 20_000) });
+      if (leftMs <= 0) throw new TimeoutError(`capsule ${this.id} still ${this.phase} after ${timeoutS} s`);
+      const out = await this.c.request<Partial<CapsuleDoc> | null>("POST", this.path("/wait"), { timeout_ms: Math.min(leftMs, 20_000) });
       const { phase, reason, exit_code, message } = out ?? {};
       this.doc = {
         ...this.doc,
@@ -1129,18 +1129,18 @@ export class Sandbox {
     }
   }
 
-  /** Delete the record (204); a sandbox still running dies with it. */
+  /** Delete the record (204); a capsule still running dies with it. */
   async delete(): Promise<void> {
     await this.c.request("DELETE", this.path());
   }
 
   private path(tail = ""): string {
-    return `/v1/sandboxes/${seg(this.id)}${tail}`;
+    return `/v1/capsules/${seg(this.id)}${tail}`;
   }
 
   private ended(): ApiError {
     const why = this.reason ?? "unknown reason";
-    return new ApiError(409, `sandbox ${this.id} is terminated (${why})${this.doc.message ? `: ${this.doc.message}` : ""}`);
+    return new ApiError(409, `capsule ${this.id} is terminated (${why})${this.doc.message ? `: ${this.doc.message}` : ""}`);
   }
 }
 
@@ -1191,7 +1191,7 @@ export interface RunJob {
   matrix: Record<string, unknown>;
   needs: string[];
   state: JobState;
-  sandbox: string | null;
+  capsule: string | null;
   startedAtMs: number | null;
   finishedAtMs: number | null;
   exitCode: number | null;
@@ -1260,7 +1260,7 @@ const RUN_TERMINAL: readonly RunState[] = ["success", "failure", "cancelled"];
 
 /**
  * Pipelines, over `/v1/pipelines`: a JSON definition stored as numbered versions, run job by job
- * in sandboxes.
+ * in capsules.
  *
  *     await kl.pipelines.create({ owner: "acme", definition });
  *     const run = await kl.pipelines.run({ owner: "acme", pipeline: "test", inputs: { target: "staging" } });
@@ -1369,7 +1369,7 @@ export class Run {
 
   /**
    * Ask it to stop: a queued run is cancelled at once, a running one once its worker has ended
-   * its sandboxes — {@link wait} sees it reach `cancelled`.
+   * its capsules — {@link wait} sees it reach `cancelled`.
    */
   async cancel(): Promise<this> {
     this.doc = (await this.c.request<RunDoc>("POST", this.path("/cancel"))) ?? this.doc;
