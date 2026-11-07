@@ -35,7 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-__all__ = ["Kloudlite", "ApiError", "SandboxTerminated"]
+__all__ = ["Kloudlite", "ApiError", "CapsuleTerminated"]
 
 VERSION = "0.2.2"
 USER_AGENT = f"kloudlite-sdk-python/{VERSION}"
@@ -86,7 +86,7 @@ class Kloudlite:
         self.volumes = Volumes(self)
         self.secrets = Secrets(self)
         self.connectors = Connectors(self)
-        self.sandboxes = Sandboxes(self)
+        self.capsules = Capsules(self)
         self.pipelines = Pipelines(self)
 
     def quota(self, *, owner: str | None = None):
@@ -213,7 +213,7 @@ class Workspaces:
 
     def set_ttl(self, *, workspace: str, ttl_secs: int | None):
         """Seconds unused before the workspace is deleted (600..=2592000); ``None`` clears it. Not
-        for a sandbox or a bench."""
+        for a capsule or a bench."""
         return self._at("PUT", workspace, "/ttl", body={"ttl_secs": ttl_secs})
 
     def set_env(self, *, workspace: str, env: dict, restart_on_env_change: bool | None = None):
@@ -494,7 +494,7 @@ class Sessions:
         return self._at("PUT", session, "/environment", body={"environment": environment})
 
     def stop(self, *, session: str):
-        """Stop the session and every workspace in it (202, ``{"stopped": [ids]}``); sandboxes and
+        """Stop the session and every workspace in it (202, ``{"stopped": [ids]}``); capsules and
         the environment are untouched."""
         return self._at("POST", session, "/stop")
 
@@ -512,11 +512,11 @@ class Sessions:
         """Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay."""
         return self._at("DELETE", session, f"/workspaces/{_seg(workspace)}")
 
-    def create_sandbox(self, *, session: str, cmd: list, **options) -> "Sandbox":
-        """Create a sandbox managed by the session (202), in its team and reaching its environment.
-        Same inputs as :meth:`Sandboxes.create` (``team`` must be the session's)."""
-        doc = self._at("POST", session, "/sandboxes", body=_sandbox_body(cmd=cmd, **options))
-        return Sandbox(self._c, doc)
+    def create_capsule(self, *, session: str, cmd: list, **options) -> "Capsule":
+        """Create a capsule managed by the session (202), in its team and reaching its environment.
+        Same inputs as :meth:`Capsules.create` (``team`` must be the session's)."""
+        doc = self._at("POST", session, "/capsules", body=_capsule_body(cmd=cmd, **options))
+        return Capsule(self._c, doc)
 
     def intercept(self, *, session: str, service: str, workspace: str, ports: dict | None = None):
         """Send everything that calls ``service`` in the environment to ``workspace`` (a member),
@@ -629,15 +629,15 @@ class Volumes:
         return f"/v1/volumes/{_seg(owner)}/{_seg(name)}{tail}"
 
 
-class SandboxTerminated(ApiError):
-    """A call needed the sandbox ``running`` and it is ``terminated``. ``reason`` is the server's
+class CapsuleTerminated(ApiError):
+    """A call needed the capsule ``running`` and it is ``terminated``. ``reason`` is the server's
     (``Timeout``, ``Idle``, ``Exited``, ``Failed``, ``Unplaceable``, ``SourceGone``, ``Lost``,
-    ``EnvironmentGone`` or ``Terminated``); ``status`` is 409, as the tool route answers a sandbox that is not running."""
+    ``EnvironmentGone`` or ``Terminated``); ``status`` is 409, as the tool route answers a capsule that is not running."""
 
-    def __init__(self, sandbox: str, reason: str | None, message: str | None = None):
-        text = f"sandbox {sandbox} terminated: {reason or 'unknown reason'}"
+    def __init__(self, capsule: str, reason: str | None, message: str | None = None):
+        text = f"capsule {capsule} terminated: {reason or 'unknown reason'}"
         super().__init__(409, f"{text} ({message})" if message else text)
-        self.sandbox = sandbox
+        self.capsule = capsule
         self.reason = reason
 
 
@@ -681,13 +681,13 @@ def _backoff(timeout_s: float | None, what: str):
         delay = min(delay * 1.5, 2.0)
 
 
-def _sandbox_body(*, cmd, image: str | None = None, packages: list | None = None,
+def _capsule_body(*, cmd, image: str | None = None, packages: list | None = None,
                   from_workspace: str | None = None, from_snapshot: str | None = None,
                   team: str | None = None, tty: bool | None = None, stdin: bool | None = None,
                   timeout_s: int | None = None, network: str | None = None,
                   env: dict | None = None, cpu: int | None = None, memory_gb: int | None = None,
                   disk_gb: int | None = None) -> dict:
-    """The ``POST /v1/sandboxes`` body; refuses a missing ``cmd`` before anything is sent."""
+    """The ``POST /v1/capsules`` body; refuses a missing ``cmd`` before anything is sent."""
     if isinstance(cmd, (list, tuple)) and cmd and all(isinstance(a, str) for a in cmd):
         cmd = list(cmd)
     else:
@@ -698,14 +698,14 @@ def _sandbox_body(*, cmd, image: str | None = None, packages: list | None = None
                   "env": env, "cpu": cpu, "memory_gb": memory_gb, "disk_gb": disk_gb})
 
 
-class Sandboxes:
-    """Throwaway, isolated machines that run ONE command, over ``/v1/sandboxes``. A sandbox starts
+class Capsules:
+    """Throwaway, isolated machines that run ONE command, over ``/v1/capsules``. A capsule starts
     from an image, from one of your workspaces (``from_workspace``) or from a pushed snapshot
     (``from_snapshot``), runs ``cmd``, and ends when it exits or after ``timeout_s`` (server
-    default 300). Every call answers a :class:`Sandbox` handle, and every call here and on the
+    default 300). Every call answers a :class:`Capsule` handle, and every call here and on the
     handles also has an async twin, ``.aio``::
 
-        sb = kl.sandboxes.create(cmd=["python3", "-c", "print(6 * 7)"], packages=["python3"])
+        sb = kl.capsules.create(cmd=["python3", "-c", "print(6 * 7)"], packages=["python3"])
         code = sb.wait()
         print(code, sb.logs())
     """
@@ -719,49 +719,49 @@ class Sandboxes:
                team: str | None = None, tty: bool | None = None, stdin: bool | None = None,
                timeout_s: int | None = None, network: str | None = None, env: dict | None = None,
                cpu: int | None = None, memory_gb: int | None = None,
-               disk_gb: int | None = None) -> "Sandbox":
-        """Ask for a sandbox and return at once (202); it is usually still ``pending``.
+               disk_gb: int | None = None) -> "Capsule":
+        """Ask for a capsule and return at once (202); it is usually still ``pending``.
         ``cmd`` (required) is the program then its arguments. ``tty`` runs it on a pty; ``stdin``
         keeps input open for ``attach``. ``timeout_s`` is 10..=86400. ``from_workspace`` is an id,
         ``"name"`` or ``"team/name"``; ``from_snapshot`` a volume name, ``name@N`` or snapshot id
         (exclusive with it). ``network`` is ``internet`` or ``none``; ``cpu`` 1..=8, ``memory_gb``
-        1..=32. A session's sandbox is made with :meth:`Sessions.create_sandbox`. Unset inputs are
+        1..=32. A session's capsule is made with :meth:`Sessions.create_capsule`. Unset inputs are
         left to the server's defaults."""
-        body = _sandbox_body(cmd=cmd, image=image, packages=packages, from_workspace=from_workspace,
+        body = _capsule_body(cmd=cmd, image=image, packages=packages, from_workspace=from_workspace,
                              from_snapshot=from_snapshot, team=team, tty=tty, stdin=stdin,
                              timeout_s=timeout_s, network=network, env=env, cpu=cpu,
                              memory_gb=memory_gb, disk_gb=disk_gb)
-        return Sandbox(self._c, self._c.request("POST", "/v1/sandboxes", body=body))
+        return Capsule(self._c, self._c.request("POST", "/v1/capsules", body=body))
 
     @_aio
-    def get(self, *, sandbox: str) -> "Sandbox":
-        """One sandbox by id (a name does not resolve)."""
-        return Sandbox(self._c, self._c.request("GET", f"/v1/sandboxes/{_seg(sandbox)}"))
+    def get(self, *, capsule: str) -> "Capsule":
+        """One capsule by id (a name does not resolve)."""
+        return Capsule(self._c, self._c.request("GET", f"/v1/capsules/{_seg(capsule)}"))
 
     @_aio
     def list(self, *, team: str | None = None, limit: int | None = None,
              cursor: str | None = None) -> list:
-        """ONE page of the caller's sandboxes, newest first (``limit`` 1..=200, default 50);
+        """ONE page of the caller's capsules, newest first (``limit`` 1..=200, default 50);
         ``team`` scopes to that team. :meth:`list_page` also answers the next cursor."""
         return self.list_page(team=team, limit=limit, cursor=cursor)[0]
 
     @_aio
     def list_page(self, *, team: str | None = None, limit: int | None = None,
                   cursor: str | None = None) -> tuple:
-        """``(sandboxes, next_cursor)``: a page, and the ``X-Next-Cursor`` to pass as ``cursor`` for
+        """``(capsules, next_cursor)``: a page, and the ``X-Next-Cursor`` to pass as ``cursor`` for
         the next one (``None`` on the last page)."""
-        docs, headers = self._c._request("GET", "/v1/sandboxes",
+        docs, headers = self._c._request("GET", "/v1/capsules",
                                          query={"team": team, "limit": limit, "cursor": cursor})
-        return [Sandbox(self._c, d) for d in docs or []], headers.get("X-Next-Cursor")
+        return [Capsule(self._c, d) for d in docs or []], headers.get("X-Next-Cursor")
 
     @_aio
     def run(self, *, cmd: list, timeout_s: float | None = None, **options) -> dict:
-        """One command in a fresh sandbox: create, wait for it to exit, read the output, and
+        """One command in a fresh capsule: create, wait for it to exit, read the output, and
         terminate — ALWAYS, also when anything before it raised. Answers
-        ``{"exit_code", "stdout", "stderr", "sandbox"}``: the sandbox keeps one stream, so
+        ``{"exit_code", "stdout", "stderr", "capsule"}``: the capsule keeps one stream, so
         ``stdout`` holds the output and error output together and ``stderr`` is ``""``.
         ``timeout_s`` bounds the wait (TimeoutError; None waits as long as it takes) and, when
-        given, sizes the sandbox's own lifetime to cover it plus a minute. ``options`` are the
+        given, sizes the capsule's own lifetime to cover it plus a minute. ``options`` are the
         other inputs of :meth:`create` (``image``, ``packages``, ``env``, …)."""
         if timeout_s is not None and "timeout_s" not in options:
             options["timeout_s"] = min(86_400, max(10, math.ceil(timeout_s) + 60))
@@ -774,11 +774,11 @@ class Sandboxes:
                 sb.terminate()
             raise
         sb.terminate()
-        return {"exit_code": code, "stdout": out, "stderr": "", "sandbox": sb.id}
+        return {"exit_code": code, "stdout": out, "stderr": "", "capsule": sb.id}
 
 
-class Sandbox:
-    """A handle on one sandbox: ``id``, ``phase`` (``pending``, ``starting``, ``running``,
+class Capsule:
+    """A handle on one capsule: ``id``, ``phase`` (``pending``, ``starting``, ``running``,
     ``terminated``), ``reason`` once terminated, ``exit_code``, and the whole server ``doc`` as of
     the last answer — :meth:`refresh` re-reads it."""
 
@@ -792,40 +792,40 @@ class Sandbox:
     exit_code = property(lambda self: self.doc.get("exit_code"))
 
     def __repr__(self):
-        return f"<Sandbox {self.id} {self.phase}{' ' + self.reason if self.reason else ''}>"
+        return f"<Capsule {self.id} {self.phase}{' ' + self.reason if self.reason else ''}>"
 
     @_aio
-    def refresh(self) -> "Sandbox":
+    def refresh(self) -> "Capsule":
         self.doc = self._c.request("GET", self._path())
         return self
 
     @_aio
-    def wait_running(self, *, timeout_s: float = 120) -> "Sandbox":
-        """Poll until ``running``; :class:`SandboxTerminated` naming the reason if it terminates
+    def wait_running(self, *, timeout_s: float = 120) -> "Capsule":
+        """Poll until ``running``; :class:`CapsuleTerminated` naming the reason if it terminates
         instead (an image that does not pull, a quota, a node that cannot place it, or a command
         that already exited)."""
-        for _ in _backoff(timeout_s, f"sandbox {self.id} not running"):
+        for _ in _backoff(timeout_s, f"capsule {self.id} not running"):
             self.refresh()
             if self.phase == "running":
                 return self
             if self.phase == "terminated":
-                raise SandboxTerminated(self.id, self.reason, self.doc.get("message"))
+                raise CapsuleTerminated(self.id, self.reason, self.doc.get("message"))
 
     @_aio
     def logs(self, *, follow: bool = False) -> str:
         """The main process's output (stdout and stderr together) as text: the live output while it
         runs, the last 256 KiB after. ``follow=True`` holds until the process ends. 409 while the
-        sandbox has no output yet (still starting)."""
+        capsule has no output yet (still starting)."""
         return self._c._request("GET", self._path("/logs"), query={"follow": "true" if follow else None},
                                 text=True, timeout=None if follow else "default")[0]
 
     def attach(self, *, cols: int | None = None, rows: int | None = None):
-        """Not in this SDK: ``GET /v1/sandboxes/{id}/attach`` is a WebSocket and this client uses
+        """Not in this SDK: ``GET /v1/capsules/{id}/attach`` is a WebSocket and this client uses
         only the standard library."""
-        raise NotImplementedError("sandbox attach is a WebSocket and is not in the Python SDK")
+        raise NotImplementedError("capsule attach is a WebSocket and is not in the Python SDK")
 
     @_aio
-    def terminate(self) -> "Sandbox":
+    def terminate(self) -> "Capsule":
         """Stop it for good (202, or 200 if already ended); the record stays until :meth:`delete`."""
         self.doc = self._c.request("POST", self._path("/terminate")) or self.doc
         return self
@@ -839,7 +839,7 @@ class Sandbox:
         while True:
             left_ms = 20_000 if deadline is None else int((deadline - time.monotonic()) * 1000)
             if left_ms <= 0:
-                raise TimeoutError(f"sandbox {self.id} still {self.phase} after {timeout_s} s")
+                raise TimeoutError(f"capsule {self.id} still {self.phase} after {timeout_s} s")
             out = self._c.request("POST", self._path("/wait"), body={"timeout_ms": min(left_ms, 20_000)})
             self.doc = {**self.doc, **{k: v for k, v in (out or {}).items() if k in
                                        ("phase", "reason", "exit_code", "message")}}
@@ -848,11 +848,11 @@ class Sandbox:
 
     @_aio
     def delete(self):
-        """Delete the record (204); a sandbox still running dies with it."""
+        """Delete the record (204); a capsule still running dies with it."""
         return self._c.request("DELETE", self._path())
 
     def _path(self, tail: str = "") -> str:
-        return f"/v1/sandboxes/{_seg(self.id)}{tail}"
+        return f"/v1/capsules/{_seg(self.id)}{tail}"
 
 
 _RUN_TERMINAL = ("success", "failure", "cancelled")
@@ -860,7 +860,7 @@ _RUN_TERMINAL = ("success", "failure", "cancelled")
 
 class Pipelines:
     """Pipelines, over ``/v1/pipelines``: a pipeline is a JSON definition stored as numbered
-    versions; a run belongs to a pipeline and executes one version, each job in its own sandbox.
+    versions; a run belongs to a pipeline and executes one version, each job in its own capsule.
     :meth:`run`, :meth:`runs` and :meth:`get_run` answer :class:`Run` handles, and every call here
     and on a handle also has an async twin, ``.aio``::
 
@@ -960,7 +960,7 @@ class Run:
     the rest; ``doc`` is the whole server answer, camelCase as the wire spells it) and the calls
     on it. :meth:`refresh` re-reads it. Each job in ``jobs`` is a dict with ``key``, ``job``,
     ``matrix``, ``needs``, ``state`` (``pending``, ``running``, ``success``, ``failure``,
-    ``skipped``, ``cancelled``), ``sandbox``, ``startedAtMs``, ``finishedAtMs``, ``exitCode``,
+    ``skipped``, ``cancelled``), ``capsule``, ``startedAtMs``, ``finishedAtMs``, ``exitCode``,
     ``failedStep`` and ``detail``; :meth:`logs` and :meth:`follow` name one by its index or its
     ``key``."""
 
@@ -997,7 +997,7 @@ class Run:
     @_aio
     def cancel(self) -> "Run":
         """Ask it to stop: a queued run is cancelled at once, a running one once its worker has
-        ended its sandboxes — :meth:`wait` sees it reach ``cancelled``."""
+        ended its capsules — :meth:`wait` sees it reach ``cancelled``."""
         self.doc = self._c.request("POST", self._path("/cancel")) or self.doc
         return self
 

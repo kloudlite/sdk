@@ -17,8 +17,8 @@
 // required field is an IllegalArgumentException("<field> is required") before anything is sent.
 //
 // Methods return the raw JSON body as a String; bring your own JSON mapper. The two
-// exceptions are sandboxes() and pipelines().run/runs/getRun, which hand back live handles
-// (SandboxHandle, Run) — each still exposes its raw JSON.
+// exceptions are capsules() and pipelines().run/runs/getRun, which hand back live handles
+// (CapsuleHandle, Run) — each still exposes its raw JSON.
 
 package io.kloudlite;
 
@@ -88,7 +88,7 @@ public class Kloudlite {
     private final Volumes volumes = new Volumes();
     private final Secrets secrets = new Secrets();
     private final Connectors connectors = new Connectors();
-    private final Sandboxes sandboxes = new Sandboxes();
+    private final Capsules capsules = new Capsules();
     private final Pipelines pipelines = new Pipelines();
 
     /** The login of {@code kloudlite}: argument-free discovery. */
@@ -161,9 +161,9 @@ public class Kloudlite {
         return connectors;
     }
 
-    /** Throwaway gVisor sandboxes that run one command: {@code /v1/sandboxes}. */
-    public Sandboxes sandboxes() {
-        return sandboxes;
+    /** Disposable capsules that run one command: {@code /v1/capsules}. */
+    public Capsules capsules() {
+        return capsules;
     }
 
     /** Pipelines and their runs: {@code /v1/pipelines}. */
@@ -268,7 +268,7 @@ public class Kloudlite {
                 .bool("restartOnEnvChange", restartOnEnvChange).toString());
         }
 
-        /** Seconds unused before the workspace is deleted (600..=2592000); {@code null} clears it. Not for a sandbox or a bench. */
+        /** Seconds unused before the workspace is deleted (600..=2592000); {@code null} clears it. Not for a capsule or a bench. */
         public String setTtl(String workspace, Long ttlSecs) throws IOException, InterruptedException {
             return api("PUT", path(need(workspace, "workspace"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
         }
@@ -1028,7 +1028,7 @@ public class Kloudlite {
                 environment == null ? "{\"environment\":null}" : obj("environment", environment));
         }
 
-        /** Stop the session and every workspace in it (202, {@code {"stopped": [ids]}}); sandboxes and the environment are untouched. */
+        /** Stop the session and every workspace in it (202, {@code {"stopped": [ids]}}); capsules and the environment are untouched. */
         public String stop(String session) throws IOException, InterruptedException {
             return api("POST", path(session, "/stop"), null);
         }
@@ -1055,12 +1055,12 @@ public class Kloudlite {
         }
 
         /**
-         * Create a sandbox managed by the session (202), in its team and reaching its
-         * environment. Same inputs as {@link Sandboxes#create} ({@code team} must be the session's).
+         * Create a capsule managed by the session (202), in its team and reaching its
+         * environment. Same inputs as {@link Capsules#create} ({@code team} must be the session's).
          */
-        public SandboxHandle createSandbox(String session, CreateSandbox p) throws IOException, InterruptedException {
+        public CapsuleHandle createCapsule(String session, CreateCapsule p) throws IOException, InterruptedException {
             String body = p.body();
-            return new SandboxHandle(api("POST", path(need(session, "session"), "/sandboxes"), body));
+            return new CapsuleHandle(api("POST", path(need(session, "session"), "/capsules"), body));
         }
 
         /**
@@ -1251,64 +1251,64 @@ public class Kloudlite {
     }
 
     /**
-     * Throwaway sandboxes, over {@code /v1/sandboxes}: one isolated machine that runs ONE command
-     * ({@code cmd}) and ends when it exits or after its own timeout. A sandbox is named by its id.
-     * Unlike most modules these calls hand back a {@link SandboxHandle}, because a sandbox is
+     * Throwaway capsules, over {@code /v1/capsules}: one isolated machine that runs ONE command
+     * ({@code cmd}) and ends when it exits or after its own timeout. A capsule is named by its id.
+     * Unlike most modules these calls hand back a {@link CapsuleHandle}, because a capsule is
      * waited on, not read once; it still exposes its raw JSON.
      *
      * <pre>
-     *   Kloudlite.SandboxHandle sb = kl.sandboxes().create(new Kloudlite.CreateSandbox()
+     *   Kloudlite.CapsuleHandle sb = kl.capsules().create(new Kloudlite.CreateCapsule()
      *       .cmd(List.of("python3", "-c", "print(6 * 7)")).packages("python3"));
      *   Integer code = sb.waitFor(null);
      *   System.out.print(sb.logs());
      * </pre>
      */
-    public class Sandboxes {
-        /** Returns at once (202), the sandbox usually still {@code pending}. */
-        public SandboxHandle create(CreateSandbox p) throws IOException, InterruptedException {
-            return new SandboxHandle(api("POST", "/v1/sandboxes", p.body()));
+    public class Capsules {
+        /** Returns at once (202), the capsule usually still {@code pending}. */
+        public CapsuleHandle create(CreateCapsule p) throws IOException, InterruptedException {
+            return new CapsuleHandle(api("POST", "/v1/capsules", p.body()));
         }
 
-        /** One sandbox by id (a name does not resolve). */
-        public SandboxHandle get(String sandbox) throws IOException, InterruptedException {
-            return new SandboxHandle(api("GET", "/v1/sandboxes/" + seg(need(sandbox, "sandbox")), null));
+        /** One capsule by id (a name does not resolve). */
+        public CapsuleHandle get(String capsule) throws IOException, InterruptedException {
+            return new CapsuleHandle(api("GET", "/v1/capsules/" + seg(need(capsule, "capsule")), null));
         }
 
-        /** ONE page of the caller's sandboxes, newest first; a non-null team scopes to that team. {@link #listPage} picks the page. */
-        public List<SandboxHandle> list(String team) throws IOException, InterruptedException {
-            return listPage(new ListSandboxes().team(team)).sandboxes;
+        /** ONE page of the caller's capsules, newest first; a non-null team scopes to that team. {@link #listPage} picks the page. */
+        public List<CapsuleHandle> list(String team) throws IOException, InterruptedException {
+            return listPage(new ListCapsules().team(team)).capsules;
         }
 
         /** A page ({@code limit} 1..=200, default 50) and the cursor of the next one. */
-        public SandboxPage listPage(ListSandboxes p) throws IOException, InterruptedException {
-            HttpResponse<String> resp = exchange("GET", "/v1/sandboxes"
+        public CapsulePage listPage(ListCapsules p) throws IOException, InterruptedException {
+            HttpResponse<String> resp = exchange("GET", "/v1/capsules"
                 + query("team", p.team, "limit", p.limit == null ? null : p.limit.toString(), "cursor", p.cursor),
                 null, "application/json", Duration.ofSeconds(30));
-            List<SandboxHandle> out = new ArrayList<>();
+            List<CapsuleHandle> out = new ArrayList<>();
             List<String> docs;
             try {
                 docs = JsonReader.elements(resp.body());
             } catch (IllegalArgumentException e) {
-                throw new ApiException(502, "the sandbox listing was not a JSON array");
+                throw new ApiException(502, "the capsule listing was not a JSON array");
             }
-            for (String doc : docs) out.add(new SandboxHandle(doc));
-            return new SandboxPage(out, resp.headers().firstValue("X-Next-Cursor").orElse(null));
+            for (String doc : docs) out.add(new CapsuleHandle(doc));
+            return new CapsulePage(out, resp.headers().firstValue("X-Next-Cursor").orElse(null));
         }
 
         /**
-         * One command in a fresh sandbox: create, wait for it to exit, read the output, and
+         * One command in a fresh capsule: create, wait for it to exit, read the output, and
          * terminate — ALWAYS, also when anything before it failed (a failed terminate surfaces
-         * beside, never instead of, the failure that came first). The sandbox keeps one stream,
+         * beside, never instead of, the failure that came first). The capsule keeps one stream,
          * so {@code stdout} holds the output and error output together and {@code stderr} is "".
          */
-        public RunResult run(RunSandbox p) throws IOException, InterruptedException {
-            // A command allowed longer than the sandbox's default lifetime must not be cut by it:
-            // the sandbox outlives the wait by a minute, within the server's 10 s..24 h.
+        public RunResult run(RunCapsule p) throws IOException, InterruptedException {
+            // A command allowed longer than the capsule's default lifetime must not be cut by it:
+            // the capsule outlives the wait by a minute, within the server's 10 s..24 h.
             if (p.timeout != null && !p.timeout.isZero()) {
                 long secs = Math.min(86_400, Math.max(10, (p.timeout.toMillis() + 999) / 1000 + 60));
                 p.create.timeout(Duration.ofSeconds(secs));
             }
-            SandboxHandle sb = create(p.create);
+            CapsuleHandle sb = create(p.create);
             Throwable failed = null;
             try {
                 Integer code = sb.waitFor(p.timeout);
@@ -1327,34 +1327,34 @@ public class Kloudlite {
         }
     }
 
-    /** What {@link Sandboxes#listPage} answers: the page and the {@code X-Next-Cursor} for the next (null on the last). */
-    public static final class SandboxPage {
-        public final List<SandboxHandle> sandboxes;
+    /** What {@link Capsules#listPage} answers: the page and the {@code X-Next-Cursor} for the next (null on the last). */
+    public static final class CapsulePage {
+        public final List<CapsuleHandle> capsules;
         public final String nextCursor;
 
-        SandboxPage(List<SandboxHandle> sandboxes, String nextCursor) {
-            this.sandboxes = sandboxes;
+        CapsulePage(List<CapsuleHandle> capsules, String nextCursor) {
+            this.capsules = capsules;
             this.nextCursor = nextCursor;
         }
     }
 
     /**
-     * One sandbox: the doc as last read ({@link #json}, with {@link #id}, {@link #phase} —
+     * One capsule: the doc as last read ({@link #json}, with {@link #id}, {@link #phase} —
      * {@code pending|starting|running|terminated} — and, once terminated, {@link #reason} and
      * {@link #exitCode}). Nothing re-reads it behind the caller's back except the waits;
      * {@link #refresh} does.
      */
-    public final class SandboxHandle {
+    public final class CapsuleHandle {
         private volatile String json;
         private volatile Map<String, Object> doc;
 
-        SandboxHandle(String json) throws ApiException {
+        CapsuleHandle(String json) throws ApiException {
             set(json);
         }
 
         private void set(String raw) throws ApiException {
             Map<String, Object> d = JsonReader.parsed(raw);
-            if (text(d.get("id")) == null) throw new ApiException(502, "the answer named no sandbox id");
+            if (text(d.get("id")) == null) throw new ApiException(502, "the answer named no capsule id");
             doc = d;
             json = raw;
         }
@@ -1364,7 +1364,7 @@ public class Kloudlite {
         /** Terminated, Timeout, Idle, Exited, Failed, Unplaceable, SourceGone, Lost or EnvironmentGone; null until terminated. */
         public String reason() { return text(doc.get("reason")); }
         public String message() { return text(doc.get("message")); }
-        /** The command's exit code; null until it has exited (and when the sandbox ended some other way). */
+        /** The command's exit code; null until it has exited (and when the capsule ended some other way). */
         public Integer exitCode() {
             Long c = longOf(doc.get("exit_code"));
             return c == null ? null : (Integer) c.intValue();
@@ -1373,29 +1373,29 @@ public class Kloudlite {
         public String json() { return json; }
 
         /** Re-read the doc; returns this handle. */
-        public SandboxHandle refresh() throws IOException, InterruptedException {
+        public CapsuleHandle refresh() throws IOException, InterruptedException {
             set(api("GET", path(""), null));
             return this;
         }
 
         /** {@link #waitRunning(Duration)} with the default limit of two minutes. */
-        public SandboxHandle waitRunning() throws IOException, InterruptedException {
+        public CapsuleHandle waitRunning() throws IOException, InterruptedException {
             return waitRunning(Duration.ofSeconds(120));
         }
 
         /**
-         * Poll until {@code running} (0.5 s, backing off to 2 s). A sandbox that ends instead is an
+         * Poll until {@code running} (0.5 s, backing off to 2 s). A capsule that ends instead is an
          * {@link ApiException} (409) naming its reason; the limit passing is an
          * {@link HttpTimeoutException}. A null or zero limit waits as long as it takes.
          */
-        public SandboxHandle waitRunning(Duration timeout) throws IOException, InterruptedException {
+        public CapsuleHandle waitRunning(Duration timeout) throws IOException, InterruptedException {
             long deadline = deadline(timeout);
             for (long pause = 500; ; pause = nap(deadline, pause)) {
                 refresh();
                 if ("running".equals(phase())) return this;
                 if ("terminated".equals(phase())) throw ended();
                 if (expired(deadline)) {
-                    throw new HttpTimeoutException("sandbox " + id() + " was not running within " + timeout);
+                    throw new HttpTimeoutException("capsule " + id() + " was not running within " + timeout);
                 }
             }
         }
@@ -1411,13 +1411,13 @@ public class Kloudlite {
                 follow ? null : Duration.ofSeconds(30)).body();
         }
 
-        /** Not in this SDK: {@code GET /v1/sandboxes/{id}/attach} is a WebSocket and this client uses only the JDK. */
+        /** Not in this SDK: {@code GET /v1/capsules/{id}/attach} is a WebSocket and this client uses only the JDK. */
         public void attach() {
-            throw new UnsupportedOperationException("sandbox attach is a WebSocket and is not in the Java SDK");
+            throw new UnsupportedOperationException("capsule attach is a WebSocket and is not in the Java SDK");
         }
 
         /** Stop it for good (202, or 200 if already ended); the record stays until {@link #delete}. Returns this handle. */
-        public SandboxHandle terminate() throws IOException, InterruptedException {
+        public CapsuleHandle terminate() throws IOException, InterruptedException {
             String raw = api("POST", path("/terminate"), null);
             if (raw != null && !raw.isBlank()) set(raw);
             return this;
@@ -1439,7 +1439,7 @@ public class Kloudlite {
             while (true) {
                 long left = Math.min(20_000, remainingMs(deadline));
                 if (left <= 0) {
-                    throw new HttpTimeoutException("sandbox " + id() + " still " + phase() + " after " + timeout);
+                    throw new HttpTimeoutException("capsule " + id() + " still " + phase() + " after " + timeout);
                 }
                 Map<String, Object> out = JsonReader.parsed(api("POST", path("/wait"),
                     new Json().num("timeout_ms", left).toString()));
@@ -1453,31 +1453,31 @@ public class Kloudlite {
             }
         }
 
-        /** Delete the record (204); a sandbox still running dies with it. */
+        /** Delete the record (204); a capsule still running dies with it. */
         public void delete() throws IOException, InterruptedException {
             api("DELETE", path(""), null);
         }
 
         String path(String tail) {
-            return "/v1/sandboxes/" + seg(id()) + tail;
+            return "/v1/capsules/" + seg(id()) + tail;
         }
 
         private ApiException ended() {
             String msg = message();
-            return new ApiException(409, "sandbox " + id() + " is terminated (" + or(reason(), "no reason given") + ")"
+            return new ApiException(409, "capsule " + id() + " is terminated (" + or(reason(), "no reason given") + ")"
                 + (msg == null || msg.isEmpty() ? "" : ": " + msg));
         }
     }
 
-    // ── sandbox params ─────────────────────────────────────────────────────
+    // ── capsule params ─────────────────────────────────────────────────────
 
     /**
-     * {@link Sandboxes#create}: {@code cmd} is required, every other field optional, an unset one
+     * {@link Capsules#create}: {@code cmd} is required, every other field optional, an unset one
      * being the server's default (a 300 s timeout, 1 core, 2 GB of memory, 10 GB of disk, the
      * internet reachable). {@code fromWorkspace} is an id, a name or "team/name";
      * {@code fromSnapshot} a volume name, {@code name@N} or snapshot id (exclusive with it).
      */
-    public static final class CreateSandbox {
+    public static final class CreateCapsule {
         private String image, fromWorkspace, fromSnapshot, team, network;
         private List<String> cmd, packages;
         private Boolean tty, stdin;
@@ -1486,25 +1486,25 @@ public class Kloudlite {
         private Long cpu, memoryGb, diskGb;
 
         /** The program, then its arguments: a non-empty list. */
-        public CreateSandbox cmd(List<String> argv) { cmd = argv; return this; }
-        public CreateSandbox image(String v) { image = v; return this; }
+        public CreateCapsule cmd(List<String> argv) { cmd = argv; return this; }
+        public CreateCapsule image(String v) { image = v; return this; }
         /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
-        public CreateSandbox packages(String... v) { packages = Arrays.asList(v); return this; }
-        public CreateSandbox fromWorkspace(String v) { fromWorkspace = v; return this; }
-        public CreateSandbox fromSnapshot(String v) { fromSnapshot = v; return this; }
-        public CreateSandbox team(String v) { team = v; return this; }
+        public CreateCapsule packages(String... v) { packages = Arrays.asList(v); return this; }
+        public CreateCapsule fromWorkspace(String v) { fromWorkspace = v; return this; }
+        public CreateCapsule fromSnapshot(String v) { fromSnapshot = v; return this; }
+        public CreateCapsule team(String v) { team = v; return this; }
         /** Run the command on a pty. */
-        public CreateSandbox tty(boolean v) { tty = v; return this; }
+        public CreateCapsule tty(boolean v) { tty = v; return this; }
         /** Keep input open for {@code attach}. */
-        public CreateSandbox stdin(boolean v) { stdin = v; return this; }
-        /** The sandbox's whole lifetime (10 s..24 h), sent in whole seconds (rounded up). */
-        public CreateSandbox timeout(Duration v) { timeout = v; return this; }
+        public CreateCapsule stdin(boolean v) { stdin = v; return this; }
+        /** The capsule's whole lifetime (10 s..24 h), sent in whole seconds (rounded up). */
+        public CreateCapsule timeout(Duration v) { timeout = v; return this; }
         /** "internet" or "none". */
-        public CreateSandbox network(String v) { network = v; return this; }
-        public CreateSandbox env(Map<String, String> v) { env = v; return this; }
-        public CreateSandbox cpu(int cores) { cpu = (long) cores; return this; }
-        public CreateSandbox memoryGb(int v) { memoryGb = (long) v; return this; }
-        public CreateSandbox diskGb(int v) { diskGb = (long) v; return this; }
+        public CreateCapsule network(String v) { network = v; return this; }
+        public CreateCapsule env(Map<String, String> v) { env = v; return this; }
+        public CreateCapsule cpu(int cores) { cpu = (long) cores; return this; }
+        public CreateCapsule memoryGb(int v) { memoryGb = (long) v; return this; }
+        public CreateCapsule diskGb(int v) { diskGb = (long) v; return this; }
 
         String body() {
             if (cmd == null || cmd.isEmpty()) {
@@ -1530,69 +1530,69 @@ public class Kloudlite {
         }
     }
 
-    /** {@link Sandboxes#listPage}: every field optional; {@code limit} is 1..=200. */
-    public static final class ListSandboxes {
+    /** {@link Capsules#listPage}: every field optional; {@code limit} is 1..=200. */
+    public static final class ListCapsules {
         private String team, cursor;
         private Integer limit;
 
-        public ListSandboxes team(String v) { team = v; return this; }
-        public ListSandboxes limit(int v) { limit = v; return this; }
-        public ListSandboxes cursor(String v) { cursor = v; return this; }
+        public ListCapsules team(String v) { team = v; return this; }
+        public ListCapsules limit(int v) { limit = v; return this; }
+        public ListCapsules cursor(String v) { cursor = v; return this; }
     }
 
     /**
-     * {@link Sandboxes#run}: the command ({@code cmd} required), how long to wait for it
-     * ({@code timeout}; unset waits until it exits, and a set one also sizes the sandbox's own
-     * lifetime to cover it plus a minute), and every other {@link CreateSandbox} field.
+     * {@link Capsules#run}: the command ({@code cmd} required), how long to wait for it
+     * ({@code timeout}; unset waits until it exits, and a set one also sizes the capsule's own
+     * lifetime to cover it plus a minute), and every other {@link CreateCapsule} field.
      */
-    public static final class RunSandbox {
-        private final CreateSandbox create = new CreateSandbox();
+    public static final class RunCapsule {
+        private final CreateCapsule create = new CreateCapsule();
         private Duration timeout;
 
-        public RunSandbox cmd(List<String> argv) { create.cmd(argv); return this; }
-        public RunSandbox timeout(Duration v) { timeout = v; return this; }
-        public RunSandbox image(String v) { create.image(v); return this; }
-        public RunSandbox packages(String... v) { create.packages(v); return this; }
-        public RunSandbox fromWorkspace(String v) { create.fromWorkspace(v); return this; }
-        public RunSandbox fromSnapshot(String v) { create.fromSnapshot(v); return this; }
-        public RunSandbox team(String v) { create.team(v); return this; }
-        public RunSandbox tty(boolean v) { create.tty(v); return this; }
-        public RunSandbox stdin(boolean v) { create.stdin(v); return this; }
-        public RunSandbox network(String v) { create.network(v); return this; }
-        public RunSandbox env(Map<String, String> v) { create.env(v); return this; }
-        public RunSandbox cpu(int cores) { create.cpu(cores); return this; }
-        public RunSandbox memoryGb(int v) { create.memoryGb(v); return this; }
-        public RunSandbox diskGb(int v) { create.diskGb(v); return this; }
+        public RunCapsule cmd(List<String> argv) { create.cmd(argv); return this; }
+        public RunCapsule timeout(Duration v) { timeout = v; return this; }
+        public RunCapsule image(String v) { create.image(v); return this; }
+        public RunCapsule packages(String... v) { create.packages(v); return this; }
+        public RunCapsule fromWorkspace(String v) { create.fromWorkspace(v); return this; }
+        public RunCapsule fromSnapshot(String v) { create.fromSnapshot(v); return this; }
+        public RunCapsule team(String v) { create.team(v); return this; }
+        public RunCapsule tty(boolean v) { create.tty(v); return this; }
+        public RunCapsule stdin(boolean v) { create.stdin(v); return this; }
+        public RunCapsule network(String v) { create.network(v); return this; }
+        public RunCapsule env(Map<String, String> v) { create.env(v); return this; }
+        public RunCapsule cpu(int cores) { create.cpu(cores); return this; }
+        public RunCapsule memoryGb(int v) { create.memoryGb(v); return this; }
+        public RunCapsule diskGb(int v) { create.diskGb(v); return this; }
     }
 
-    /** What {@link Sandboxes#run} answers; {@link #toString} is its JSON. */
+    /** What {@link Capsules#run} answers; {@link #toString} is its JSON. */
     public static final class RunResult {
-        /** Null when the sandbox ended some other way than the command exiting. */
+        /** Null when the capsule ended some other way than the command exiting. */
         public final Integer exitCode;
         /** The output and the error output together. */
         public final String stdout;
-        /** Always "": the sandbox keeps one stream. */
+        /** Always "": the capsule keeps one stream. */
         public final String stderr;
-        /** The sandbox's id — already terminated. */
-        public final String sandbox;
+        /** The capsule's id — already terminated. */
+        public final String capsule;
 
-        RunResult(Integer exitCode, String stdout, String stderr, String sandbox) {
+        RunResult(Integer exitCode, String stdout, String stderr, String capsule) {
             this.exitCode = exitCode;
             this.stdout = stdout;
             this.stderr = stderr;
-            this.sandbox = sandbox;
+            this.capsule = capsule;
         }
 
         @Override
         public String toString() {
             return new Json().raw("exit_code", exitCode == null ? "null" : exitCode.toString())
-                .str("stdout", stdout).str("stderr", stderr).str("sandbox", sandbox).toString();
+                .str("stdout", stdout).str("stderr", stderr).str("capsule", capsule).toString();
         }
     }
 
     /**
      * Pipelines, over {@code /v1/pipelines}: a JSON definition stored as numbered versions; a run
-     * executes one version, each job in its own sandbox. Definitions and documents travel as raw
+     * executes one version, each job in its own capsule. Definitions and documents travel as raw
      * JSON strings. {@link #run}, {@link #runs} and {@link #getRun} hand back {@link Run} handles.
      *
      * <pre>
@@ -1695,7 +1695,7 @@ public class Kloudlite {
      * One pipeline run: the doc as last read ({@link #json}, with named readers for its fields;
      * {@link #state} is {@code queued|running|success|failure|cancelled}). Each of {@link #jobs}
      * is a map with key, job, matrix, needs, state ({@code pending|running|success|failure|
-     * skipped|cancelled}), sandbox, startedAtMs, finishedAtMs, exitCode, failedStep and detail;
+     * skipped|cancelled}), capsule, startedAtMs, finishedAtMs, exitCode, failedStep and detail;
      * {@link #logs} and {@link #follow} name one by its index or its key. Nothing re-reads the doc
      * behind the caller's back except {@link #waitFor}; {@link #refresh} does.
      */
@@ -1764,7 +1764,7 @@ public class Kloudlite {
 
         /**
          * Ask it to stop: a queued run is cancelled at once, a running one once its worker has
-         * ended its sandboxes — {@link #waitFor} sees it reach {@code cancelled}. Returns this handle.
+         * ended its capsules — {@link #waitFor} sees it reach {@code cancelled}. Returns this handle.
          */
         public Run cancel() throws IOException, InterruptedException {
             set(api("POST", path("/cancel"), null));
@@ -2022,7 +2022,7 @@ public class Kloudlite {
     }
 
     /**
-     * Just enough of a JSON reader for the sandbox handles, which must see a doc's phase and a
+     * Just enough of a JSON reader for the capsule handles, which must see a doc's phase and a
      * stream frame's data with every escape undone: objects become LinkedHashMaps, arrays Lists,
      * integers Longs, other numbers Doubles. Malformed input is an IllegalArgumentException.
      */

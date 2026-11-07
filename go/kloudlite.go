@@ -64,7 +64,7 @@ type Client struct {
 	Volumes      *Volumes
 	Secrets      *Secrets
 	Connectors   *Connectors
-	Sandboxes    *Sandboxes
+	Capsules    *Capsules
 	Pipelines    *Pipelines
 
 	baseURL string
@@ -131,7 +131,7 @@ func New(opts Options) *Client {
 	c.Volumes = &Volumes{c}
 	c.Secrets = &Secrets{c}
 	c.Connectors = &Connectors{c}
-	c.Sandboxes = &Sandboxes{c}
+	c.Capsules = &Capsules{c}
 	c.Pipelines = &Pipelines{c}
 	return c
 }
@@ -314,7 +314,7 @@ func (w *Workspaces) Create(req CreateWorkspace) (map[string]any, error) {
 }
 
 // SetTTL sets the seconds the workspace may sit unused before it is deleted
-// (600..=2592000); nil clears it. Not for a sandbox or a bench.
+// (600..=2592000); nil clears it. Not for a capsule or a bench.
 func (w *Workspaces) SetTTL(workspace string, ttlSecs *int64) (map[string]any, error) {
 	var out map[string]any
 	err := w.at("PUT", workspace, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
@@ -1101,11 +1101,11 @@ type DeleteSessionWorkspace struct {
 	Workspace string
 }
 
-// CreateSessionSandbox creates a sandbox managed by Session, in its team and
-// reaching its environment; CreateSandbox.Team must be the session's.
-type CreateSessionSandbox struct {
+// CreateSessionCapsule creates a capsule managed by Session, in its team and
+// reaching its environment; CreateCapsule.Team must be the session's.
+type CreateSessionCapsule struct {
 	Session string
-	CreateSandbox
+	CreateCapsule
 }
 
 // InterceptService sends everything that calls Service in the environment to
@@ -1183,7 +1183,7 @@ func (s *Sessions) Connect(session string, environment *string) (map[string]any,
 }
 
 // Stop stops the session and every workspace in it (202, {"stopped": [ids]});
-// sandboxes and the environment are untouched.
+// capsules and the environment are untouched.
 func (s *Sessions) Stop(session string) (map[string]any, error) {
 	var out map[string]any
 	err := s.at("POST", session, "/stop", nil, &out)
@@ -1206,14 +1206,14 @@ func (s *Sessions) DeleteWorkspace(req DeleteSessionWorkspace) error {
 	return s.at("DELETE", req.Session, "/workspaces/"+seg(req.Workspace), nil, nil)
 }
 
-// CreateSandbox creates a sandbox managed by the session (202).
-func (s *Sessions) CreateSandbox(req CreateSessionSandbox) (*Sandbox, error) {
-	body, err := req.CreateSandbox.body()
+// CreateCapsule creates a capsule managed by the session (202).
+func (s *Sessions) CreateCapsule(req CreateSessionCapsule) (*Capsule, error) {
+	body, err := req.CreateCapsule.body()
 	if err != nil {
 		return nil, err
 	}
-	sb := &Sandbox{c: s.c}
-	if err := s.at("POST", req.Session, "/sandboxes", body, &sb.SandboxDoc); err != nil {
+	sb := &Capsule{c: s.c}
+	if err := s.at("POST", req.Session, "/capsules", body, &sb.CapsuleDoc); err != nil {
 		return nil, err
 	}
 	return sb, nil
