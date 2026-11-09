@@ -49,7 +49,7 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 public class Kloudlite {
-    public static final String VERSION = "0.2.2";
+    public static final String VERSION = "0.4.0";
     static final String NO_LOGIN = "no Kloudlite login: pass token(), set KLOUDLITE_TOKEN, or run kloudlite login";
 
     static {
@@ -84,7 +84,7 @@ public class Kloudlite {
     private final HttpClient http;
     private final Workspaces workspaces = new Workspaces();
     private final Environments environments = new Environments();
-    private final Sessions sessions = new Sessions();
+    private final Desks desks = new Desks();
     private final Volumes volumes = new Volumes();
     private final Secrets secrets = new Secrets();
     private final Connectors connectors = new Connectors();
@@ -141,9 +141,9 @@ public class Kloudlite {
         return environments;
     }
 
-    /** Working sessions: {@code /v1/sessions}. */
-    public Sessions sessions() {
-        return sessions;
+    /** Working desks: {@code /v1/desks}. */
+    public Desks desks() {
+        return desks;
     }
 
     /** An owner's named secrets: {@code /v1/secrets}. */
@@ -980,18 +980,18 @@ public class Kloudlite {
     }
 
     /**
-     * Working sessions, over {@code /v1/sessions}: some of YOUR workspaces in one team, connected
-     * to one environment. Many people's sessions connect to the same environment and collaborate
-     * through it; an intercept a session takes is environment-wide, and the session owns it — only
-     * it can release it, and removing the workspace or deleting the session releases it. A session
+     * Working desks, over {@code /v1/desks}: some of YOUR workspaces in one team, connected
+     * to one environment. Many people's desks connect to the same environment and collaborate
+     * through it; an intercept a desk takes is environment-wide, and the desk owns it — only
+     * it can release it, and removing the workspace or deleting the desk releases it. A desk
      * is named like an environment ({@code "name"} or {@code "team/name"}) or by its id; a
      * workspace by its id, name or {@code "team/name"}, sent verbatim.
      */
-    public class Sessions {
-        /** {@code environment}, when set, must be the session's team's: an id, a name or "team/name"; without one the session connects to nothing until {@link #connect}. */
-        public String create(CreateSession p) throws IOException, InterruptedException {
-            String[] on = owned(need(p.session, "session"));
-            return api("POST", "/v1/sessions", new Json()
+    public class Desks {
+        /** {@code environment}, when set, must be the desk's team's: an id, a name or "team/name"; without one the desk connects to nothing until {@link #connect}. */
+        public String create(CreateDesk p) throws IOException, InterruptedException {
+            String[] on = owned(need(p.desk, "desk"));
+            return api("POST", "/v1/desks", new Json()
                 .str("name", on[1])
                 .str("team", on[0])
                 .str("environment", p.environment)
@@ -999,47 +999,47 @@ public class Kloudlite {
                 .toString());
         }
 
-        /** Seconds unused before the session is deleted (600..=2592000); {@code null} clears it. */
-        public String setTtl(String session, Long ttlSecs) throws IOException, InterruptedException {
-            return api("PUT", path(need(session, "session"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
+        /** Seconds unused before the desk is deleted (600..=2592000); {@code null} clears it. */
+        public String setTtl(String desk, Long ttlSecs) throws IOException, InterruptedException {
+            return api("PUT", path(need(desk, "desk"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
         }
 
         public String list(String team) throws IOException, InterruptedException {
-            return api("GET", team == null ? "/v1/sessions" : "/v1/sessions?team=" + seg(team), null);
+            return api("GET", team == null ? "/v1/desks" : "/v1/desks?team=" + seg(team), null);
         }
 
-        /** The session with its workspaces and the intercepts it holds. */
-        public String get(String session) throws IOException, InterruptedException {
-            return api("GET", path(session, ""), null);
+        /** The desk with its workspaces and the intercepts it holds. */
+        public String get(String desk) throws IOException, InterruptedException {
+            return api("GET", path(desk, ""), null);
         }
 
         /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
-        public String delete(String session) throws IOException, InterruptedException {
-            return api("DELETE", path(session, ""), null);
+        public String delete(String desk) throws IOException, InterruptedException {
+            return api("DELETE", path(desk, ""), null);
         }
 
         /**
-         * Sets or switches the session's environment (an id, a name or "team/name"); {@code null}
+         * Sets or switches the desk's environment (an id, a name or "team/name"); {@code null}
          * clears it. Its intercepts in the old environment are released first; deleting an
-         * environment disconnects its sessions the same way.
+         * environment disconnects its desks the same way.
          */
-        public String connect(String session, String environment) throws IOException, InterruptedException {
-            return api("PUT", path(need(session, "session"), "/environment"),
+        public String connect(String desk, String environment) throws IOException, InterruptedException {
+            return api("PUT", path(need(desk, "desk"), "/environment"),
                 environment == null ? "{\"environment\":null}" : obj("environment", environment));
         }
 
-        /** Stop the session and every workspace in it (202, {@code {"stopped": [ids]}}); capsules and the environment are untouched. */
-        public String stop(String session) throws IOException, InterruptedException {
-            return api("POST", path(session, "/stop"), null);
+        /** Stop the desk and every workspace in it (202, {@code {"stopped": [ids]}}); capsules and the environment are untouched. */
+        public String stop(String desk) throws IOException, InterruptedException {
+            return api("POST", path(desk, "/stop"), null);
         }
 
         /**
-         * Create a workspace {@code p.workspace} (a bare name) managed by the session, in its team
-         * (201). The session controls it from then on; it takes the inputs of
+         * Create a workspace {@code p.workspace} (a bare name) managed by the desk, in its team
+         * (201). The desk controls it from then on; it takes the inputs of
          * {@link Workspaces#create}.
          */
-        public String createWorkspace(String session, CreateWorkspace p) throws IOException, InterruptedException {
-            return api("POST", path(need(session, "session"), "/workspaces"), new Json()
+        public String createWorkspace(String desk, CreateWorkspace p) throws IOException, InterruptedException {
+            return api("POST", path(need(desk, "desk"), "/workspaces"), new Json()
                 .str("name", need(p.workspace, "workspace"))
                 .num("quota_gb", need(p.quotaGb, "quotaGb"))
                 .str("image", p.image)
@@ -1049,18 +1049,18 @@ public class Kloudlite {
                 .toString());
         }
 
-        /** Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay. */
-        public String deleteWorkspace(String session, String workspace) throws IOException, InterruptedException {
-            return api("DELETE", path(need(session, "session"), "/workspaces/" + seg(need(workspace, "workspace"))), null);
+        /** Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay. */
+        public String deleteWorkspace(String desk, String workspace) throws IOException, InterruptedException {
+            return api("DELETE", path(need(desk, "desk"), "/workspaces/" + seg(need(workspace, "workspace"))), null);
         }
 
         /**
-         * Create a capsule managed by the session (202), in its team and reaching its
-         * environment. Same inputs as {@link Capsules#create} ({@code team} must be the session's).
+         * Create a capsule managed by the desk (202), in its team and reaching its
+         * environment. Same inputs as {@link Capsules#create} ({@code team} must be the desk's).
          */
-        public CapsuleHandle createCapsule(String session, CreateCapsule p) throws IOException, InterruptedException {
+        public CapsuleHandle createCapsule(String desk, CreateCapsule p) throws IOException, InterruptedException {
             String body = p.body();
-            return new CapsuleHandle(api("POST", path(need(session, "session"), "/capsules"), body));
+            return new CapsuleHandle(api("POST", path(need(desk, "desk"), "/capsules"), body));
         }
 
         /**
@@ -1068,7 +1068,7 @@ public class Kloudlite {
          * member). {@code ports} maps a service port to the workspace port answering it.
          */
         public String intercept(InterceptService p) throws IOException, InterruptedException {
-            String session = need(p.session, "session");
+            String desk = need(p.desk, "desk");
             String service = need(p.service, "service"), workspace = need(p.workspace, "workspace");
             List<String> pm = new ArrayList<>();
             if (p.ports != null) {
@@ -1077,47 +1077,47 @@ public class Kloudlite {
                 }
             }
             String b = obj("service", service, "workspace", workspace);
-            return api("POST", path(session, "/intercepts"),
+            return api("POST", path(desk, "/intercepts"),
                 b.substring(0, b.length() - 1) + ",\"ports\":[" + String.join(",", pm) + "]}");
         }
 
         public String release(ReleaseService p) throws IOException, InterruptedException {
-            String session = need(p.session, "session");
-            return api("DELETE", path(session, "/intercepts/" + seg(need(p.service, "service"))), null);
+            String desk = need(p.desk, "desk");
+            return api("DELETE", path(desk, "/intercepts/" + seg(need(p.service, "service"))), null);
         }
 
-        private String path(String session, String tail) {
-            return at("/v1/sessions/", session, tail);
+        private String path(String desk, String tail) {
+            return at("/v1/desks/", desk, tail);
         }
     }
 
-    // ── session params ─────────────────────────────────────────────────────
+    // ── desk params ─────────────────────────────────────────────────────
 
-    public static final class CreateSession {
-        private String session, environment;
+    public static final class CreateDesk {
+        private String desk, environment;
         private Long ttlSecs;
 
-        public CreateSession session(String v) { session = v; return this; }
-        public CreateSession environment(String v) { environment = v; return this; }
-        /** Seconds unused (600..=2592000) before the session is deleted; unset, never. */
-        public CreateSession ttlSecs(long v) { ttlSecs = v; return this; }
+        public CreateDesk desk(String v) { desk = v; return this; }
+        public CreateDesk environment(String v) { environment = v; return this; }
+        /** Seconds unused (600..=2592000) before the desk is deleted; unset, never. */
+        public CreateDesk ttlSecs(long v) { ttlSecs = v; return this; }
     }
 
     /** {@code ports} keeps the map's own iteration order on the wire — use a LinkedHashMap to fix it. */
     public static final class InterceptService {
-        private String session, service, workspace;
+        private String desk, service, workspace;
         private Map<Integer, Integer> ports;
 
-        public InterceptService session(String v) { session = v; return this; }
+        public InterceptService desk(String v) { desk = v; return this; }
         public InterceptService service(String v) { service = v; return this; }
         public InterceptService workspace(String v) { workspace = v; return this; }
         public InterceptService ports(Map<Integer, Integer> v) { ports = v; return this; }
     }
 
     public static final class ReleaseService {
-        private String session, service;
+        private String desk, service;
 
-        public ReleaseService session(String v) { session = v; return this; }
+        public ReleaseService desk(String v) { desk = v; return this; }
         public ReleaseService service(String v) { service = v; return this; }
     }
 
@@ -2219,7 +2219,7 @@ public class Kloudlite {
     }
 
     /**
-     * A workspace, environment or session path: "team/name" travels as segment {@code name} plus
+     * A workspace, environment or desk path: "team/name" travels as segment {@code name} plus
      * {@code ?owner=team}, which the server's {@code Named} extractor folds back together.
      */
     static String at(String prefix, String ident, String tail) {

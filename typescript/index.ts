@@ -27,7 +27,7 @@ if (typeof fetch !== "function" || typeof AbortSignal?.timeout !== "function") {
   throw new Error("kloudlite SDK needs fetch and AbortSignal.timeout: Node 20.16+ or Bun");
 }
 
-export const VERSION = "0.2.2";
+export const VERSION = "0.4.0";
 const USER_AGENT = `kloudlite-sdk-typescript/${VERSION}`;
 const NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login";
 
@@ -83,7 +83,7 @@ function login(env: Record<string, string | undefined>): { api?: string; token?:
 export class Kloudlite {
   readonly workspaces: Workspaces;
   readonly environments: Environments;
-  readonly sessions: Sessions;
+  readonly desks: Desks;
   readonly volumes: Volumes;
   readonly secrets: Secrets;
   readonly connectors: Connectors;
@@ -110,7 +110,7 @@ export class Kloudlite {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.workspaces = new Workspaces(this);
     this.environments = new Environments(this);
-    this.sessions = new Sessions(this);
+    this.desks = new Desks(this);
     this.volumes = new Volumes(this);
     this.secrets = new Secrets(this);
     this.connectors = new Connectors(this);
@@ -647,12 +647,12 @@ function services(list: Service[] = []) {
   return list.map((sv) => ({ command: [], env: {}, mounts: [], ports: [], ...sv }));
 }
 
-/** A session: `"name"` (personal), `"team/name"`, or its id (`ses-…`). */
-export interface SessionRef {
-  session: string;
+/** A desk: `"name"` (personal), `"team/name"`, or its id (`desk-…`). */
+export interface DeskRef {
+  desk: string;
 }
 
-export interface Intercept extends SessionRef {
+export interface Intercept extends DeskRef {
   service: string;
   /** A member workspace: its id, name or `"team/name"`, sent verbatim. */
   workspace: string;
@@ -661,78 +661,78 @@ export interface Intercept extends SessionRef {
 }
 
 /**
- * Working sessions, over `/v1/sessions`: some of YOUR workspaces in one team, connected to one
- * environment. Many people's sessions connect to the same environment and collaborate through it;
- * an intercept a session takes is environment-wide, and the session owns it — only it can release
- * it, and deleting the workspace or the session releases it.
+ * Working desks, over `/v1/desks`: some of YOUR workspaces in one team, connected to one
+ * environment. Many people's desks connect to the same environment and collaborate through it;
+ * an intercept a desk takes is environment-wide, and the desk owns it — only it can release
+ * it, and deleting the workspace or the desk releases it.
  *
- * A session is named like an environment — `"name"` (personal) or `"team/name"` — or by its id
- * (`ses-…`); a workspace by its id, name or `"team/name"`, sent verbatim.
+ * A desk is named like an environment — `"name"` (personal) or `"team/name"` — or by its id
+ * (`desk-…`); a workspace by its id, name or `"team/name"`, sent verbatim.
  */
-export class Sessions {
+export class Desks {
   constructor(private readonly c: Kloudlite) {}
 
-  /** `environment`, when given, must be the session's team's: an id, a name or `"team/name"`;
-   * without one the session connects to nothing until `connect`. `ttlSecs` (600..=2592000) deletes
-   * the session after that long unused. */
-  create({ session, environment, ttlSecs }: SessionRef & { environment?: string; ttlSecs?: number }) {
-    const [team, name] = owned(session);
-    return this.c.request("POST", "/v1/sessions", { name, team, environment, ttl_secs: ttlSecs });
+  /** `environment`, when given, must be the desk's team's: an id, a name or `"team/name"`;
+   * without one the desk connects to nothing until `connect`. `ttlSecs` (600..=2592000) deletes
+   * the desk after that long unused. */
+  create({ desk, environment, ttlSecs }: DeskRef & { environment?: string; ttlSecs?: number }) {
+    const [team, name] = owned(desk);
+    return this.c.request("POST", "/v1/desks", { name, team, environment, ttl_secs: ttlSecs });
   }
 
-  /** Seconds unused before the session is deleted (600..=2592000); `null` clears it. */
-  setTtl({ session, ttlSecs }: SessionRef & { ttlSecs: number | null }) {
-    return this.at("PUT", session, "/ttl", { ttl_secs: ttlSecs });
+  /** Seconds unused before the desk is deleted (600..=2592000); `null` clears it. */
+  setTtl({ desk, ttlSecs }: DeskRef & { ttlSecs: number | null }) {
+    return this.at("PUT", desk, "/ttl", { ttl_secs: ttlSecs });
   }
 
   list({ team }: { team?: string } = {}) {
-    return this.c.request<unknown[]>("GET", "/v1/sessions", undefined, { team });
+    return this.c.request<unknown[]>("GET", "/v1/desks", undefined, { team });
   }
 
-  /** The session with its `workspaces` and the `intercepts` it holds. */
-  get({ session }: SessionRef) {
-    return this.at("GET", session);
+  /** The desk with its `workspaces` and the `intercepts` it holds. */
+  get({ desk }: DeskRef) {
+    return this.at("GET", desk);
   }
 
   /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
-  delete({ session }: SessionRef) {
-    return this.at("DELETE", session);
+  delete({ desk }: DeskRef) {
+    return this.at("DELETE", desk);
   }
 
   /**
-   * Sets, switches or (`null`) clears the session's environment. Its intercepts in the old
-   * environment are released first; deleting an environment disconnects its sessions the same way.
+   * Sets, switches or (`null`) clears the desk's environment. Its intercepts in the old
+   * environment are released first; deleting an environment disconnects its desks the same way.
    */
-  connect({ session, environment }: SessionRef & { environment: string | null }) {
-    return this.at("PUT", session, "/environment", { environment });
+  connect({ desk, environment }: DeskRef & { environment: string | null }) {
+    return this.at("PUT", desk, "/environment", { environment });
   }
 
-  /** Stop the session and every workspace in it (202, `{stopped: [ids]}`); capsules and the environment are untouched. */
-  stop({ session }: SessionRef) {
-    return this.at("POST", session, "/stop");
+  /** Stop the desk and every workspace in it (202, `{stopped: [ids]}`); capsules and the environment are untouched. */
+  stop({ desk }: DeskRef) {
+    return this.at("POST", desk, "/stop");
   }
 
   /**
-   * Create a workspace `workspace` (a bare name) managed by the session, in its team (201). The
-   * session controls it from then on; it takes the inputs of {@link Workspaces.create}.
+   * Create a workspace `workspace` (a bare name) managed by the desk, in its team (201). The
+   * desk controls it from then on; it takes the inputs of {@link Workspaces.create}.
    */
-  createWorkspace({ session, workspace, quotaGb, image, packages, ttlSecs, env }: SessionRef & CreateWorkspace) {
-    return this.at("POST", session, "/workspaces", {
+  createWorkspace({ desk, workspace, quotaGb, image, packages, ttlSecs, env }: DeskRef & CreateWorkspace) {
+    return this.at("POST", desk, "/workspaces", {
       name: workspace, quota_gb: quotaGb, image, packages, ttl_secs: ttlSecs, env,
     });
   }
 
-  /** Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay. */
-  deleteWorkspace({ session, workspace }: SessionRef & WorkspaceRef) {
-    return this.at("DELETE", session, `/workspaces/${seg(workspace)}`);
+  /** Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay. */
+  deleteWorkspace({ desk, workspace }: DeskRef & WorkspaceRef) {
+    return this.at("DELETE", desk, `/workspaces/${seg(workspace)}`);
   }
 
   /**
-   * Create a capsule managed by the session (202), in its team and reaching its environment.
-   * Same inputs as {@link Capsules.create} (`team` must be the session's).
+   * Create a capsule managed by the desk (202), in its team and reaching its environment.
+   * Same inputs as {@link Capsules.create} (`team` must be the desk's).
    */
-  async createCapsule({ session, ...opts }: SessionRef & CreateCapsule): Promise<Capsule> {
-    const doc = await this.at<CapsuleDoc>("POST", session, "/capsules", capsuleBody(opts));
+  async createCapsule({ desk, ...opts }: DeskRef & CreateCapsule): Promise<Capsule> {
+    const doc = await this.at<CapsuleDoc>("POST", desk, "/capsules", capsuleBody(opts));
     return new Capsule(this.c, doc);
   }
 
@@ -740,21 +740,21 @@ export class Sessions {
    * Send everything that calls `service` in the environment to `workspace` (a member), `ports`
    * mapping each service port to the workspace port that answers it (`{ 8080: 3000 }`).
    */
-  intercept({ session, service, workspace, ports = {} }: Intercept) {
-    return this.at("POST", session, "/intercepts", {
+  intercept({ desk, service, workspace, ports = {} }: Intercept) {
+    return this.at("POST", desk, "/intercepts", {
       service,
       workspace,
       ports: Object.entries(ports ?? {}).map(([s, w]) => ({ service: Number(s), workspace: Number(w) })),
     });
   }
 
-  release({ session, service }: SessionRef & { service: string }) {
-    return this.at("DELETE", session, `/intercepts/${seg(service)}`);
+  release({ desk, service }: DeskRef & { service: string }) {
+    return this.at("DELETE", desk, `/intercepts/${seg(service)}`);
   }
 
-  private at<T = unknown>(method: string, session: string, tail = "", body?: unknown) {
-    const [owner, name] = owned(session);
-    return this.c.request<T>(method, `/v1/sessions/${seg(name)}${tail}`, body, { owner });
+  private at<T = unknown>(method: string, desk: string, tail = "", body?: unknown) {
+    const [owner, name] = owned(desk);
+    return this.c.request<T>(method, `/v1/desks/${seg(name)}${tail}`, body, { owner });
   }
 }
 
@@ -897,8 +897,8 @@ export interface CapsuleDoc {
   memory_gb: number;
   disk_gb: number;
   from: { workspace: string } | { snapshot: string } | null;
-  /** The session it is a member of, or null. */
-  session: string | null;
+  /** The desk it is a member of, or null. */
+  desk: string | null;
 }
 
 /** `cmd` is required; every other field is optional and absent means the server's default. */
@@ -978,7 +978,7 @@ function capsuleBody(o: CreateCapsule) {
  *     const code = await sb.wait();
  *     console.log(code, await sb.logs());
  *
- * A session's capsule is made with {@link Sessions.createCapsule}.
+ * A desk's capsule is made with {@link Desks.createCapsule}.
  */
 export class Capsules {
   constructor(private readonly c: Kloudlite) {}

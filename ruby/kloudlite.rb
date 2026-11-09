@@ -14,7 +14,7 @@
 # "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login".
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
-# resource is always the keyword named after it (workspace:, environment:, session:,
+# resource is always the keyword named after it (workspace:, environment:, desk:,
 # volume:, snapshot:, capsule:, run:), and a new object made from an existing one is to:.
 
 raise LoadError, "kloudlite.rb needs Ruby 3.0 or later, found #{RUBY_VERSION}" if RUBY_VERSION < "3.0"
@@ -25,7 +25,7 @@ require "timeout"
 require "uri"
 
 module Kloudlite
-  VERSION = "0.2.2"
+  VERSION = "0.4.0"
   USER_AGENT = "kloudlite-sdk-ruby/#{VERSION}".freeze
   NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 
@@ -60,7 +60,7 @@ module Kloudlite
   module Names
     private
 
-    # "name" → [nil, name]; "team/name" → [team, name]. Workspaces, environments and sessions
+    # "name" → [nil, name]; "team/name" → [team, name]. Workspaces, environments and desks
     # send the pair as path segment +name+ plus ?owner=team, which the server folds back.
     def owned(s)
       s = s.to_s
@@ -78,7 +78,7 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :workspaces, :environments, :sessions, :volumes,
+    attr_reader :workspaces, :environments, :desks, :volumes,
                 :secrets, :connectors, :capsules, :pipelines
 
     def initialize(base_url: nil, token: nil, timeout: 30)
@@ -97,7 +97,7 @@ module Kloudlite
       @timeout = timeout
       @workspaces = Workspaces.new(self)
       @environments = Environments.new(self)
-      @sessions = Sessions.new(self)
+      @desks = Desks.new(self)
       @volumes = Volumes.new(self)
       @secrets = Secrets.new(self)
       @connectors = Connectors.new(self)
@@ -500,96 +500,96 @@ module Kloudlite
     end
   end
 
-  # Working sessions, over /v1/sessions: some of YOUR workspaces in one team, connected to one
-  # environment. Many people's sessions connect to the same environment and collaborate through
-  # it; an intercept a session takes is environment-wide, and the session owns it — only it can
-  # release it, and removing the workspace or deleting the session releases it.
+  # Working desks, over /v1/desks: some of YOUR workspaces in one team, connected to one
+  # environment. Many people's desks connect to the same environment and collaborate through
+  # it; an intercept a desk takes is environment-wide, and the desk owns it — only it can
+  # release it, and removing the workspace or deleting the desk releases it.
   #
-  # A session is named like an environment — "name" (personal) or "team/name" — or by its id
-  # ("ses-…"); a workspace by its id, name or "team/name", sent verbatim.
-  class Sessions
+  # A desk is named like an environment — "name" (personal) or "team/name" — or by its id
+  # ("desk-…"); a workspace by its id, name or "team/name", sent verbatim.
+  class Desks
     include Names
 
     def initialize(client)
       @c = client
     end
 
-    # +environment+, when given, must be the session's team's: an id, a name or "team/name";
-    # without one the session connects to nothing until +connect+. +ttl_secs+ (600..=2592000)
-    # deletes the session after that long unused.
-    def create(session:, environment: nil, ttl_secs: nil)
-      team, name = owned(session)
-      @c.request("POST", "/v1/sessions", body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs })
+    # +environment+, when given, must be the desk's team's: an id, a name or "team/name";
+    # without one the desk connects to nothing until +connect+. +ttl_secs+ (600..=2592000)
+    # deletes the desk after that long unused.
+    def create(desk:, environment: nil, ttl_secs: nil)
+      team, name = owned(desk)
+      @c.request("POST", "/v1/desks", body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs })
     end
 
-    # Seconds unused before the session is deleted (600..=2592000); nil clears it.
-    def set_ttl(session:, ttl_secs:)
-      at("PUT", session, "/ttl", body: { ttl_secs: ttl_secs })
+    # Seconds unused before the desk is deleted (600..=2592000); nil clears it.
+    def set_ttl(desk:, ttl_secs:)
+      at("PUT", desk, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
     def list(team: nil)
-      @c.request("GET", "/v1/sessions", query: { team: team })
+      @c.request("GET", "/v1/desks", query: { team: team })
     end
 
-    # The session with its +workspaces+ and the +intercepts+ it holds.
-    def get(session:)
-      at("GET", session)
+    # The desk with its +workspaces+ and the +intercepts+ it holds.
+    def get(desk:)
+      at("GET", desk)
     end
 
     # Releases its intercepts and lets its workspaces go — never deletes a workspace.
-    def delete(session:)
-      at("DELETE", session)
+    def delete(desk:)
+      at("DELETE", desk)
     end
 
-    # Sets, switches or (nil) clears the session's environment. Its intercepts in the old
-    # environment are released first; deleting an environment disconnects its sessions the same way.
-    def connect(session:, environment:)
-      at("PUT", session, "/environment", body: { environment: environment })
+    # Sets, switches or (nil) clears the desk's environment. Its intercepts in the old
+    # environment are released first; deleting an environment disconnects its desks the same way.
+    def connect(desk:, environment:)
+      at("PUT", desk, "/environment", body: { environment: environment })
     end
 
-    # Stop the session and every workspace in it (202, {"stopped" => [ids]}); capsules and the
+    # Stop the desk and every workspace in it (202, {"stopped" => [ids]}); capsules and the
     # environment are untouched.
-    def stop(session:)
-      at("POST", session, "/stop")
+    def stop(desk:)
+      at("POST", desk, "/stop")
     end
 
-    # Create a workspace +workspace+ (a bare name) managed by the session, in its team (201). The
-    # session controls it from then on; it takes the inputs of Workspaces#create.
-    def create_workspace(session:, workspace:, quota_gb:, image: nil, packages: nil, ttl_secs: nil, env: nil)
-      at("POST", session, "/workspaces",
+    # Create a workspace +workspace+ (a bare name) managed by the desk, in its team (201). The
+    # desk controls it from then on; it takes the inputs of Workspaces#create.
+    def create_workspace(desk:, workspace:, quota_gb:, image: nil, packages: nil, ttl_secs: nil, env: nil)
+      at("POST", desk, "/workspaces",
          body: { name: workspace, quota_gb: quota_gb, image: image, packages: packages,
                  ttl_secs: ttl_secs, env: env }.compact)
     end
 
-    # Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay.
-    def delete_workspace(session:, workspace:)
-      at("DELETE", session, "/workspaces/#{seg(workspace)}")
+    # Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay.
+    def delete_workspace(desk:, workspace:)
+      at("DELETE", desk, "/workspaces/#{seg(workspace)}")
     end
 
-    # Create a capsule managed by the session (202), in its team and reaching its environment.
-    # Same inputs as Capsules#create (+team+ must be the session's).
-    def create_capsule(session:, cmd:, **options)
-      Capsule.new(@c, at("POST", session, "/capsules", body: Capsules.body(cmd: cmd, **options)))
+    # Create a capsule managed by the desk (202), in its team and reaching its environment.
+    # Same inputs as Capsules#create (+team+ must be the desk's).
+    def create_capsule(desk:, cmd:, **options)
+      Capsule.new(@c, at("POST", desk, "/capsules", body: Capsules.body(cmd: cmd, **options)))
     end
 
     # Send everything that calls +service+ in the environment to +workspace+ (a member), +ports+
     # mapping each service port to the workspace port that answers it ({ 8080 => 3000 }); an
     # unmapped port answers on the same number.
-    def intercept(session:, service:, workspace:, ports: nil)
-      at("POST", session, "/intercepts",
+    def intercept(desk:, service:, workspace:, ports: nil)
+      at("POST", desk, "/intercepts",
          body: { service: service, workspace: workspace,
                  ports: (ports || {}).map { |s, w| { service: Integer(s), workspace: Integer(w) } } })
     end
 
-    def release(session:, service:)
-      at("DELETE", session, "/intercepts/#{seg(service)}")
+    def release(desk:, service:)
+      at("DELETE", desk, "/intercepts/#{seg(service)}")
     end
 
     private
 
-    def at(method, session, tail = "", body: nil)
-      owner, name = owned(session)
-      @c.request(method, "/v1/sessions/#{seg(name)}#{tail}", body: body, query: { owner: owner })
+    def at(method, desk, tail = "", body: nil)
+      owner, name = owned(desk)
+      @c.request(method, "/v1/desks/#{seg(name)}#{tail}", body: body, query: { owner: owner })
     end
   end
 
@@ -721,7 +721,7 @@ module Kloudlite
     include Names
 
     # The POST /v1/capsules body; refuses a missing +cmd+ before anything is sent. Shared with
-    # Sessions#create_capsule — not public surface.
+    # Desks#create_capsule — not public surface.
     def self.body(cmd:, image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil,
                   tty: nil, stdin: nil, timeout_s: nil, network: nil, env: nil, cpu: nil,
                   memory_gb: nil, disk_gb: nil)
@@ -742,8 +742,8 @@ module Kloudlite
     # is the program then its arguments. +tty+ runs it on a pty; +stdin+ keeps input open for
     # attach. +timeout_s+ is 10..=86400. +from_workspace+ is an id, "name" or "team/name";
     # +from_snapshot+ a volume name, "name@N" or snapshot id (exclusive with it). +network+ is
-    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A session's capsule is made with
-    # Sessions#create_capsule. Unset keywords are omitted, so the server's defaults apply.
+    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A desk's capsule is made with
+    # Desks#create_capsule. Unset keywords are omitted, so the server's defaults apply.
     def create(cmd:, **options)
       Capsule.new(@c, @c.request("POST", "/v1/capsules", body: Capsules.body(cmd: cmd, **options)))
     end

@@ -35,8 +35,8 @@ type Capsules struct{ c *Client }
 // runs it on a pty; Stdin keeps input open for Attach. FromWorkspace (an id,
 // "name" or "team/name") or FromSnapshot (a volume name, name@N or a snapshot
 // id) seed the disk. Timeout (10 s..24 h) is the capsule's whole lifetime and
-// travels in whole seconds. A session's capsule is made with
-// Sessions.CreateCapsule.
+// travels in whole seconds. A desk's capsule is made with
+// Desks.CreateCapsule.
 type CreateCapsule struct {
 	Cmd           []string
 	Image         string
