@@ -36,7 +36,7 @@ import (
 	"time"
 )
 
-const Version = "0.2.2"
+const Version = "0.4.0"
 
 // NoLogin is the error of a client with no token.
 const NoLogin = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
@@ -60,7 +60,7 @@ func Ptr[T any](v T) *T { return &v }
 type Client struct {
 	Workspaces   *Workspaces
 	Environments *Environments
-	Sessions     *Sessions
+	Desks     *Desks
 	Volumes      *Volumes
 	Secrets      *Secrets
 	Connectors   *Connectors
@@ -127,7 +127,7 @@ func New(opts Options) *Client {
 	}
 	c.Workspaces = &Workspaces{c}
 	c.Environments = &Environments{c}
-	c.Sessions = &Sessions{c}
+	c.Desks = &Desks{c}
 	c.Volumes = &Volumes{c}
 	c.Secrets = &Secrets{c}
 	c.Connectors = &Connectors{c}
@@ -291,7 +291,7 @@ type SetPackages struct {
 	Packages  []string
 }
 
-// workspaceBody is the create body of a workspace, also under a session.
+// workspaceBody is the create body of a workspace, also under a desk.
 type workspaceBody struct {
 	Name     string            `json:"name"`
 	QuotaGb  int64             `json:"quota_gb"`
@@ -1067,44 +1067,44 @@ func fillServices(in []Service) []Service {
 	return out
 }
 
-// Sessions are working sessions over /v1/sessions: some of YOUR workspaces in
-// one team, connected to one environment. Many people's sessions connect to
-// the same environment and collaborate through it; an intercept a session takes
-// is environment-wide, and the session owns it — only it can release it, and
-// deleting the workspace or the session releases it.
+// Desks are working desks over /v1/desks: some of YOUR workspaces in
+// one team, connected to one environment. Many people's desks connect to
+// the same environment and collaborate through it; an intercept a desk takes
+// is environment-wide, and the desk owns it — only it can release it, and
+// deleting the workspace or the desk releases it.
 //
-// A session is named like an environment — "name" (personal) or "team/name" —
-// or by its id (ses-…); a workspace by its id, name or "team/name", sent
+// A desk is named like an environment — "name" (personal) or "team/name" —
+// or by its id (desk-…); a workspace by its id, name or "team/name", sent
 // verbatim.
-type Sessions struct{ c *Client }
+type Desks struct{ c *Client }
 
-// CreateSession makes a new Session. Environment, when given, must be the
-// session's team's: an id, a name or "team/name"; empty makes a session with
+// CreateDesk makes a new Desk. Environment, when given, must be the
+// desk's team's: an id, a name or "team/name"; empty makes a desk with
 // none, to connect later.
-type CreateSession struct {
-	Session     string
+type CreateDesk struct {
+	Desk     string
 	Environment string
-	// TtlSecs (600..=2592000) deletes the session after that many seconds
+	// TtlSecs (600..=2592000) deletes the desk after that many seconds
 	// unused; 0 is never.
 	TtlSecs int64
 }
 
-// CreateSessionWorkspace creates a workspace managed by Session, in its team;
+// CreateDeskWorkspace creates a workspace managed by Desk, in its team;
 // CreateWorkspace.Workspace is a bare name.
-type CreateSessionWorkspace struct {
-	Session string
+type CreateDeskWorkspace struct {
+	Desk string
 	CreateWorkspace
 }
 
-type DeleteSessionWorkspace struct {
-	Session   string
+type DeleteDeskWorkspace struct {
+	Desk   string
 	Workspace string
 }
 
-// CreateSessionCapsule creates a capsule managed by Session, in its team and
-// reaching its environment; CreateCapsule.Team must be the session's.
-type CreateSessionCapsule struct {
-	Session string
+// CreateDeskCapsule creates a capsule managed by Desk, in its team and
+// reaching its environment; CreateCapsule.Team must be the desk's.
+type CreateDeskCapsule struct {
+	Desk string
 	CreateCapsule
 }
 
@@ -1112,19 +1112,19 @@ type CreateSessionCapsule struct {
 // Workspace (a member); Ports maps each service port to the workspace port
 // that answers it ({8080: 3000}).
 type InterceptService struct {
-	Session   string
+	Desk   string
 	Service   string
 	Workspace string
 	Ports     map[int]int
 }
 
 type ReleaseService struct {
-	Session string
+	Desk string
 	Service string
 }
 
-func (s *Sessions) Create(req CreateSession) (map[string]any, error) {
-	team, name, err := owned(req.Session)
+func (s *Desks) Create(req CreateDesk) (map[string]any, error) {
+	team, name, err := owned(req.Desk)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,102 +1139,102 @@ func (s *Sessions) Create(req CreateSession) (map[string]any, error) {
 		body["team"] = team
 	}
 	var out map[string]any
-	err = s.c.call("POST", "/v1/sessions", nil, body, &out)
+	err = s.c.call("POST", "/v1/desks", nil, body, &out)
 	return out, err
 }
 
-// SetTTL sets the seconds the session may sit unused before it is deleted
+// SetTTL sets the seconds the desk may sit unused before it is deleted
 // (600..=2592000); nil clears it.
-func (s *Sessions) SetTTL(session string, ttlSecs *int64) (map[string]any, error) {
+func (s *Desks) SetTTL(desk string, ttlSecs *int64) (map[string]any, error) {
 	var out map[string]any
-	err := s.at("PUT", session, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
+	err := s.at("PUT", desk, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
 	return out, err
 }
 
-func (s *Sessions) List(team string) ([]map[string]any, error) {
+func (s *Desks) List(team string) ([]map[string]any, error) {
 	q := url.Values{}
 	if team != "" {
 		q.Set("team", team)
 	}
 	var out []map[string]any
-	err := s.c.call("GET", "/v1/sessions", q, nil, &out)
+	err := s.c.call("GET", "/v1/desks", q, nil, &out)
 	return out, err
 }
 
-// Get answers the session with its workspaces and the intercepts it holds.
-func (s *Sessions) Get(session string) (map[string]any, error) {
+// Get answers the desk with its workspaces and the intercepts it holds.
+func (s *Desks) Get(desk string) (map[string]any, error) {
 	var out map[string]any
-	err := s.at("GET", session, "", nil, &out)
+	err := s.at("GET", desk, "", nil, &out)
 	return out, err
 }
 
 // Delete releases its intercepts and lets its workspaces go — never deletes a
 // workspace.
-func (s *Sessions) Delete(session string) error { return s.at("DELETE", session, "", nil, nil) }
+func (s *Desks) Delete(desk string) error { return s.at("DELETE", desk, "", nil, nil) }
 
 // Connect sets, switches (environment non-nil: an id, a name or "team/name")
-// or clears (nil) the session's environment. Its intercepts in the old
+// or clears (nil) the desk's environment. Its intercepts in the old
 // environment are released first; deleting an environment disconnects its
-// sessions the same way.
-func (s *Sessions) Connect(session string, environment *string) (map[string]any, error) {
+// desks the same way.
+func (s *Desks) Connect(desk string, environment *string) (map[string]any, error) {
 	var out map[string]any
-	err := s.at("PUT", session, "/environment", map[string]*string{"environment": environment}, &out)
+	err := s.at("PUT", desk, "/environment", map[string]*string{"environment": environment}, &out)
 	return out, err
 }
 
-// Stop stops the session and every workspace in it (202, {"stopped": [ids]});
+// Stop stops the desk and every workspace in it (202, {"stopped": [ids]});
 // capsules and the environment are untouched.
-func (s *Sessions) Stop(session string) (map[string]any, error) {
+func (s *Desks) Stop(desk string) (map[string]any, error) {
 	var out map[string]any
-	err := s.at("POST", session, "/stop", nil, &out)
+	err := s.at("POST", desk, "/stop", nil, &out)
 	return out, err
 }
 
-// CreateWorkspace creates a workspace managed by the session (201); the session
+// CreateWorkspace creates a workspace managed by the desk (201); the desk
 // controls it from then on.
-func (s *Sessions) CreateWorkspace(req CreateSessionWorkspace) (map[string]any, error) {
+func (s *Desks) CreateWorkspace(req CreateDeskWorkspace) (map[string]any, error) {
 	w := req.CreateWorkspace
 	body := workspaceBody{w.Workspace, w.QuotaGb, "", w.Image, w.Packages, w.TtlSecs, w.Env}
 	var out map[string]any
-	err := s.at("POST", req.Session, "/workspaces", body, &out)
+	err := s.at("POST", req.Desk, "/workspaces", body, &out)
 	return out, err
 }
 
-// DeleteWorkspace deletes a workspace the session manages, releasing its
+// DeleteWorkspace deletes a workspace the desk manages, releasing its
 // intercepts first (204); snapshots stay.
-func (s *Sessions) DeleteWorkspace(req DeleteSessionWorkspace) error {
-	return s.at("DELETE", req.Session, "/workspaces/"+seg(req.Workspace), nil, nil)
+func (s *Desks) DeleteWorkspace(req DeleteDeskWorkspace) error {
+	return s.at("DELETE", req.Desk, "/workspaces/"+seg(req.Workspace), nil, nil)
 }
 
-// CreateCapsule creates a capsule managed by the session (202).
-func (s *Sessions) CreateCapsule(req CreateSessionCapsule) (*Capsule, error) {
+// CreateCapsule creates a capsule managed by the desk (202).
+func (s *Desks) CreateCapsule(req CreateDeskCapsule) (*Capsule, error) {
 	body, err := req.CreateCapsule.body()
 	if err != nil {
 		return nil, err
 	}
 	sb := &Capsule{c: s.c}
-	if err := s.at("POST", req.Session, "/capsules", body, &sb.CapsuleDoc); err != nil {
+	if err := s.at("POST", req.Desk, "/capsules", body, &sb.CapsuleDoc); err != nil {
 		return nil, err
 	}
 	return sb, nil
 }
 
-func (s *Sessions) Intercept(req InterceptService) (map[string]any, error) {
+func (s *Desks) Intercept(req InterceptService) (map[string]any, error) {
 	pm := make([]map[string]int, 0, len(req.Ports))
 	for sp, wp := range req.Ports {
 		pm = append(pm, map[string]int{"service": sp, "workspace": wp})
 	}
 	var out map[string]any
-	err := s.at("POST", req.Session, "/intercepts", map[string]any{"service": req.Service, "workspace": req.Workspace, "ports": pm}, &out)
+	err := s.at("POST", req.Desk, "/intercepts", map[string]any{"service": req.Service, "workspace": req.Workspace, "ports": pm}, &out)
 	return out, err
 }
 
-func (s *Sessions) Release(req ReleaseService) error {
-	return s.at("DELETE", req.Session, "/intercepts/"+seg(req.Service), nil, nil)
+func (s *Desks) Release(req ReleaseService) error {
+	return s.at("DELETE", req.Desk, "/intercepts/"+seg(req.Service), nil, nil)
 }
 
-func (s *Sessions) at(method, session, tail string, body, out any) error {
-	return s.c.named(method, "/v1/sessions/", session, tail, body, out)
+func (s *Desks) at(method, desk, tail string, body, out any) error {
+	return s.c.named(method, "/v1/desks/", desk, tail, body, out)
 }
 
 // Volumes is the btrfs volumes behind workspaces and environments: snapshot

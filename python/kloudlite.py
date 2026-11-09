@@ -37,7 +37,7 @@ import urllib.request
 
 __all__ = ["Kloudlite", "ApiError", "CapsuleTerminated"]
 
-VERSION = "0.2.2"
+VERSION = "0.4.0"
 USER_AGENT = f"kloudlite-sdk-python/{VERSION}"
 NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 
@@ -82,7 +82,7 @@ class Kloudlite:
         self._timeout = timeout
         self.workspaces = Workspaces(self)
         self.environments = Environments(self)
-        self.sessions = Sessions(self)
+        self.desks = Desks(self)
         self.volumes = Volumes(self)
         self.secrets = Secrets(self)
         self.connectors = Connectors(self)
@@ -451,88 +451,88 @@ def _services(services: list | None) -> list:
     return [{"command": [], "env": {}, "mounts": [], "ports": [], **sv} for sv in services or []]
 
 
-class Sessions:
-    """Working sessions, over ``/v1/sessions``: some of YOUR workspaces in one team, connected to
-    one environment. Many people's sessions connect to the same environment and collaborate
-    through it; an intercept a session takes is environment-wide, and the session owns it — only
-    it can release it, and removing the workspace or deleting the session releases it.
+class Desks:
+    """Working desks, over ``/v1/desks``: some of YOUR workspaces in one team, connected to
+    one environment. Many people's desks connect to the same environment and collaborate
+    through it; an intercept a desk takes is environment-wide, and the desk owns it — only
+    it can release it, and removing the workspace or deleting the desk releases it.
 
-    A session is named like an environment — ``"name"`` (personal) or ``"team/name"`` — or by its
-    id (``ses-…``); a workspace by its id, name or ``"team/name"``, sent verbatim."""
+    A desk is named like an environment — ``"name"`` (personal) or ``"team/name"`` — or by its
+    id (``desk-…``); a workspace by its id, name or ``"team/name"``, sent verbatim."""
 
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def create(self, *, session: str, environment: str | None = None, ttl_secs: int | None = None):
-        """``environment``, when given, must be the session's team's: an id, a name or
-        ``"team/name"``; without one the session connects to nothing until ``connect``.
-        ``ttl_secs`` (600..=2592000) deletes the session after that long unused."""
-        team, name = _owned(session)
-        return self._c.request("POST", "/v1/sessions",
+    def create(self, *, desk: str, environment: str | None = None, ttl_secs: int | None = None):
+        """``environment``, when given, must be the desk's team's: an id, a name or
+        ``"team/name"``; without one the desk connects to nothing until ``connect``.
+        ``ttl_secs`` (600..=2592000) deletes the desk after that long unused."""
+        team, name = _owned(desk)
+        return self._c.request("POST", "/v1/desks",
                                body={"name": name, "team": team, "environment": environment,
                                      "ttl_secs": ttl_secs})
 
-    def set_ttl(self, *, session: str, ttl_secs: int | None):
-        """Seconds unused before the session is deleted (600..=2592000); ``None`` clears it."""
-        return self._at("PUT", session, "/ttl", body={"ttl_secs": ttl_secs})
+    def set_ttl(self, *, desk: str, ttl_secs: int | None):
+        """Seconds unused before the desk is deleted (600..=2592000); ``None`` clears it."""
+        return self._at("PUT", desk, "/ttl", body={"ttl_secs": ttl_secs})
 
     def list(self, *, team: str | None = None):
-        return self._c.request("GET", "/v1/sessions", query={"team": team})
+        return self._c.request("GET", "/v1/desks", query={"team": team})
 
-    def get(self, *, session: str):
-        """The session with its ``workspaces`` and the ``intercepts`` it holds."""
-        return self._at("GET", session)
+    def get(self, *, desk: str):
+        """The desk with its ``workspaces`` and the ``intercepts`` it holds."""
+        return self._at("GET", desk)
 
-    def delete(self, *, session: str):
+    def delete(self, *, desk: str):
         """Releases its intercepts and lets its workspaces go — never deletes a workspace."""
-        return self._at("DELETE", session)
+        return self._at("DELETE", desk)
 
-    def connect(self, *, session: str, environment: str | None):
-        """Sets, switches or (``None``) clears the session's environment. Its intercepts in the old
-        environment are released first; deleting an environment disconnects its sessions the same
+    def connect(self, *, desk: str, environment: str | None):
+        """Sets, switches or (``None``) clears the desk's environment. Its intercepts in the old
+        environment are released first; deleting an environment disconnects its desks the same
         way."""
-        return self._at("PUT", session, "/environment", body={"environment": environment})
+        return self._at("PUT", desk, "/environment", body={"environment": environment})
 
-    def stop(self, *, session: str):
-        """Stop the session and every workspace in it (202, ``{"stopped": [ids]}``); capsules and
+    def stop(self, *, desk: str):
+        """Stop the desk and every workspace in it (202, ``{"stopped": [ids]}``); capsules and
         the environment are untouched."""
-        return self._at("POST", session, "/stop")
+        return self._at("POST", desk, "/stop")
 
-    def create_workspace(self, *, session: str, workspace: str, quota_gb: int,
+    def create_workspace(self, *, desk: str, workspace: str, quota_gb: int,
                          image: str | None = None, packages: list | None = None,
                          ttl_secs: int | None = None, env: dict | None = None):
-        """Create a workspace ``workspace`` (a bare name) managed by the session, in its team
-        (201). The session controls it from then on; it takes the inputs of
+        """Create a workspace ``workspace`` (a bare name) managed by the desk, in its team
+        (201). The desk controls it from then on; it takes the inputs of
         :meth:`Workspaces.create`."""
-        return self._at("POST", session, "/workspaces", body=_drop({
+        return self._at("POST", desk, "/workspaces", body=_drop({
             "name": workspace, "quota_gb": quota_gb, "image": image, "packages": packages,
             "ttl_secs": ttl_secs, "env": env}))
 
-    def delete_workspace(self, *, session: str, workspace: str):
-        """Delete a workspace the session manages, releasing its intercepts first (204); snapshots stay."""
-        return self._at("DELETE", session, f"/workspaces/{_seg(workspace)}")
+    def delete_workspace(self, *, desk: str, workspace: str):
+        """Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay."""
+        return self._at("DELETE", desk, f"/workspaces/{_seg(workspace)}")
 
-    def create_capsule(self, *, session: str, cmd: list, **options) -> "Capsule":
-        """Create a capsule managed by the session (202), in its team and reaching its environment.
-        Same inputs as :meth:`Capsules.create` (``team`` must be the session's)."""
-        doc = self._at("POST", session, "/capsules", body=_capsule_body(cmd=cmd, **options))
+    def create_capsule(self, *, desk: str, cmd: list, **options) -> "Capsule":
+        """Create a capsule managed by the desk (202), in its team and reaching its environment.
+        Same inputs as :meth:`Capsules.create` (``team`` must be the desk's)."""
+        doc = self._at("POST", desk, "/capsules", body=_capsule_body(cmd=cmd, **options))
         return Capsule(self._c, doc)
 
-    def intercept(self, *, session: str, service: str, workspace: str, ports: dict | None = None):
+    def intercept(self, *, desk: str, service: str, workspace: str, ports: dict | None = None):
         """Send everything that calls ``service`` in the environment to ``workspace`` (a member),
         ``ports`` mapping each service port to the workspace port that answers it
         (``{8080: 3000}``); an unmapped port answers on the same number."""
-        return self._at("POST", session, "/intercepts", body={
+        return self._at("POST", desk, "/intercepts", body={
             "service": service, "workspace": workspace,
             "ports": [{"service": int(k), "workspace": int(v)} for k, v in (ports or {}).items()],
         })
 
-    def release(self, *, session: str, service: str):
-        return self._at("DELETE", session, f"/intercepts/{_seg(service)}")
+    def release(self, *, desk: str, service: str):
+        return self._at("DELETE", desk, f"/intercepts/{_seg(service)}")
 
-    def _at(self, method: str, session: str, tail: str = "", body=None):
-        team, name = _owned(session)
-        return self._c.request(method, f"/v1/sessions/{_seg(name)}{tail}", body=body,
+    def _at(self, method: str, desk: str, tail: str = "", body=None):
+        team, name = _owned(desk)
+        return self._c.request(method, f"/v1/desks/{_seg(name)}{tail}", body=body,
                                query={"owner": team})
 
 
@@ -725,7 +725,7 @@ class Capsules:
         keeps input open for ``attach``. ``timeout_s`` is 10..=86400. ``from_workspace`` is an id,
         ``"name"`` or ``"team/name"``; ``from_snapshot`` a volume name, ``name@N`` or snapshot id
         (exclusive with it). ``network`` is ``internet`` or ``none``; ``cpu`` 1..=8, ``memory_gb``
-        1..=32. A session's capsule is made with :meth:`Sessions.create_capsule`. Unset inputs are
+        1..=32. A desk's capsule is made with :meth:`Desks.create_capsule`. Unset inputs are
         left to the server's defaults."""
         body = _capsule_body(cmd=cmd, image=image, packages=packages, from_workspace=from_workspace,
                              from_snapshot=from_snapshot, team=team, tty=tty, stdin=stdin,

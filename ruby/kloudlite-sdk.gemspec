@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name = "kloudlite-sdk"
-  s.version = "0.2.0"
+  s.version = "0.4.0"
   s.summary = "Kloudlite SDK for Ruby"
   s.authors = ["Kloudlite"]
   s.license = "Apache-2.0"

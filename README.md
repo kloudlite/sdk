@@ -26,7 +26,7 @@ The full manual is at <https://dev.kloudlite.io/docs>.
 No call depends on argument order: keyword arguments in Python and Ruby, one
 options object in TypeScript, one request struct in Go, one fluent params
 object in Java. A workspace,
-environment or session is `"name"` (your own) or `"team/name"`.
+environment or desk is `"name"` (your own) or `"team/name"`.
 
 ## Example
 
