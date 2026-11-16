@@ -25,7 +25,7 @@ require "timeout"
 require "uri"
 
 module Kloudlite
-  VERSION = "0.4.0"
+  VERSION = "0.5.0"
   USER_AGENT = "kloudlite-sdk-ruby/#{VERSION}".freeze
   NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 
@@ -56,7 +56,7 @@ module Kloudlite
   # A client-side wait ran out. A ::Timeout::Error, so a generic rescue still catches it.
   class TimeoutError < ::Timeout::Error; end
 
-  # The naming rules every module shares. Mixed in privately; never part of the public surface.
+  # The naming rules (and the push body) every module shares. Mixed in privately; never part of the public surface.
   module Names
     private
 
@@ -74,6 +74,12 @@ module Kloudlite
     # Ruby 3.0 has no URI.encode_uri_component (3.2); this is the same escape.
     def seg(s)
       URI.encode_www_form_component(s.to_s).gsub("+", "%20")
+    end
+
+    # The body of a workspace or environment push, shared so the two never drift apart.
+    def snapshot_body(message, volume, description, labels, branch, ttl_secs, never)
+      { message: message, volume: volume, description: description, labels: labels,
+        branch: branch, ttl_secs: ttl_secs, never: never }.compact
     end
   end
 
@@ -217,9 +223,15 @@ module Kloudlite
     # Push a SNAPSHOT of the working copy — the one durable, restorable state (202). +volume+
     # names the volume and is required on its first push; +ttl_secs+ (3600..=31536000) or
     # never: true set its expiry. +push+ is the old name.
-    def take_snapshot(workspace:, message: nil, volume: nil, ttl_secs: nil, never: nil)
+    # The push is a storage commit of the volume. +description+ and +labels+ describe the volume
+    # (a given one replaces the stored one). +branch+ creates that branch at the new commit or
+    # moves it there, and the workspace then has it checked out; without it the checked-out branch
+    # fast-forwards, and the answer carries +branch+ and, when the branch had moved meanwhile,
+    # +detached+.
+    def take_snapshot(workspace:, message: nil, volume: nil, description: nil, labels: nil,
+                      branch: nil, ttl_secs: nil, never: nil)
       at("POST", workspace, "/snapshots",
-         body: { message: message, volume: volume, ttl_secs: ttl_secs, never: never }.compact)
+         body: snapshot_body(message, volume, description, labels, branch, ttl_secs, never))
     end
     alias_method :push, :take_snapshot
 
@@ -229,8 +241,9 @@ module Kloudlite
       at("POST", workspace, "/clone", body: { name: to, task: task })
     end
 
-    # A new workspace +to+ grafted onto a PUSHED +snapshot+ (a volume name, "name@N" or a snapshot
-    # id) — also one whose workspace is long gone. +team+ (or to: "team/name") is required for a
+    # A new workspace +to+ grafted onto a PUSHED +snapshot+ (a volume name — its "base" branch,
+    # else its newest storage commit — "name@N", "name@<branch>" or a snapshot id) — also one
+    # whose workspace is long gone. +team+ (or to: "team/name") is required for a
     # team's volume. Absent overrides mean "whatever the snapshot froze".
     def restore(snapshot:, to:, team: nil, image: nil, packages: nil, quota_gb: nil)
       owner, name = owned(to)
@@ -461,11 +474,13 @@ module Kloudlite
       at("DELETE", environment)
     end
 
-    # Push a SNAPSHOT of every service's data and the service list (202). +volume+ names the
-    # volume and is required on its first push. +push+ is the old name.
-    def take_snapshot(environment:, message: nil, volume: nil, ttl_secs: nil, never: nil)
+    # Push a SNAPSHOT of every service's data and the service list, a storage commit (202).
+    # +volume+ names the volume and is required on its first push; +description+, +labels+ and
+    # +branch+ are as in Workspaces#take_snapshot. +push+ is the old name.
+    def take_snapshot(environment:, message: nil, volume: nil, description: nil, labels: nil,
+                      branch: nil, ttl_secs: nil, never: nil)
       at("POST", environment, "/snapshots",
-         body: { message: message, volume: volume, ttl_secs: ttl_secs, never: never }.compact)
+         body: snapshot_body(message, volume, description, labels, branch, ttl_secs, never))
     end
     alias_method :push, :take_snapshot
 
@@ -657,9 +672,10 @@ module Kloudlite
       @c = client
     end
 
-    # +kind+ is "workspace" or "environment"; +owner+ a handle or team slug.
-    def list(kind: nil, owner: nil)
-      @c.request("GET", "/v1/volumes", query: { kind: kind, owner: owner })
+    # +kind+ is "workspace" or "environment"; +owner+ a handle or team slug; +label+ keeps the
+    # volumes that carry it.
+    def list(kind: nil, owner: nil, label: nil)
+      @c.request("GET", "/v1/volumes", query: { kind: kind, owner: owner, label: label })
     end
 
     # The chain of PUSHED snapshots, newest first — each row a restore target.
@@ -682,12 +698,32 @@ module Kloudlite
       @c.request("DELETE", "/v1/volumes/#{seg(volume)}")
     end
 
-    # One named volume; +owner+ is your handle or a team slug.
+    # One named volume; +owner+ is your handle or a team slug. It carries +description+,
+    # +labels+ and +branches+ (each branch with the storage commit number it points at).
     def get(owner:, name:)
       @c.request("GET", named(owner, name))
     end
 
-    # The versions of a named volume, newest first.
+    # Set or clear the description and the labels; nil leaves a field as it is, "" removes the
+    # description and [] the labels. Answers the volume.
+    def describe(owner:, name:, description: nil, labels: nil)
+      @c.request("PATCH", named(owner, name),
+                 body: { description: description, labels: labels }.compact)
+    end
+
+    # Create +branch+ on a storage commit, or move it there (like git branch -f): give +version+
+    # (the commit number) or +snapshot+ (a snapshot id), not both. Answers the volume.
+    def set_branch(owner:, name:, branch:, version: nil, snapshot: nil)
+      @c.request("PUT", named(owner, name, "/branches/#{seg(branch)}"),
+                 body: { version: version, snapshot: snapshot }.compact)
+    end
+
+    # Remove a branch (204); its storage commit stays.
+    def delete_branch(owner:, name:, branch:)
+      @c.request("DELETE", named(owner, name, "/branches/#{seg(branch)}"))
+    end
+
+    # The storage commits of a named volume, newest first; each row carries the +branches+ on it.
     def versions(owner:, name:)
       @c.request("GET", named(owner, name, "/versions"))
     end
@@ -697,7 +733,8 @@ module Kloudlite
       @c.request("DELETE", named(owner, name))
     end
 
-    # Delete version +n+ (204); deleting the last one deletes the volume.
+    # Delete storage commit +n+ (204); deleting the last one deletes the volume. A branch's
+    # commit is refused (409).
     def delete_version(owner:, name:, n:)
       @c.request("DELETE", named(owner, name, "/versions/#{Integer(n)}"))
     end

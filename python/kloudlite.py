@@ -37,7 +37,7 @@ import urllib.request
 
 __all__ = ["Kloudlite", "ApiError", "CapsuleTerminated"]
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 USER_AGENT = f"kloudlite-sdk-python/{VERSION}"
 NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login"
 
@@ -139,6 +139,12 @@ def _drop(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
+def _snapshot_body(message, volume, description, labels, branch, ttl_secs, never) -> dict:
+    """The body of a workspace or environment push."""
+    return _drop({"message": message, "volume": volume, "description": description,
+                  "labels": labels, "branch": branch, "ttl_secs": ttl_secs, "never": never})
+
+
 class Workspaces:
     """Btrfs-backed dev workspaces, over ``/v1/workspaces``. A workspace is named like an
     environment — ``"name"`` for the caller's own, ``"team/name"`` for one in a team — or by its
@@ -183,12 +189,18 @@ class Workspaces:
         return self._at("POST", workspace, "/restart")
 
     def take_snapshot(self, *, workspace: str, message: str | None = None, volume: str | None = None,
-                      ttl_secs: int | None = None, never: bool | None = None):
-        """Push a SNAPSHOT of the working copy — the one durable, restorable state (202). ``volume``
-        names the volume and is required on its first push; ``ttl_secs`` (3600..=31536000) or
-        ``never=True`` set its expiry. ``push`` is the old name."""
-        return self._at("POST", workspace, "/snapshots", body=_drop(
-            {"message": message, "volume": volume, "ttl_secs": ttl_secs, "never": never}))
+                      description: str | None = None, labels: list | None = None,
+                      branch: str | None = None, ttl_secs: int | None = None,
+                      never: bool | None = None):
+        """Push a SNAPSHOT of the working copy — the one durable, restorable state, a storage
+        commit of the volume (202). ``volume`` names the volume and is required on its first push;
+        ``ttl_secs`` (3600..=31536000) or ``never=True`` set its expiry. ``description`` and
+        ``labels`` describe the volume (a given one replaces the stored one). ``branch`` creates
+        that branch at the new commit or moves it there, and the workspace then has it checked
+        out; without it the checked-out branch fast-forwards, and the answer carries ``branch`` and,
+        when the branch had moved meanwhile, ``detached``. ``push`` is the old name."""
+        return self._at("POST", workspace, "/snapshots", body=_snapshot_body(
+            message, volume, description, labels, branch, ttl_secs, never))
 
     push = take_snapshot
 
@@ -199,8 +211,9 @@ class Workspaces:
 
     def restore(self, *, snapshot: str, to: str, team: str | None = None, image: str | None = None,
                 packages: list | None = None, quota_gb: int | None = None):
-        """A new workspace ``to`` grafted onto a PUSHED ``snapshot`` (a volume name, ``name@N`` or a
-        snapshot id) — also one whose workspace is long gone. ``team`` (or ``to="team/name"``)
+        """A new workspace ``to`` grafted onto a PUSHED ``snapshot`` (a volume name — its ``base``
+        branch, else its newest storage commit — ``name@N``, ``name@<branch>`` or a snapshot id)
+        — also one whose workspace is long gone. ``team`` (or ``to="team/name"``)
         is required for a team's volume. Absent overrides mean "whatever the snapshot froze"."""
         owner, name = _owned(to)
         return self._c.request("POST", "/v1/workspaces/restore", body=_drop({
@@ -404,12 +417,15 @@ class Environments:
         return self._at("DELETE", environment)
 
     def take_snapshot(self, *, environment: str, message: str | None = None,
-                      volume: str | None = None, ttl_secs: int | None = None,
-                      never: bool | None = None):
-        """Push a SNAPSHOT of every service's data and the service list (202). ``volume`` names
-        the volume and is required on its first push. ``push`` is the old name."""
-        return self._at("POST", environment, "/snapshots", body=_drop(
-            {"message": message, "volume": volume, "ttl_secs": ttl_secs, "never": never}))
+                      volume: str | None = None, description: str | None = None,
+                      labels: list | None = None, branch: str | None = None,
+                      ttl_secs: int | None = None, never: bool | None = None):
+        """Push a SNAPSHOT of every service's data and the service list, a storage commit (202).
+        ``volume`` names the volume and is required on its first push; ``description``,
+        ``labels`` and ``branch`` are as in :meth:`Workspaces.take_snapshot`. ``push`` is the old
+        name."""
+        return self._at("POST", environment, "/snapshots", body=_snapshot_body(
+            message, volume, description, labels, branch, ttl_secs, never))
 
     push = take_snapshot
 
@@ -588,9 +604,11 @@ class Volumes:
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def list(self, *, kind: str | None = None, owner: str | None = None):
-        """``kind`` is ``workspace`` or ``environment``; ``owner`` a handle or team slug."""
-        return self._c.request("GET", "/v1/volumes", query={"kind": kind, "owner": owner})
+    def list(self, *, kind: str | None = None, owner: str | None = None, label: str | None = None):
+        """``kind`` is ``workspace`` or ``environment``; ``owner`` a handle or team slug; ``label``
+        keeps the volumes that carry it."""
+        return self._c.request("GET", "/v1/volumes",
+                               query={"kind": kind, "owner": owner, "label": label})
 
     def history(self, *, volume: str):
         """The chain of PUSHED snapshots, newest first — each row a restore target."""
@@ -609,11 +627,32 @@ class Volumes:
         return self._c.request("DELETE", f"/v1/volumes/{_seg(volume)}")
 
     def get(self, *, owner: str, name: str):
-        """One named volume; ``owner`` is your handle or a team slug."""
+        """One named volume; ``owner`` is your handle or a team slug. It carries ``description``,
+        ``labels`` and ``branches`` (each branch with the storage commit number it points at)."""
         return self._c.request("GET", self._named(owner, name))
 
+    def describe(self, *, owner: str, name: str, description: str | None = None,
+                 labels: list | None = None):
+        """Set or clear the description and the labels; ``None`` leaves a field as it is, ``""``
+        removes the description and ``[]`` the labels. Answers the volume."""
+        return self._c.request("PATCH", self._named(owner, name),
+                               body=_drop({"description": description, "labels": labels}))
+
+    def set_branch(self, *, owner: str, name: str, branch: str, version: int | None = None,
+                   snapshot: str | None = None):
+        """Create ``branch`` on a storage commit, or move it there (like ``git branch -f``): give
+        ``version`` (the commit number) or ``snapshot`` (a snapshot id), not both. Answers the
+        volume."""
+        return self._c.request("PUT", self._named(owner, name, f"/branches/{_seg(branch)}"),
+                               body=_drop({"version": version, "snapshot": snapshot}))
+
+    def delete_branch(self, *, owner: str, name: str, branch: str):
+        """Remove a branch (204); its storage commit stays."""
+        return self._c.request("DELETE", self._named(owner, name, f"/branches/{_seg(branch)}"))
+
     def versions(self, *, owner: str, name: str):
-        """The versions of a named volume, newest first."""
+        """The storage commits of a named volume, newest first; each row carries the
+        ``branches`` on it."""
         return self._c.request("GET", self._named(owner, name, "/versions"))
 
     def delete(self, *, owner: str, name: str):
@@ -621,7 +660,8 @@ class Volumes:
         return self._c.request("DELETE", self._named(owner, name))
 
     def delete_version(self, *, owner: str, name: str, n: int):
-        """Delete version ``n`` (204); deleting the last one deletes the volume."""
+        """Delete storage commit ``n`` (204); deleting the last one deletes the volume. A
+        branch's commit is refused (409)."""
         return self._c.request("DELETE", self._named(owner, name, f"/versions/{int(n)}"))
 
     @staticmethod

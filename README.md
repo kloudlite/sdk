@@ -70,6 +70,24 @@ Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudl
 String workspaces = kl.workspaces().list(null);
 ```
 
+## Storage commits and branches
+
+A snapshot push is a storage commit of the workspace's or environment's volume;
+its number is the commit's version (`v4`). A branch names a commit and moves
+like a git branch: a push with `branch` creates or moves that branch and checks
+it out, a push without one fast-forwards the branch the workspace was made from
+(the answer carries `branch`, and `detached` when the branch had moved). A
+reference is `name` (its `base` branch, else its newest commit), `name@N`,
+`name@<branch>` or a snapshot id. Each client also describes a volume
+(description and labels), lists volumes by label, and sets, moves or deletes a
+branch.
+
+```go
+kl.Workspaces.TakeSnapshot(kloudlite.TakeWorkspaceSnapshot{Workspace: "api", Branch: "wip-auth", Labels: []string{"auth"}})
+kl.Volumes.SetBranch(kloudlite.SetBranch{Owner: "acme", Name: "api-home", Branch: "base", Version: 4})
+kl.Volumes.DeleteBranch(kloudlite.DeleteBranch{Owner: "acme", Name: "api-home", Branch: "wip-auth"})
+```
+
 ## License
 
 Apache-2.0, see [LICENSE](LICENSE).

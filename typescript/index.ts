@@ -27,7 +27,7 @@ if (typeof fetch !== "function" || typeof AbortSignal?.timeout !== "function") {
   throw new Error("kloudlite SDK needs fetch and AbortSignal.timeout: Node 20.16+ or Bun");
 }
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 const USER_AGENT = `kloudlite-sdk-typescript/${VERSION}`;
 const NO_LOGIN = "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login";
 
@@ -184,12 +184,25 @@ export interface CreateWorkspace extends WorkspaceRef {
   env?: Record<string, string>;
 }
 
-/** What a push of a workspace or an environment takes. */
+/** What a push of a workspace or an environment takes; a push is a storage commit of the volume. */
 export interface TakeSnapshot {
   message?: string;
   volume?: string;
+  /** What the volume holds and is for (at most 500 characters); replaces the stored one. */
+  description?: string;
+  /** Up to 8 words on the volume, for finding it; replaces the stored set. */
+  labels?: string[];
+  /**
+   * Create this branch at the new storage commit, or move it there, and check it out. Absent, the
+   * checked-out branch fast-forwards; the answer carries `branch`, and `detached` when it had moved.
+   */
+  branch?: string;
   ttlSecs?: number;
   never?: boolean;
+}
+
+function snapshotBody({ message, volume, description, labels, branch, ttlSecs, never }: TakeSnapshot) {
+  return { message, volume, description, labels, branch, ttl_secs: ttlSecs, never };
 }
 
 export interface CloneWorkspace extends WorkspaceRef {
@@ -199,7 +212,10 @@ export interface CloneWorkspace extends WorkspaceRef {
 }
 
 export interface RestoreWorkspace {
-  /** The PUSHED snapshot to graft onto: a volume name, `name@N` or a snapshot id. */
+  /**
+   * The PUSHED snapshot to graft onto: a volume name (its `base` branch, else its newest storage
+   * commit), `name@N`, `name@<branch>` or a snapshot id.
+   */
   snapshot: string;
   /** The new workspace's name; `"team/name"` also names the team. */
   to: string;
@@ -274,10 +290,10 @@ export class Workspaces {
   /**
    * Push a SNAPSHOT of the working copy — the one durable, restorable state (202). `volume` names
    * the volume and is required on its first push; `ttlSecs` (3600..=31536000) or `never: true`
-   * set its expiry.
+   * set its expiry; `description`, `labels` and `branch` as in {@link TakeSnapshot}.
    */
-  takeSnapshot({ workspace, message, volume, ttlSecs, never }: TakeSnapshot & WorkspaceRef) {
-    return this.at("POST", workspace, "/snapshots", { message, volume, ttl_secs: ttlSecs, never });
+  takeSnapshot({ workspace, ...o }: TakeSnapshot & WorkspaceRef) {
+    return this.at("POST", workspace, "/snapshots", snapshotBody(o));
   }
 
   /** The old name of {@link takeSnapshot}. */
@@ -598,10 +614,11 @@ export class Environments {
 
   /**
    * Push a SNAPSHOT of every service's data and the service list (202). `volume` names the
-   * volume and is required on its first push.
+   * volume and is required on its first push; `description`, `labels` and `branch` as in
+   * {@link TakeSnapshot}.
    */
-  takeSnapshot({ environment, message, volume, ttlSecs, never }: TakeSnapshot & EnvironmentRef) {
-    return this.at("POST", environment, "/snapshots", { message, volume, ttl_secs: ttlSecs, never });
+  takeSnapshot({ environment, ...o }: TakeSnapshot & EnvironmentRef) {
+    return this.at("POST", environment, "/snapshots", snapshotBody(o));
   }
 
   /** The old name of {@link takeSnapshot}. */
@@ -816,9 +833,9 @@ export class Connectors {
 export class Volumes {
   constructor(private readonly c: Kloudlite) {}
 
-  /** `kind` is `workspace` or `environment`; `owner` a handle or team slug. */
-  list({ kind, owner }: { kind?: "workspace" | "environment"; owner?: string } = {}) {
-    return this.c.request<unknown[]>("GET", "/v1/volumes", undefined, { kind, owner });
+  /** `kind` is `workspace` or `environment`; `owner` a handle or team slug; `label` keeps the volumes carrying it. */
+  list({ kind, owner, label }: { kind?: "workspace" | "environment"; owner?: string; label?: string } = {}) {
+    return this.c.request<unknown[]>("GET", "/v1/volumes", undefined, { kind, owner, label });
   }
 
   /** The chain of PUSHED snapshots, newest first — each row a restore target. */
@@ -843,12 +860,36 @@ export class Volumes {
     return this.c.request("DELETE", `/v1/volumes/${seg(volume)}`);
   }
 
-  /** One named volume; `owner` is your handle or a team slug. */
+  /**
+   * One named volume; `owner` is your handle or a team slug. It carries `description`, `labels`
+   * and `branches` (each branch with the storage commit number it points at).
+   */
   get({ owner, name }: { owner: string; name: string }) {
     return this.c.request("GET", named(owner, name));
   }
 
-  /** The versions of a named volume, newest first. */
+  /**
+   * Set or clear the description and the labels; an absent field is left as it is, `""` removes
+   * the description and `[]` the labels. Answers the volume.
+   */
+  describe({ owner, name, description, labels }: { owner: string; name: string; description?: string; labels?: string[] }) {
+    return this.c.request("PATCH", named(owner, name), { description, labels });
+  }
+
+  /**
+   * Create `branch` on a storage commit, or move it there (like `git branch -f`): give `version`
+   * (the commit number) or `snapshot` (a snapshot id), not both. Answers the volume.
+   */
+  setBranch({ owner, name, branch, version, snapshot }: { owner: string; name: string; branch: string; version?: number; snapshot?: string }) {
+    return this.c.request("PUT", named(owner, name, `/branches/${seg(branch)}`), { version, snapshot });
+  }
+
+  /** Remove a branch (204); its storage commit stays. */
+  deleteBranch({ owner, name, branch }: { owner: string; name: string; branch: string }) {
+    return this.c.request("DELETE", named(owner, name, `/branches/${seg(branch)}`));
+  }
+
+  /** The storage commits of a named volume, newest first; each row carries the `branches` on it. */
   versions({ owner, name }: { owner: string; name: string }) {
     return this.c.request("GET", named(owner, name, "/versions"));
   }
@@ -858,7 +899,7 @@ export class Volumes {
     return this.c.request("DELETE", named(owner, name));
   }
 
-  /** Delete version `n` (204); deleting the last one deletes the volume. */
+  /** Delete storage commit `n` (204); deleting the last one deletes the volume. A branch's commit is a 409. */
   deleteVersion({ owner, name, n }: { owner: string; name: string; n: number }) {
     return this.c.request("DELETE", named(owner, name, `/versions/${Math.trunc(n)}`));
   }

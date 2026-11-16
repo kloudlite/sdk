@@ -49,7 +49,7 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 public class Kloudlite {
-    public static final String VERSION = "0.4.0";
+    public static final String VERSION = "0.5.0";
     static final String NO_LOGIN = "no Kloudlite login: pass token(), set KLOUDLITE_TOKEN, or run kloudlite login";
 
     static {
@@ -302,13 +302,14 @@ public class Kloudlite {
         }
 
         /**
-         * Push a SNAPSHOT of the working copy — the one durable, restorable state (202).
-         * {@code volume} names the volume and is required on its first push.
+         * Push a SNAPSHOT of the working copy — the one durable, restorable state, a storage
+         * commit of the volume (202). {@code volume} names the volume and is required on its first
+         * push; {@code description}, {@code labels} and {@code branch} are as in
+         * {@link TakeWorkspaceSnapshot}.
          */
         public String takeSnapshot(TakeWorkspaceSnapshot p) throws IOException, InterruptedException {
-            return api("POST", path(need(p.workspace, "workspace"), "/snapshots"), new Json()
-                .str("message", p.message).str("volume", p.volume)
-                .num("ttl_secs", p.ttlSecs).bool("never", p.never).toString());
+            return api("POST", path(need(p.workspace, "workspace"), "/snapshots"), snapshotBody(
+                p.message, p.volume, p.description, p.labels, p.branch, p.ttlSecs, p.never));
         }
 
         /** The old name of {@link #takeSnapshot}. */
@@ -326,8 +327,9 @@ public class Kloudlite {
         }
 
         /**
-         * A new workspace {@code to} grafted onto a PUSHED snapshot (a volume name, {@code name@N}
-         * or a snapshot id) — also one whose workspace is long gone. {@code team} (or
+         * A new workspace {@code to} grafted onto a PUSHED snapshot (a volume name — its
+         * {@code base} branch, else its newest storage commit — {@code name@N},
+         * {@code name@<branch>} or a snapshot id) — also one whose workspace is long gone. {@code team} (or
          * {@code to} as "team/name") is required for a team's volume. Unset overrides mean
          * "whatever the snapshot froze".
          */
@@ -400,15 +402,26 @@ public class Kloudlite {
         public CreateWorkspace env(Map<String, String> v) { env = v; return this; }
     }
 
-    /** {@link Workspaces#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set the expiry. */
+    /**
+     * {@link Workspaces#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set
+     * the expiry. {@code description} and {@code labels} describe the volume (a given one replaces
+     * the stored one). {@code branch} creates that branch at the new storage commit or moves it
+     * there, and the workspace then has it checked out; unset, the checked-out branch
+     * fast-forwards, and the answer carries {@code branch} and, when the branch had moved
+     * meanwhile, {@code detached}.
+     */
     public static final class TakeWorkspaceSnapshot {
-        private String workspace, message, volume;
+        private String workspace, message, volume, description, branch;
+        private List<String> labels;
         private Long ttlSecs;
         private Boolean never;
 
         public TakeWorkspaceSnapshot workspace(String v) { workspace = v; return this; }
         public TakeWorkspaceSnapshot message(String v) { message = v; return this; }
         public TakeWorkspaceSnapshot volume(String v) { volume = v; return this; }
+        public TakeWorkspaceSnapshot description(String v) { description = v; return this; }
+        public TakeWorkspaceSnapshot labels(String... v) { labels = Arrays.asList(v); return this; }
+        public TakeWorkspaceSnapshot branch(String v) { branch = v; return this; }
         public TakeWorkspaceSnapshot ttlSecs(long v) { ttlSecs = v; return this; }
         public TakeWorkspaceSnapshot never(boolean v) { never = v; return this; }
     }
@@ -858,13 +871,13 @@ public class Kloudlite {
         }
 
         /**
-         * Push a SNAPSHOT of every service's data and the service list (202). {@code volume} names
-         * the volume and is required on its first push.
+         * Push a SNAPSHOT of every service's data and the service list, a storage commit (202).
+         * {@code volume} names the volume and is required on its first push; {@code description},
+         * {@code labels} and {@code branch} are as in {@link TakeWorkspaceSnapshot}.
          */
         public String takeSnapshot(TakeEnvironmentSnapshot p) throws IOException, InterruptedException {
-            return api("POST", path(need(p.environment, "environment"), "/snapshots"), new Json()
-                .str("message", p.message).str("volume", p.volume)
-                .num("ttl_secs", p.ttlSecs).bool("never", p.never).toString());
+            return api("POST", path(need(p.environment, "environment"), "/snapshots"), snapshotBody(
+                p.message, p.volume, p.description, p.labels, p.branch, p.ttlSecs, p.never));
         }
 
         /** The old name of {@link #takeSnapshot}. */
@@ -945,13 +958,18 @@ public class Kloudlite {
 
     /** {@link Environments#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set the expiry. */
     public static final class TakeEnvironmentSnapshot {
-        private String environment, message, volume;
+        private String environment, message, volume, description, branch;
+        private List<String> labels;
         private Long ttlSecs;
         private Boolean never;
 
         public TakeEnvironmentSnapshot environment(String v) { environment = v; return this; }
         public TakeEnvironmentSnapshot message(String v) { message = v; return this; }
         public TakeEnvironmentSnapshot volume(String v) { volume = v; return this; }
+        /** As in {@link TakeWorkspaceSnapshot}. */
+        public TakeEnvironmentSnapshot description(String v) { description = v; return this; }
+        public TakeEnvironmentSnapshot labels(String... v) { labels = Arrays.asList(v); return this; }
+        public TakeEnvironmentSnapshot branch(String v) { branch = v; return this; }
         public TakeEnvironmentSnapshot ttlSecs(long v) { ttlSecs = v; return this; }
         public TakeEnvironmentSnapshot never(boolean v) { never = v; return this; }
     }
@@ -1181,9 +1199,12 @@ public class Kloudlite {
      * and the deletes — over {@code /v1/volumes}.
      */
     public class Volumes {
-        /** Either filter may be unset: kind is "workspace" or "environment", owner a handle or team slug. */
+        /**
+         * Any filter may be unset: kind is "workspace" or "environment", owner a handle or team
+         * slug, label keeps the volumes that carry it.
+         */
         public String list(ListVolumes p) throws IOException, InterruptedException {
-            return api("GET", "/v1/volumes" + query("kind", p.kind, "owner", p.owner), null);
+            return api("GET", "/v1/volumes" + query("kind", p.kind, "owner", p.owner, "label", p.label), null);
         }
 
         /** The chain of PUSHED snapshots, newest first — each row a restore target. */
@@ -1209,12 +1230,41 @@ public class Kloudlite {
             return api("DELETE", "/v1/volumes/" + seg(need(volume, "volume")), null);
         }
 
-        /** One named volume; {@code owner} is your handle or a team slug. */
+        /**
+         * One named volume; {@code owner} is your handle or a team slug. It carries
+         * {@code description}, {@code labels} and {@code branches} (each branch with the storage
+         * commit number it points at).
+         */
         public String get(String owner, String name) throws IOException, InterruptedException {
             return api("GET", named(owner, name, ""), null);
         }
 
-        /** The versions of a named volume, newest first. */
+        /**
+         * Set or clear the description and the labels; an unset field is left as it is, ""
+         * removes the description and no labels removes the labels. Answers the volume.
+         */
+        public String describe(DescribeVolume p) throws IOException, InterruptedException {
+            return api("PATCH", named(p.owner, p.name, ""), new Json()
+                .str("description", p.description)
+                .raw("labels", p.labels == null ? null : strings(p.labels)).toString());
+        }
+
+        /**
+         * Create {@code branch} on a storage commit, or move it there (like {@code git branch -f}):
+         * give {@code version} (the commit number) or {@code snapshot} (a snapshot id), not both.
+         * Answers the volume.
+         */
+        public String setBranch(SetBranch p) throws IOException, InterruptedException {
+            return api("PUT", named(p.owner, p.name, "/branches/" + seg(need(p.branch, "branch"))), new Json()
+                .num("version", p.version).str("snapshot", p.snapshot).toString());
+        }
+
+        /** Remove a branch (204); its storage commit stays. */
+        public String deleteBranch(String owner, String name, String branch) throws IOException, InterruptedException {
+            return api("DELETE", named(owner, name, "/branches/" + seg(need(branch, "branch"))), null);
+        }
+
+        /** The storage commits of a named volume, newest first; each row carries the {@code branches} on it. */
         public String versions(String owner, String name) throws IOException, InterruptedException {
             return api("GET", named(owner, name, "/versions"), null);
         }
@@ -1224,7 +1274,10 @@ public class Kloudlite {
             return api("DELETE", named(owner, name, ""), null);
         }
 
-        /** Delete version {@code n} (204); deleting the last one deletes the volume. */
+        /**
+         * Delete storage commit {@code n} (204); deleting the last one deletes the volume. A
+         * branch's commit is refused (409).
+         */
         public String deleteVersion(String owner, String name, int n) throws IOException, InterruptedException {
             return api("DELETE", named(owner, name, "/versions/" + n), null);
         }
@@ -1237,10 +1290,34 @@ public class Kloudlite {
     // ── volume params ──────────────────────────────────────────────────────
 
     public static final class ListVolumes {
-        private String kind, owner;
+        private String kind, owner, label;
 
         public ListVolumes kind(String v) { kind = v; return this; }
         public ListVolumes owner(String v) { owner = v; return this; }
+        public ListVolumes label(String v) { label = v; return this; }
+    }
+
+    /** {@link Volumes#describe}: {@code owner} and {@code name} are required. */
+    public static final class DescribeVolume {
+        private String owner, name, description;
+        private List<String> labels;
+
+        public DescribeVolume owner(String v) { owner = v; return this; }
+        public DescribeVolume name(String v) { name = v; return this; }
+        public DescribeVolume description(String v) { description = v; return this; }
+        public DescribeVolume labels(String... v) { labels = Arrays.asList(v); return this; }
+    }
+
+    /** {@link Volumes#setBranch}: {@code owner}, {@code name}, {@code branch} and one of {@code version} or {@code snapshot}. */
+    public static final class SetBranch {
+        private String owner, name, branch, snapshot;
+        private Long version;
+
+        public SetBranch owner(String v) { owner = v; return this; }
+        public SetBranch name(String v) { name = v; return this; }
+        public SetBranch branch(String v) { branch = v; return this; }
+        public SetBranch version(long v) { version = v; return this; }
+        public SetBranch snapshot(String v) { snapshot = v; return this; }
     }
 
     public static final class DeleteSnapshot {
@@ -2239,6 +2316,14 @@ public class Kloudlite {
 
     static String seg(String s) {
         return URLEncoder.encode(s, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    /** The body of a workspace or environment push; unset fields are left out. */
+    static String snapshotBody(String message, String volume, String description, List<String> labels,
+                               String branch, Long ttlSecs, Boolean never) {
+        return new Json().str("message", message).str("volume", volume).str("description", description)
+            .raw("labels", labels == null ? null : strings(labels)).str("branch", branch)
+            .num("ttl_secs", ttlSecs).bool("never", never).toString();
     }
 
     /** A flat JSON object from key/value pairs; a null value drops its pair. */
