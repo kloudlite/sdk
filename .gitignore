@@ -1,3 +1,14 @@
 __pycache__/
 node_modules/
 *.class
+
+# Build output of the five SDKs: made by the builds, never committed.
+target/
+dist/
+build/
+*.egg-info/
+*.gem
+.venv/
+venv/
+.pytest_cache/
+coverage/
