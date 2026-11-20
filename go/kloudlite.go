@@ -60,11 +60,11 @@ func Ptr[T any](v T) *T { return &v }
 type Client struct {
 	Workspaces   *Workspaces
 	Environments *Environments
-	Netgroups *Netgroups
+	Netgroups    *Netgroups
 	Volumes      *Volumes
 	Secrets      *Secrets
 	Connectors   *Connectors
-	Capsules    *Capsules
+	Capsules     *Capsules
 	Pipelines    *Pipelines
 
 	baseURL string
