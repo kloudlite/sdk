@@ -82,7 +82,7 @@ class Kloudlite:
         self._timeout = timeout
         self.workspaces = Workspaces(self)
         self.environments = Environments(self)
-        self.desks = Desks(self)
+        self.netgroups = Netgroups(self)
         self.volumes = Volumes(self)
         self.secrets = Secrets(self)
         self.connectors = Connectors(self)
@@ -467,88 +467,98 @@ def _services(services: list | None) -> list:
     return [{"command": [], "env": {}, "mounts": [], "ports": [], **sv} for sv in services or []]
 
 
-class Desks:
-    """Working desks, over ``/v1/desks``: some of YOUR workspaces in one team, connected to
-    one environment. Many people's desks connect to the same environment and collaborate
-    through it; an intercept a desk takes is environment-wide, and the desk owns it — only
-    it can release it, and removing the workspace or deleting the desk releases it.
+class Netgroups:
+    """Netgroups, over ``/v1/netgroups``: some of YOUR workspaces in one team, joined to one
+    environment, with one idle clock. Many people's netgroups connect to the same environment
+    and collaborate through it; an intercept a netgroup takes is environment-wide, and the
+    netgroup owns it — only it can release it, and a member leaving or the netgroup ending
+    releases it.
 
-    A desk is named like an environment — ``"name"`` (personal) or ``"team/name"`` — or by its
-    id (``desk-…``); a workspace by its id, name or ``"team/name"``, sent verbatim."""
+    A netgroup is named like an environment — ``"name"`` (personal) or ``"team/name"`` — or by
+    its id; a workspace by its id, name or ``"team/name"``, sent verbatim."""
 
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def create(self, *, desk: str, environment: str | None = None, ttl_secs: int | None = None):
-        """``environment``, when given, must be the desk's team's: an id, a name or
-        ``"team/name"``; without one the desk connects to nothing until ``connect``.
-        ``ttl_secs`` (600..=2592000) deletes the desk after that long unused."""
-        team, name = _owned(desk)
-        return self._c.request("POST", "/v1/desks",
-                               body={"name": name, "team": team, "environment": environment,
-                                     "ttl_secs": ttl_secs})
+    def create(self, *, netgroup: str, environment: str | None = None, ttl_secs: int | None = None):
+        """``environment``, when given, must be the netgroup's team's: an id, a name or
+        ``"team/name"``; without one it connects to nothing until ``connect``. ``ttl_secs``
+        (600..=2592000) deletes it after that long unused."""
+        team, name = _owned(netgroup)
+        return self._c.request("POST", "/v1/netgroups", body=_drop({
+            "name": name, "team": team, "environment": environment, "ttl_secs": ttl_secs}))
 
-    def set_ttl(self, *, desk: str, ttl_secs: int | None):
-        """Seconds unused before the desk is deleted (600..=2592000); ``None`` clears it."""
-        return self._at("PUT", desk, "/ttl", body={"ttl_secs": ttl_secs})
+    def set_ttl(self, *, netgroup: str, ttl_secs: int | None):
+        """Seconds unused before the netgroup is deleted (600..=2592000); ``None`` clears it."""
+        return self._at("PUT", netgroup, "/ttl", body={"ttl_secs": ttl_secs})
 
     def list(self, *, team: str | None = None):
-        return self._c.request("GET", "/v1/desks", query={"team": team})
+        return self._c.request("GET", "/v1/netgroups", query={"team": team})
 
-    def get(self, *, desk: str):
-        """The desk with its ``workspaces`` and the ``intercepts`` it holds."""
-        return self._at("GET", desk)
+    def get(self, *, netgroup: str):
+        """The netgroup with its ``workspaces`` and the ``intercepts`` it holds."""
+        return self._at("GET", netgroup)
 
-    def delete(self, *, desk: str):
-        """Releases its intercepts and lets its workspaces go — never deletes a workspace."""
-        return self._at("DELETE", desk)
+    def delete(self, *, netgroup: str):
+        """Releases its intercepts, deletes the workspaces made in it and lets the joined ones go."""
+        return self._at("DELETE", netgroup)
 
-    def connect(self, *, desk: str, environment: str | None):
-        """Sets, switches or (``None``) clears the desk's environment. Its intercepts in the old
-        environment are released first; deleting an environment disconnects its desks the same
-        way."""
-        return self._at("PUT", desk, "/environment", body={"environment": environment})
+    def connect(self, *, netgroup: str, environment: str | None):
+        """Sets, switches or (``None``) clears the netgroup's environment. Its intercepts in the
+        old environment are released first."""
+        return self._at("PUT", netgroup, "/environment", body={"environment": environment})
 
-    def stop(self, *, desk: str):
-        """Stop the desk and every workspace in it (202, ``{"stopped": [ids]}``); capsules and
-        the environment are untouched."""
-        return self._at("POST", desk, "/stop")
+    def stop(self, *, netgroup: str):
+        """Stop every workspace in the netgroup (202, ``{"stopped": [ids]}``)."""
+        return self._at("POST", netgroup, "/stop")
 
-    def create_workspace(self, *, desk: str, workspace: str, quota_gb: int,
-                         image: str | None = None, packages: list | None = None,
-                         ttl_secs: int | None = None, env: dict | None = None):
-        """Create a workspace ``workspace`` (a bare name) managed by the desk, in its team
-        (201). The desk controls it from then on; it takes the inputs of
-        :meth:`Workspaces.create`."""
-        return self._at("POST", desk, "/workspaces", body=_drop({
-            "name": workspace, "quota_gb": quota_gb, "image": image, "packages": packages,
-            "ttl_secs": ttl_secs, "env": env}))
+    def start(self, *, netgroup: str):
+        """Start the netgroup's environment and every workspace in it."""
+        return self._at("POST", netgroup, "/start")
 
-    def delete_workspace(self, *, desk: str, workspace: str):
-        """Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay."""
-        return self._at("DELETE", desk, f"/workspaces/{_seg(workspace)}")
+    def create_workspace(self, *, netgroup: str, workspace: str, image: str | None = None,
+                         packages: list | None = None, ttl_secs: int | None = None,
+                         env: dict | None = None, cpu: int | None = None,
+                         memory_gb: int | None = None):
+        """Create a workspace ``workspace`` (a bare name) in the netgroup, in its team (201); it
+        is deleted with the netgroup. ``cpu`` (1..=8) and ``memory_gb`` (1..=32) size it."""
+        return self._at("POST", netgroup, "/workspaces", body=_drop({
+            "name": workspace, "image": image, "packages": packages, "ttl_secs": ttl_secs,
+            "env": env, "cpu": cpu, "memory_gb": memory_gb}))
 
-    def create_capsule(self, *, desk: str, cmd: list, **options) -> "Capsule":
-        """Create a capsule managed by the desk (202), in its team and reaching its environment.
-        Same inputs as :meth:`Capsules.create` (``team`` must be the desk's)."""
-        doc = self._at("POST", desk, "/capsules", body=_capsule_body(cmd=cmd, **options))
+    def join(self, *, netgroup: str, workspace: str):
+        """A standalone workspace of yours (a device one too) joins the netgroup: it follows its
+        idle clock and reaches its environment."""
+        return self._at("POST", netgroup, "/workspaces", body={"workspace": workspace})
+
+    def leave(self, *, netgroup: str, workspace: str, delete: bool = False):
+        """The workspace leaves and is standalone again, its intercepts released; ``delete``
+        deletes it instead (a capsule, or a workspace made in the netgroup)."""
+        team, name = _owned(netgroup)
+        return self._c.request("DELETE", f"/v1/netgroups/{_seg(name)}/workspaces/{_seg(workspace)}",
+                               query={"owner": team, "delete": "true" if delete else None})
+
+    def create_capsule(self, *, netgroup: str, cmd: list, **options) -> "Capsule":
+        """Create a capsule in the netgroup (202), in its team and reaching its environment.
+        Same inputs as :meth:`Capsules.create` (``team`` must be the netgroup's)."""
+        doc = self._at("POST", netgroup, "/capsules", body=_capsule_body(cmd=cmd, **options))
         return Capsule(self._c, doc)
 
-    def intercept(self, *, desk: str, service: str, workspace: str, ports: dict | None = None):
+    def intercept(self, *, netgroup: str, service: str, workspace: str, ports: dict | None = None):
         """Send everything that calls ``service`` in the environment to ``workspace`` (a member),
         ``ports`` mapping each service port to the workspace port that answers it
         (``{8080: 3000}``); an unmapped port answers on the same number."""
-        return self._at("POST", desk, "/intercepts", body={
+        return self._at("POST", netgroup, "/intercepts", body={
             "service": service, "workspace": workspace,
             "ports": [{"service": int(k), "workspace": int(v)} for k, v in (ports or {}).items()],
         })
 
-    def release(self, *, desk: str, service: str):
-        return self._at("DELETE", desk, f"/intercepts/{_seg(service)}")
+    def release(self, *, netgroup: str, service: str):
+        return self._at("DELETE", netgroup, f"/intercepts/{_seg(service)}")
 
-    def _at(self, method: str, desk: str, tail: str = "", body=None):
-        team, name = _owned(desk)
-        return self._c.request(method, f"/v1/desks/{_seg(name)}{tail}", body=body,
+    def _at(self, method: str, netgroup: str, tail: str = "", body=None):
+        team, name = _owned(netgroup)
+        return self._c.request(method, f"/v1/netgroups/{_seg(name)}{tail}", body=body,
                                query={"owner": team})
 
 
@@ -764,7 +774,7 @@ class Capsules:
         keeps input open for ``attach``. ``timeout_s`` is 10..=86400. ``from_workspace`` is an id,
         ``"name"`` or ``"team/name"``; ``from_snapshot`` a volume name, ``name@N`` or snapshot id
         (exclusive with it). ``network`` is ``internet`` or ``none``; ``cpu`` 1..=8, ``memory_gb``
-        1..=32. A desk's capsule is made with :meth:`Desks.create_capsule`. Unset inputs are
+        1..=32. A netgroup's capsule is made with :meth:`Netgroups.create_capsule`. Unset inputs are
         left to the server's defaults."""
         body = _capsule_body(cmd=cmd, image=image, packages=packages, from_workspace=from_workspace,
                              from_snapshot=from_snapshot, team=team, tty=tty, stdin=stdin,

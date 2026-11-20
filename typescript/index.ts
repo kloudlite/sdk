@@ -83,7 +83,7 @@ function login(env: Record<string, string | undefined>): { api?: string; token?:
 export class Kloudlite {
   readonly workspaces: Workspaces;
   readonly environments: Environments;
-  readonly desks: Desks;
+  readonly netgroups: Netgroups;
   readonly volumes: Volumes;
   readonly secrets: Secrets;
   readonly connectors: Connectors;
@@ -110,7 +110,7 @@ export class Kloudlite {
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.workspaces = new Workspaces(this);
     this.environments = new Environments(this);
-    this.desks = new Desks(this);
+    this.netgroups = new Netgroups(this);
     this.volumes = new Volumes(this);
     this.secrets = new Secrets(this);
     this.connectors = new Connectors(this);
@@ -664,12 +664,12 @@ function services(list: Service[] = []) {
   return list.map((sv) => ({ command: [], env: {}, mounts: [], ports: [], ...sv }));
 }
 
-/** A desk: `"name"` (personal), `"team/name"`, or its id (`desk-…`). */
-export interface DeskRef {
-  desk: string;
+/** A netgroup: `"name"` (personal), `"team/name"`, or its id. */
+export interface NetgroupRef {
+  netgroup: string;
 }
 
-export interface Intercept extends DeskRef {
+export interface Intercept extends NetgroupRef {
   service: string;
   /** A member workspace: its id, name or `"team/name"`, sent verbatim. */
   workspace: string;
@@ -677,79 +677,105 @@ export interface Intercept extends DeskRef {
   ports?: Record<number, number>;
 }
 
-/**
- * Working desks, over `/v1/desks`: some of YOUR workspaces in one team, connected to one
- * environment. Many people's desks connect to the same environment and collaborate through it;
- * an intercept a desk takes is environment-wide, and the desk owns it — only it can release
- * it, and deleting the workspace or the desk releases it.
- *
- * A desk is named like an environment — `"name"` (personal) or `"team/name"` — or by its id
- * (`desk-…`); a workspace by its id, name or `"team/name"`, sent verbatim.
- */
-export class Desks {
-  constructor(private readonly c: Kloudlite) {}
+/** What `Netgroups.createWorkspace` takes: a bare name, and the size for the job. */
+export interface CreateMember {
+  workspace: string;
+  image?: string;
+  /** nixpkgs attributes, optionally pinned (`attr@version`). */
+  packages?: string[];
+  /** Seconds unused (600..=2592000) before the workspace is deleted; absent, never. */
+  ttlSecs?: number;
+  /** Variable name to a literal value or a `"${{ secrets.NAME }}"` reference to the owner's secrets. */
+  env?: Record<string, string>;
+  /** Cores, 1..=8. */
+  cpu?: number;
+  /** GB of memory, 1..=32. */
+  memoryGb?: number;
+}
 
-  /** `environment`, when given, must be the desk's team's: an id, a name or `"team/name"`;
-   * without one the desk connects to nothing until `connect`. `ttlSecs` (600..=2592000) deletes
-   * the desk after that long unused. */
-  create({ desk, environment, ttlSecs }: DeskRef & { environment?: string; ttlSecs?: number }) {
-    const [team, name] = owned(desk);
-    return this.c.request("POST", "/v1/desks", { name, team, environment, ttl_secs: ttlSecs });
+/**
+ * Netgroups, over `/v1/netgroups`: some of YOUR workspaces in one team, joined to one environment,
+ * with one idle clock. Many people's netgroups connect to the same environment and collaborate
+ * through it; an intercept a netgroup takes is environment-wide, and the netgroup owns it — only it
+ * can release it, and a member leaving or the netgroup ending releases it.
+ *
+ * A netgroup is named like an environment — `"name"` (personal) or `"team/name"` — or by its id; a
+ * workspace by its id, name or `"team/name"`, sent verbatim.
+ */
+export class Netgroups {
+  constructor(private c: Kloudlite) {}
+
+  /** `environment`, when given, must be the netgroup's team's: an id, a name or `"team/name"`;
+   * without one it connects to nothing until `connect`. `ttlSecs` (600..=2592000) deletes it
+   * after that long unused. */
+  create({ netgroup, environment, ttlSecs }: NetgroupRef & { environment?: string; ttlSecs?: number }) {
+    const [team, name] = owned(netgroup);
+    return this.c.request("POST", "/v1/netgroups", { name, team, environment, ttl_secs: ttlSecs });
   }
 
-  /** Seconds unused before the desk is deleted (600..=2592000); `null` clears it. */
-  setTtl({ desk, ttlSecs }: DeskRef & { ttlSecs: number | null }) {
-    return this.at("PUT", desk, "/ttl", { ttl_secs: ttlSecs });
+  /** Seconds unused before the netgroup is deleted (600..=2592000); `null` clears it. */
+  setTtl({ netgroup, ttlSecs }: NetgroupRef & { ttlSecs: number | null }) {
+    return this.at("PUT", netgroup, "/ttl", { ttl_secs: ttlSecs });
   }
 
   list({ team }: { team?: string } = {}) {
-    return this.c.request<unknown[]>("GET", "/v1/desks", undefined, { team });
+    return this.c.request<unknown[]>("GET", "/v1/netgroups", undefined, { team });
   }
 
-  /** The desk with its `workspaces` and the `intercepts` it holds. */
-  get({ desk }: DeskRef) {
-    return this.at("GET", desk);
+  /** The netgroup with its `workspaces` and the `intercepts` it holds. */
+  get({ netgroup }: NetgroupRef) {
+    return this.at("GET", netgroup);
   }
 
-  /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
-  delete({ desk }: DeskRef) {
-    return this.at("DELETE", desk);
+  /** Releases its intercepts, deletes the workspaces made in it and lets the joined ones go. */
+  delete({ netgroup }: NetgroupRef) {
+    return this.at("DELETE", netgroup);
   }
 
-  /**
-   * Sets, switches or (`null`) clears the desk's environment. Its intercepts in the old
-   * environment are released first; deleting an environment disconnects its desks the same way.
-   */
-  connect({ desk, environment }: DeskRef & { environment: string | null }) {
-    return this.at("PUT", desk, "/environment", { environment });
+  /** Sets, switches or (`null`) clears the netgroup's environment. Its intercepts in the old
+   * environment are released first. */
+  connect({ netgroup, environment }: NetgroupRef & { environment: string | null }) {
+    return this.at("PUT", netgroup, "/environment", { environment });
   }
 
-  /** Stop the desk and every workspace in it (202, `{stopped: [ids]}`); capsules and the environment are untouched. */
-  stop({ desk }: DeskRef) {
-    return this.at("POST", desk, "/stop");
+  /** Stop every workspace in the netgroup (202, `{stopped: [ids]}`). */
+  stop({ netgroup }: NetgroupRef) {
+    return this.at("POST", netgroup, "/stop");
   }
 
-  /**
-   * Create a workspace `workspace` (a bare name) managed by the desk, in its team (201). The
-   * desk controls it from then on; it takes the inputs of {@link Workspaces.create}.
-   */
-  createWorkspace({ desk, workspace, quotaGb, image, packages, ttlSecs, env }: DeskRef & CreateWorkspace) {
-    return this.at("POST", desk, "/workspaces", {
-      name: workspace, quota_gb: quotaGb, image, packages, ttl_secs: ttlSecs, env,
+  /** Start the netgroup's environment and every workspace in it. */
+  start({ netgroup }: NetgroupRef) {
+    return this.at("POST", netgroup, "/start");
+  }
+
+  /** Create a workspace `workspace` (a bare name) in the netgroup, in its team (201); it is deleted with the netgroup. */
+  createWorkspace({ netgroup, workspace, image, packages, ttlSecs, env, cpu, memoryGb }: NetgroupRef & CreateMember) {
+    return this.at("POST", netgroup, "/workspaces", {
+      name: workspace, image, packages, ttl_secs: ttlSecs, env, cpu, memory_gb: memoryGb,
     });
   }
 
-  /** Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay. */
-  deleteWorkspace({ desk, workspace }: DeskRef & WorkspaceRef) {
-    return this.at("DELETE", desk, `/workspaces/${seg(workspace)}`);
+  /** A standalone workspace of yours (a device one too) joins: it follows the netgroup's idle clock and reaches its environment. */
+  join({ netgroup, workspace }: NetgroupRef & { workspace: string }) {
+    return this.at("POST", netgroup, "/workspaces", { workspace });
+  }
+
+  /** The workspace leaves and is standalone again, its intercepts released; `delete` deletes it
+   * instead (a capsule, or a workspace made in the netgroup). */
+  leave({ netgroup, workspace, delete: del }: NetgroupRef & { workspace: string; delete?: boolean }) {
+    const [owner, name] = owned(netgroup);
+    return this.c.request("DELETE", `/v1/netgroups/${seg(name)}/workspaces/${seg(workspace)}`, undefined, {
+      owner,
+      delete: del ? "true" : undefined,
+    });
   }
 
   /**
-   * Create a capsule managed by the desk (202), in its team and reaching its environment.
-   * Same inputs as {@link Capsules.create} (`team` must be the desk's).
+   * Create a capsule in the netgroup (202), in its team and reaching its environment.
+   * Same inputs as {@link Capsules.create} (`team` must be the netgroup's).
    */
-  async createCapsule({ desk, ...opts }: DeskRef & CreateCapsule): Promise<Capsule> {
-    const doc = await this.at<CapsuleDoc>("POST", desk, "/capsules", capsuleBody(opts));
+  async createCapsule({ netgroup, ...opts }: NetgroupRef & CreateCapsule): Promise<Capsule> {
+    const doc = await this.at<CapsuleDoc>("POST", netgroup, "/capsules", capsuleBody(opts));
     return new Capsule(this.c, doc);
   }
 
@@ -757,21 +783,21 @@ export class Desks {
    * Send everything that calls `service` in the environment to `workspace` (a member), `ports`
    * mapping each service port to the workspace port that answers it (`{ 8080: 3000 }`).
    */
-  intercept({ desk, service, workspace, ports = {} }: Intercept) {
-    return this.at("POST", desk, "/intercepts", {
+  intercept({ netgroup, service, workspace, ports = {} }: Intercept) {
+    return this.at("POST", netgroup, "/intercepts", {
       service,
       workspace,
       ports: Object.entries(ports ?? {}).map(([s, w]) => ({ service: Number(s), workspace: Number(w) })),
     });
   }
 
-  release({ desk, service }: DeskRef & { service: string }) {
-    return this.at("DELETE", desk, `/intercepts/${seg(service)}`);
+  release({ netgroup, service }: NetgroupRef & { service: string }) {
+    return this.at("DELETE", netgroup, `/intercepts/${seg(service)}`);
   }
 
-  private at<T = unknown>(method: string, desk: string, tail = "", body?: unknown) {
-    const [owner, name] = owned(desk);
-    return this.c.request<T>(method, `/v1/desks/${seg(name)}${tail}`, body, { owner });
+  private at<T = unknown>(method: string, netgroup: string, tail = "", body?: unknown) {
+    const [owner, name] = owned(netgroup);
+    return this.c.request<T>(method, `/v1/netgroups/${seg(name)}${tail}`, body, { owner });
   }
 }
 
@@ -938,8 +964,8 @@ export interface CapsuleDoc {
   memory_gb: number;
   disk_gb: number;
   from: { workspace: string } | { snapshot: string } | null;
-  /** The desk it is a member of, or null. */
-  desk: string | null;
+  /** The netgroup it is a member of, or null. */
+  netgroup: string | null;
 }
 
 /** `cmd` is required; every other field is optional and absent means the server's default. */
@@ -1019,7 +1045,7 @@ function capsuleBody(o: CreateCapsule) {
  *     const code = await sb.wait();
  *     console.log(code, await sb.logs());
  *
- * A desk's capsule is made with {@link Desks.createCapsule}.
+ * A netgroup's capsule is made with {@link Netgroups.createCapsule}.
  */
 export class Capsules {
   constructor(private readonly c: Kloudlite) {}

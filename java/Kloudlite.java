@@ -84,7 +84,7 @@ public class Kloudlite {
     private final HttpClient http;
     private final Workspaces workspaces = new Workspaces();
     private final Environments environments = new Environments();
-    private final Desks desks = new Desks();
+    private final Netgroups netgroups = new Netgroups();
     private final Volumes volumes = new Volumes();
     private final Secrets secrets = new Secrets();
     private final Connectors connectors = new Connectors();
@@ -141,9 +141,9 @@ public class Kloudlite {
         return environments;
     }
 
-    /** Working desks: {@code /v1/desks}. */
-    public Desks desks() {
-        return desks;
+    /** Netgroups: {@code /v1/netgroups}. */
+    public Netgroups netgroups() {
+        return netgroups;
     }
 
     /** An owner's named secrets: {@code /v1/secrets}. */
@@ -997,18 +997,19 @@ public class Kloudlite {
     }
 
     /**
-     * Working desks, over {@code /v1/desks}: some of YOUR workspaces in one team, connected
-     * to one environment. Many people's desks connect to the same environment and collaborate
-     * through it; an intercept a desk takes is environment-wide, and the desk owns it — only
-     * it can release it, and removing the workspace or deleting the desk releases it. A desk
-     * is named like an environment ({@code "name"} or {@code "team/name"}) or by its id; a
-     * workspace by its id, name or {@code "team/name"}, sent verbatim.
+     * Netgroups, over {@code /v1/netgroups}: some of YOUR workspaces in one team, joined to one
+     * environment, with one idle clock. Many people's netgroups connect to the same environment
+     * and collaborate through it; an intercept a netgroup takes is environment-wide, and the
+     * netgroup owns it — only it can release it, and a member leaving or the netgroup ending
+     * releases it. A netgroup is named like an environment ({@code "name"} or
+     * {@code "team/name"}) or by its id; a workspace by its id, name or {@code "team/name"}, sent
+     * verbatim.
      */
-    public class Desks {
-        /** {@code environment}, when set, must be the desk's team's: an id, a name or "team/name"; without one the desk connects to nothing until {@link #connect}. */
-        public String create(CreateDesk p) throws IOException, InterruptedException {
-            String[] on = owned(need(p.desk, "desk"));
-            return api("POST", "/v1/desks", new Json()
+    public class Netgroups {
+        /** {@code environment}, when set, must be the netgroup's team's: an id, a name or "team/name"; without one it connects to nothing until {@link #connect}. */
+        public String create(CreateNetgroup p) throws IOException, InterruptedException {
+            String[] on = owned(need(p.netgroup, "netgroup"));
+            return api("POST", "/v1/netgroups", new Json()
                 .str("name", on[1])
                 .str("team", on[0])
                 .str("environment", p.environment)
@@ -1016,68 +1017,79 @@ public class Kloudlite {
                 .toString());
         }
 
-        /** Seconds unused before the desk is deleted (600..=2592000); {@code null} clears it. */
-        public String setTtl(String desk, Long ttlSecs) throws IOException, InterruptedException {
-            return api("PUT", path(need(desk, "desk"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
+        /** Seconds unused before the netgroup is deleted (600..=2592000); {@code null} clears it. */
+        public String setTtl(String netgroup, Long ttlSecs) throws IOException, InterruptedException {
+            return api("PUT", path(need(netgroup, "netgroup"), "/ttl"), "{\"ttl_secs\":" + ttlSecs + "}");
         }
 
         public String list(String team) throws IOException, InterruptedException {
-            return api("GET", team == null ? "/v1/desks" : "/v1/desks?team=" + seg(team), null);
+            return api("GET", "/v1/netgroups" + query("team", team), null);
         }
 
-        /** The desk with its workspaces and the intercepts it holds. */
-        public String get(String desk) throws IOException, InterruptedException {
-            return api("GET", path(desk, ""), null);
+        /** The netgroup with its workspaces and the intercepts it holds. */
+        public String get(String netgroup) throws IOException, InterruptedException {
+            return api("GET", path(netgroup, ""), null);
         }
 
-        /** Releases its intercepts and lets its workspaces go — never deletes a workspace. */
-        public String delete(String desk) throws IOException, InterruptedException {
-            return api("DELETE", path(desk, ""), null);
+        /** Releases its intercepts, deletes the workspaces made in it and lets the joined ones go. */
+        public String delete(String netgroup) throws IOException, InterruptedException {
+            return api("DELETE", path(netgroup, ""), null);
         }
 
         /**
-         * Sets or switches the desk's environment (an id, a name or "team/name"); {@code null}
-         * clears it. Its intercepts in the old environment are released first; deleting an
-         * environment disconnects its desks the same way.
+         * Sets or switches the netgroup's environment (an id, a name or "team/name"); {@code null}
+         * clears it. Its intercepts in the old environment are released first.
          */
-        public String connect(String desk, String environment) throws IOException, InterruptedException {
-            return api("PUT", path(need(desk, "desk"), "/environment"),
+        public String connect(String netgroup, String environment) throws IOException, InterruptedException {
+            return api("PUT", path(need(netgroup, "netgroup"), "/environment"),
                 environment == null ? "{\"environment\":null}" : obj("environment", environment));
         }
 
-        /** Stop the desk and every workspace in it (202, {@code {"stopped": [ids]}}); capsules and the environment are untouched. */
-        public String stop(String desk) throws IOException, InterruptedException {
-            return api("POST", path(desk, "/stop"), null);
+        /** Stop every workspace in the netgroup (202, {@code {"stopped": [ids]}}). */
+        public String stop(String netgroup) throws IOException, InterruptedException {
+            return api("POST", path(netgroup, "/stop"), null);
         }
 
-        /**
-         * Create a workspace {@code p.workspace} (a bare name) managed by the desk, in its team
-         * (201). The desk controls it from then on; it takes the inputs of
-         * {@link Workspaces#create}.
-         */
-        public String createWorkspace(String desk, CreateWorkspace p) throws IOException, InterruptedException {
-            return api("POST", path(need(desk, "desk"), "/workspaces"), new Json()
+        /** Start the netgroup's environment and every workspace in it. */
+        public String start(String netgroup) throws IOException, InterruptedException {
+            return api("POST", path(netgroup, "/start"), null);
+        }
+
+        /** Create a workspace {@code p.workspace} (a bare name) in the netgroup, in its team (201); it is deleted with the netgroup. */
+        public String createWorkspace(String netgroup, CreateMember p) throws IOException, InterruptedException {
+            return api("POST", path(need(netgroup, "netgroup"), "/workspaces"), new Json()
                 .str("name", need(p.workspace, "workspace"))
-                .num("quota_gb", need(p.quotaGb, "quotaGb"))
                 .str("image", p.image)
                 .raw("packages", p.packages == null ? null : strings(p.packages))
                 .num("ttl_secs", p.ttlSecs)
                 .raw("env", p.env == null ? null : stringMap(p.env))
+                .num("cpu", p.cpu)
+                .num("memory_gb", p.memoryGb)
                 .toString());
         }
 
-        /** Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay. */
-        public String deleteWorkspace(String desk, String workspace) throws IOException, InterruptedException {
-            return api("DELETE", path(need(desk, "desk"), "/workspaces/" + seg(need(workspace, "workspace"))), null);
+        /** A standalone workspace of yours (a device one too) joins: it follows the netgroup's idle clock and reaches its environment. */
+        public String join(String netgroup, String workspace) throws IOException, InterruptedException {
+            return api("POST", path(need(netgroup, "netgroup"), "/workspaces"), obj("workspace", need(workspace, "workspace")));
         }
 
         /**
-         * Create a capsule managed by the desk (202), in its team and reaching its
-         * environment. Same inputs as {@link Capsules#create} ({@code team} must be the desk's).
+         * The workspace leaves and is standalone again, its intercepts released; {@code delete}
+         * deletes it instead (a capsule, or a workspace made in the netgroup).
          */
-        public CapsuleHandle createCapsule(String desk, CreateCapsule p) throws IOException, InterruptedException {
+        public String leave(String netgroup, String workspace, boolean delete) throws IOException, InterruptedException {
+            String[] on = owned(need(netgroup, "netgroup"));
+            return api("DELETE", "/v1/netgroups/" + seg(on[1]) + "/workspaces/" + seg(need(workspace, "workspace"))
+                + query("owner", on[0], "delete", delete ? "true" : null), null);
+        }
+
+        /**
+         * Create a capsule in the netgroup (202), in its team and reaching its environment. Same
+         * inputs as {@link Capsules#create} ({@code team} must be the netgroup's).
+         */
+        public CapsuleHandle createCapsule(String netgroup, CreateCapsule p) throws IOException, InterruptedException {
             String body = p.body();
-            return new CapsuleHandle(api("POST", path(need(desk, "desk"), "/capsules"), body));
+            return new CapsuleHandle(api("POST", path(need(netgroup, "netgroup"), "/capsules"), body));
         }
 
         /**
@@ -1085,7 +1097,7 @@ public class Kloudlite {
          * member). {@code ports} maps a service port to the workspace port answering it.
          */
         public String intercept(InterceptService p) throws IOException, InterruptedException {
-            String desk = need(p.desk, "desk");
+            String netgroup = need(p.netgroup, "netgroup");
             String service = need(p.service, "service"), workspace = need(p.workspace, "workspace");
             List<String> pm = new ArrayList<>();
             if (p.ports != null) {
@@ -1094,47 +1106,68 @@ public class Kloudlite {
                 }
             }
             String b = obj("service", service, "workspace", workspace);
-            return api("POST", path(desk, "/intercepts"),
+            return api("POST", path(netgroup, "/intercepts"),
                 b.substring(0, b.length() - 1) + ",\"ports\":[" + String.join(",", pm) + "]}");
         }
 
         public String release(ReleaseService p) throws IOException, InterruptedException {
-            String desk = need(p.desk, "desk");
-            return api("DELETE", path(desk, "/intercepts/" + seg(need(p.service, "service"))), null);
+            String netgroup = need(p.netgroup, "netgroup");
+            return api("DELETE", path(netgroup, "/intercepts/" + seg(need(p.service, "service"))), null);
         }
 
-        private String path(String desk, String tail) {
-            return at("/v1/desks/", desk, tail);
+        private String path(String netgroup, String tail) {
+            return at("/v1/netgroups/", netgroup, tail);
         }
     }
 
-    // ── desk params ─────────────────────────────────────────────────────
+    // ── netgroup params ─────────────────────────────────────────────────
 
-    public static final class CreateDesk {
-        private String desk, environment;
+    public static final class CreateNetgroup {
+        private String netgroup, environment;
         private Long ttlSecs;
 
-        public CreateDesk desk(String v) { desk = v; return this; }
-        public CreateDesk environment(String v) { environment = v; return this; }
-        /** Seconds unused (600..=2592000) before the desk is deleted; unset, never. */
-        public CreateDesk ttlSecs(long v) { ttlSecs = v; return this; }
+        public CreateNetgroup netgroup(String v) { netgroup = v; return this; }
+        public CreateNetgroup environment(String v) { environment = v; return this; }
+        /** Seconds unused (600..=2592000) before the netgroup is deleted; unset, never. */
+        public CreateNetgroup ttlSecs(long v) { ttlSecs = v; return this; }
+    }
+
+    /** A workspace made in a netgroup: a bare name, and the size for the job. */
+    public static final class CreateMember {
+        private String workspace, image;
+        private Long ttlSecs, cpu, memoryGb;
+        private List<String> packages;
+        private Map<String, String> env;
+
+        public CreateMember workspace(String v) { workspace = v; return this; }
+        public CreateMember image(String v) { image = v; return this; }
+        /** nixpkgs attributes, optionally pinned ({@code attr@version}). */
+        public CreateMember packages(String... v) { packages = Arrays.asList(v); return this; }
+        /** Seconds unused (600..=2592000) before the workspace is deleted; unset, never. */
+        public CreateMember ttlSecs(long v) { ttlSecs = v; return this; }
+        /** Variable name to a literal value or a {@code "${{ secrets.NAME }}"} reference. */
+        public CreateMember env(Map<String, String> v) { env = v; return this; }
+        /** Cores, 1..=8. */
+        public CreateMember cpu(long v) { cpu = v; return this; }
+        /** GB of memory, 1..=32. */
+        public CreateMember memoryGb(long v) { memoryGb = v; return this; }
     }
 
     /** {@code ports} keeps the map's own iteration order on the wire — use a LinkedHashMap to fix it. */
     public static final class InterceptService {
-        private String desk, service, workspace;
+        private String netgroup, service, workspace;
         private Map<Integer, Integer> ports;
 
-        public InterceptService desk(String v) { desk = v; return this; }
+        public InterceptService netgroup(String v) { netgroup = v; return this; }
         public InterceptService service(String v) { service = v; return this; }
         public InterceptService workspace(String v) { workspace = v; return this; }
         public InterceptService ports(Map<Integer, Integer> v) { ports = v; return this; }
     }
 
     public static final class ReleaseService {
-        private String desk, service;
+        private String netgroup, service;
 
-        public ReleaseService desk(String v) { desk = v; return this; }
+        public ReleaseService netgroup(String v) { netgroup = v; return this; }
         public ReleaseService service(String v) { service = v; return this; }
     }
 
@@ -2295,7 +2328,7 @@ public class Kloudlite {
     }
 
     /**
-     * A workspace, environment or desk path: "team/name" travels as segment {@code name} plus
+     * A workspace, environment or netgroup path: "team/name" travels as segment {@code name} plus
      * {@code ?owner=team}, which the server's {@code Named} extractor folds back together.
      */
     static String at(String prefix, String ident, String tail) {

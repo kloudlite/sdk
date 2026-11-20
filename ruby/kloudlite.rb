@@ -14,7 +14,7 @@
 # "no Kloudlite login: pass token=, set KLOUDLITE_TOKEN, or run kloudlite login".
 #
 # Every public method takes KEYWORD arguments, so no caller has to remember an order; a
-# resource is always the keyword named after it (workspace:, environment:, desk:,
+# resource is always the keyword named after it (workspace:, environment:, netgroup:,
 # volume:, snapshot:, capsule:, run:), and a new object made from an existing one is to:.
 
 raise LoadError, "kloudlite.rb needs Ruby 3.0 or later, found #{RUBY_VERSION}" if RUBY_VERSION < "3.0"
@@ -60,7 +60,7 @@ module Kloudlite
   module Names
     private
 
-    # "name" → [nil, name]; "team/name" → [team, name]. Workspaces, environments and desks
+    # "name" → [nil, name]; "team/name" → [team, name]. Workspaces, environments and netgroups
     # send the pair as path segment +name+ plus ?owner=team, which the server folds back.
     def owned(s)
       s = s.to_s
@@ -84,7 +84,7 @@ module Kloudlite
   end
 
   class Client
-    attr_reader :workspaces, :environments, :desks, :volumes,
+    attr_reader :workspaces, :environments, :netgroups, :volumes,
                 :secrets, :connectors, :capsules, :pipelines
 
     def initialize(base_url: nil, token: nil, timeout: 30)
@@ -103,7 +103,7 @@ module Kloudlite
       @timeout = timeout
       @workspaces = Workspaces.new(self)
       @environments = Environments.new(self)
-      @desks = Desks.new(self)
+      @netgroups = Netgroups.new(self)
       @volumes = Volumes.new(self)
       @secrets = Secrets.new(self)
       @connectors = Connectors.new(self)
@@ -514,96 +514,111 @@ module Kloudlite
     end
   end
 
-  # Working desks, over /v1/desks: some of YOUR workspaces in one team, connected to one
-  # environment. Many people's desks connect to the same environment and collaborate through
-  # it; an intercept a desk takes is environment-wide, and the desk owns it — only it can
-  # release it, and removing the workspace or deleting the desk releases it.
+  # Netgroups, over /v1/netgroups: some of YOUR workspaces in one team, joined to one
+  # environment, with one idle clock. Many people's netgroups connect to the same environment
+  # and collaborate through it; an intercept a netgroup takes is environment-wide, and the
+  # netgroup owns it — only it can release it, and a member leaving or the netgroup ending
+  # releases it.
   #
-  # A desk is named like an environment — "name" (personal) or "team/name" — or by its id
-  # ("desk-…"); a workspace by its id, name or "team/name", sent verbatim.
-  class Desks
+  # A netgroup is named like an environment — "name" (personal) or "team/name" — or by its id;
+  # a workspace by its id, name or "team/name", sent verbatim.
+  class Netgroups
     include Names
 
     def initialize(client)
       @c = client
     end
 
-    # +environment+, when given, must be the desk's team's: an id, a name or "team/name";
-    # without one the desk connects to nothing until +connect+. +ttl_secs+ (600..=2592000)
-    # deletes the desk after that long unused.
-    def create(desk:, environment: nil, ttl_secs: nil)
-      team, name = owned(desk)
-      @c.request("POST", "/v1/desks", body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs })
+    # +environment+, when given, must be the netgroup's team's: an id, a name or "team/name";
+    # without one it connects to nothing until +connect+. +ttl_secs+ (600..=2592000) deletes it
+    # after that long unused.
+    def create(netgroup:, environment: nil, ttl_secs: nil)
+      team, name = owned(netgroup)
+      @c.request("POST", "/v1/netgroups",
+                 body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs }.compact)
     end
 
-    # Seconds unused before the desk is deleted (600..=2592000); nil clears it.
-    def set_ttl(desk:, ttl_secs:)
-      at("PUT", desk, "/ttl", body: { ttl_secs: ttl_secs })
+    # Seconds unused before the netgroup is deleted (600..=2592000); nil clears it.
+    def set_ttl(netgroup:, ttl_secs:)
+      at("PUT", netgroup, "/ttl", body: { ttl_secs: ttl_secs })
     end
 
     def list(team: nil)
-      @c.request("GET", "/v1/desks", query: { team: team })
+      @c.request("GET", "/v1/netgroups", query: { team: team })
     end
 
-    # The desk with its +workspaces+ and the +intercepts+ it holds.
-    def get(desk:)
-      at("GET", desk)
+    # The netgroup with its +workspaces+ and the +intercepts+ it holds.
+    def get(netgroup:)
+      at("GET", netgroup)
     end
 
-    # Releases its intercepts and lets its workspaces go — never deletes a workspace.
-    def delete(desk:)
-      at("DELETE", desk)
+    # Releases its intercepts, deletes the workspaces made in it and lets the joined ones go.
+    def delete(netgroup:)
+      at("DELETE", netgroup)
     end
 
-    # Sets, switches or (nil) clears the desk's environment. Its intercepts in the old
-    # environment are released first; deleting an environment disconnects its desks the same way.
-    def connect(desk:, environment:)
-      at("PUT", desk, "/environment", body: { environment: environment })
+    # Sets, switches or (nil) clears the netgroup's environment. Its intercepts in the old
+    # environment are released first.
+    def connect(netgroup:, environment:)
+      at("PUT", netgroup, "/environment", body: { environment: environment })
     end
 
-    # Stop the desk and every workspace in it (202, {"stopped" => [ids]}); capsules and the
-    # environment are untouched.
-    def stop(desk:)
-      at("POST", desk, "/stop")
+    # Stop every workspace in the netgroup (202, {"stopped" => [ids]}).
+    def stop(netgroup:)
+      at("POST", netgroup, "/stop")
     end
 
-    # Create a workspace +workspace+ (a bare name) managed by the desk, in its team (201). The
-    # desk controls it from then on; it takes the inputs of Workspaces#create.
-    def create_workspace(desk:, workspace:, quota_gb:, image: nil, packages: nil, ttl_secs: nil, env: nil)
-      at("POST", desk, "/workspaces",
-         body: { name: workspace, quota_gb: quota_gb, image: image, packages: packages,
-                 ttl_secs: ttl_secs, env: env }.compact)
+    # Start the netgroup's environment and every workspace in it.
+    def start(netgroup:)
+      at("POST", netgroup, "/start")
     end
 
-    # Delete a workspace the desk manages, releasing its intercepts first (204); snapshots stay.
-    def delete_workspace(desk:, workspace:)
-      at("DELETE", desk, "/workspaces/#{seg(workspace)}")
+    # Create a workspace +workspace+ (a bare name) in the netgroup, in its team (201); it is
+    # deleted with the netgroup. +cpu+ (1..=8) and +memory_gb+ (1..=32) size it.
+    def create_workspace(netgroup:, workspace:, image: nil, packages: nil, ttl_secs: nil, env: nil, cpu: nil, memory_gb: nil)
+      at("POST", netgroup, "/workspaces",
+         body: { name: workspace, image: image, packages: packages, ttl_secs: ttl_secs, env: env,
+                 cpu: cpu, memory_gb: memory_gb }.compact)
     end
 
-    # Create a capsule managed by the desk (202), in its team and reaching its environment.
-    # Same inputs as Capsules#create (+team+ must be the desk's).
-    def create_capsule(desk:, cmd:, **options)
-      Capsule.new(@c, at("POST", desk, "/capsules", body: Capsules.body(cmd: cmd, **options)))
+    # A standalone workspace of yours (a device one too) joins: it follows the netgroup's idle
+    # clock and reaches its environment.
+    def join(netgroup:, workspace:)
+      at("POST", netgroup, "/workspaces", body: { workspace: workspace })
+    end
+
+    # The workspace leaves and is standalone again, its intercepts released; +delete+ deletes it
+    # instead (a capsule, or a workspace made in the netgroup).
+    def leave(netgroup:, workspace:, delete: false)
+      owner, name = owned(netgroup)
+      @c.request("DELETE", "/v1/netgroups/#{seg(name)}/workspaces/#{seg(workspace)}",
+                 query: { owner: owner, delete: delete ? "true" : nil })
+    end
+
+    # Create a capsule in the netgroup (202), in its team and reaching its environment.
+    # Same inputs as Capsules#create (+team+ must be the netgroup's).
+    def create_capsule(netgroup:, cmd:, **options)
+      Capsule.new(@c, at("POST", netgroup, "/capsules", body: Capsules.body(cmd: cmd, **options)))
     end
 
     # Send everything that calls +service+ in the environment to +workspace+ (a member), +ports+
     # mapping each service port to the workspace port that answers it ({ 8080 => 3000 }); an
     # unmapped port answers on the same number.
-    def intercept(desk:, service:, workspace:, ports: nil)
-      at("POST", desk, "/intercepts",
+    def intercept(netgroup:, service:, workspace:, ports: nil)
+      at("POST", netgroup, "/intercepts",
          body: { service: service, workspace: workspace,
                  ports: (ports || {}).map { |s, w| { service: Integer(s), workspace: Integer(w) } } })
     end
 
-    def release(desk:, service:)
-      at("DELETE", desk, "/intercepts/#{seg(service)}")
+    def release(netgroup:, service:)
+      at("DELETE", netgroup, "/intercepts/#{seg(service)}")
     end
 
     private
 
-    def at(method, desk, tail = "", body: nil)
-      owner, name = owned(desk)
-      @c.request(method, "/v1/desks/#{seg(name)}#{tail}", body: body, query: { owner: owner })
+    def at(method, netgroup, tail = "", body: nil)
+      owner, name = owned(netgroup)
+      @c.request(method, "/v1/netgroups/#{seg(name)}#{tail}", body: body, query: { owner: owner })
     end
   end
 
@@ -757,7 +772,7 @@ module Kloudlite
     include Names
 
     # The POST /v1/capsules body; refuses a missing +cmd+ before anything is sent. Shared with
-    # Desks#create_capsule — not public surface.
+    # Netgroups#create_capsule — not public surface.
     def self.body(cmd:, image: nil, packages: nil, from_workspace: nil, from_snapshot: nil, team: nil,
                   tty: nil, stdin: nil, timeout_s: nil, network: nil, env: nil, cpu: nil,
                   memory_gb: nil, disk_gb: nil)
@@ -778,8 +793,8 @@ module Kloudlite
     # is the program then its arguments. +tty+ runs it on a pty; +stdin+ keeps input open for
     # attach. +timeout_s+ is 10..=86400. +from_workspace+ is an id, "name" or "team/name";
     # +from_snapshot+ a volume name, "name@N" or snapshot id (exclusive with it). +network+ is
-    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A desk's capsule is made with
-    # Desks#create_capsule. Unset keywords are omitted, so the server's defaults apply.
+    # "internet" or "none"; +cpu+ 1..=8, +memory_gb+ 1..=32. A netgroup's capsule is made with
+    # Netgroups#create_capsule. Unset keywords are omitted, so the server's defaults apply.
     def create(cmd:, **options)
       Capsule.new(@c, @c.request("POST", "/v1/capsules", body: Capsules.body(cmd: cmd, **options)))
     end
