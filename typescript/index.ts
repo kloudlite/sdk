@@ -193,16 +193,16 @@ export interface TakeSnapshot {
   /** Up to 8 words on the volume, for finding it; replaces the stored set. */
   labels?: string[];
   /**
-   * Create this branch at the new storage commit, or move it there, and check it out. Absent, the
-   * checked-out branch fast-forwards; the answer carries `branch`, and `detached` when it had moved.
+   * Put this tag on the new snapshot, moving it from wherever it was. Absent, the snapshot is
+   * untagged (a volume's first is tagged `base`); the answer carries `tag`.
    */
-  branch?: string;
+  tag?: string;
   ttlSecs?: number;
   never?: boolean;
 }
 
-function snapshotBody({ message, volume, description, labels, branch, ttlSecs, never }: TakeSnapshot) {
-  return { message, volume, description, labels, branch, ttl_secs: ttlSecs, never };
+function snapshotBody({ message, volume, description, labels, tag, ttlSecs, never }: TakeSnapshot) {
+  return { message, volume, description, labels, tag, ttl_secs: ttlSecs, never };
 }
 
 export interface CloneWorkspace extends WorkspaceRef {
@@ -213,8 +213,8 @@ export interface CloneWorkspace extends WorkspaceRef {
 
 export interface RestoreWorkspace {
   /**
-   * The PUSHED snapshot to graft onto: a volume name (its `base` branch, else its newest storage
-   * commit), `name@N`, `name@<branch>` or a snapshot id.
+   * The PUSHED snapshot to graft onto: a volume name (its snapshot tagged `base`, else its
+   * newest), `name@N`, `name@<tag>` or a snapshot id.
    */
   snapshot: string;
   /** The new workspace's name; `"team/name"` also names the team. */
@@ -290,7 +290,7 @@ export class Workspaces {
   /**
    * Push a SNAPSHOT of the working copy — the one durable, restorable state (202). `volume` names
    * the volume and is required on its first push; `ttlSecs` (3600..=31536000) or `never: true`
-   * set its expiry; `description`, `labels` and `branch` as in {@link TakeSnapshot}.
+   * set its expiry; `description`, `labels` and `tag` as in {@link TakeSnapshot}.
    */
   takeSnapshot({ workspace, ...o }: TakeSnapshot & WorkspaceRef) {
     return this.at("POST", workspace, "/snapshots", snapshotBody(o));
@@ -614,7 +614,7 @@ export class Environments {
 
   /**
    * Push a SNAPSHOT of every service's data and the service list (202). `volume` names the
-   * volume and is required on its first push; `description`, `labels` and `branch` as in
+   * volume and is required on its first push; `description`, `labels` and `tag` as in
    * {@link TakeSnapshot}.
    */
   takeSnapshot({ environment, ...o }: TakeSnapshot & EnvironmentRef) {
@@ -862,7 +862,7 @@ export class Volumes {
 
   /**
    * One named volume; `owner` is your handle or a team slug. It carries `description`, `labels`
-   * and `branches` (each branch with the storage commit number it points at).
+   * and `tags` (each tag with the number of the snapshot it is on).
    */
   get({ owner, name }: { owner: string; name: string }) {
     return this.c.request("GET", named(owner, name));
@@ -877,19 +877,19 @@ export class Volumes {
   }
 
   /**
-   * Create `branch` on a storage commit, or move it there (like `git branch -f`): give `version`
-   * (the commit number) or `snapshot` (a snapshot id), not both. Answers the volume.
+   * Put `tag` on a snapshot, or move it there: give `version` (the snapshot number) or `snapshot`
+   * (a snapshot id), not both. Answers the volume.
    */
-  setBranch({ owner, name, branch, version, snapshot }: { owner: string; name: string; branch: string; version?: number; snapshot?: string }) {
-    return this.c.request("PUT", named(owner, name, `/branches/${seg(branch)}`), { version, snapshot });
+  setTag({ owner, name, tag, version, snapshot }: { owner: string; name: string; tag: string; version?: number; snapshot?: string }) {
+    return this.c.request("PUT", named(owner, name, `/tags/${seg(tag)}`), { version, snapshot });
   }
 
-  /** Remove a branch (204); its storage commit stays. */
-  deleteBranch({ owner, name, branch }: { owner: string; name: string; branch: string }) {
-    return this.c.request("DELETE", named(owner, name, `/branches/${seg(branch)}`));
+  /** Remove a tag (204); its snapshot stays. */
+  deleteTag({ owner, name, tag }: { owner: string; name: string; tag: string }) {
+    return this.c.request("DELETE", named(owner, name, `/tags/${seg(tag)}`));
   }
 
-  /** The storage commits of a named volume, newest first; each row carries the `branches` on it. */
+  /** The storage commits of a named volume, newest first; each row carries the `tags` on it. */
   versions({ owner, name }: { owner: string; name: string }) {
     return this.c.request("GET", named(owner, name, "/versions"));
   }
@@ -899,7 +899,7 @@ export class Volumes {
     return this.c.request("DELETE", named(owner, name));
   }
 
-  /** Delete storage commit `n` (204); deleting the last one deletes the volume. A branch's commit is a 409. */
+  /** Delete storage commit `n` (204); deleting the last one deletes the volume. A tagged snapshot is a 409. */
   deleteVersion({ owner, name, n }: { owner: string; name: string; n: number }) {
     return this.c.request("DELETE", named(owner, name, `/versions/${Math.trunc(n)}`));
   }

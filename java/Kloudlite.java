@@ -304,12 +304,12 @@ public class Kloudlite {
         /**
          * Push a SNAPSHOT of the working copy — the one durable, restorable state, a storage
          * commit of the volume (202). {@code volume} names the volume and is required on its first
-         * push; {@code description}, {@code labels} and {@code branch} are as in
+         * push; {@code description}, {@code labels} and {@code tag} are as in
          * {@link TakeWorkspaceSnapshot}.
          */
         public String takeSnapshot(TakeWorkspaceSnapshot p) throws IOException, InterruptedException {
             return api("POST", path(need(p.workspace, "workspace"), "/snapshots"), snapshotBody(
-                p.message, p.volume, p.description, p.labels, p.branch, p.ttlSecs, p.never));
+                p.message, p.volume, p.description, p.labels, p.tag, p.ttlSecs, p.never));
         }
 
         /** The old name of {@link #takeSnapshot}. */
@@ -328,8 +328,8 @@ public class Kloudlite {
 
         /**
          * A new workspace {@code to} grafted onto a PUSHED snapshot (a volume name — its
-         * {@code base} branch, else its newest storage commit — {@code name@N},
-         * {@code name@<branch>} or a snapshot id) — also one whose workspace is long gone. {@code team} (or
+         * snapshot tagged {@code base}, else its newest — {@code name@N},
+         * {@code name@<tag>} or a snapshot id) — also one whose workspace is long gone. {@code team} (or
          * {@code to} as "team/name") is required for a team's volume. Unset overrides mean
          * "whatever the snapshot froze".
          */
@@ -405,13 +405,12 @@ public class Kloudlite {
     /**
      * {@link Workspaces#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set
      * the expiry. {@code description} and {@code labels} describe the volume (a given one replaces
-     * the stored one). {@code branch} creates that branch at the new storage commit or moves it
-     * there, and the workspace then has it checked out; unset, the checked-out branch
-     * fast-forwards, and the answer carries {@code branch} and, when the branch had moved
-     * meanwhile, {@code detached}.
+     * the stored one). {@code tag} puts that tag on the new snapshot, moving it from
+     * wherever it was; unset, the snapshot is untagged (a volume's first is tagged {@code base}).
+     * The answer carries {@code tag}.
      */
     public static final class TakeWorkspaceSnapshot {
-        private String workspace, message, volume, description, branch;
+        private String workspace, message, volume, description, tag;
         private List<String> labels;
         private Long ttlSecs;
         private Boolean never;
@@ -421,7 +420,7 @@ public class Kloudlite {
         public TakeWorkspaceSnapshot volume(String v) { volume = v; return this; }
         public TakeWorkspaceSnapshot description(String v) { description = v; return this; }
         public TakeWorkspaceSnapshot labels(String... v) { labels = Arrays.asList(v); return this; }
-        public TakeWorkspaceSnapshot branch(String v) { branch = v; return this; }
+        public TakeWorkspaceSnapshot tag(String v) { tag = v; return this; }
         public TakeWorkspaceSnapshot ttlSecs(long v) { ttlSecs = v; return this; }
         public TakeWorkspaceSnapshot never(boolean v) { never = v; return this; }
     }
@@ -873,11 +872,11 @@ public class Kloudlite {
         /**
          * Push a SNAPSHOT of every service's data and the service list, a storage commit (202).
          * {@code volume} names the volume and is required on its first push; {@code description},
-         * {@code labels} and {@code branch} are as in {@link TakeWorkspaceSnapshot}.
+         * {@code labels} and {@code tag} are as in {@link TakeWorkspaceSnapshot}.
          */
         public String takeSnapshot(TakeEnvironmentSnapshot p) throws IOException, InterruptedException {
             return api("POST", path(need(p.environment, "environment"), "/snapshots"), snapshotBody(
-                p.message, p.volume, p.description, p.labels, p.branch, p.ttlSecs, p.never));
+                p.message, p.volume, p.description, p.labels, p.tag, p.ttlSecs, p.never));
         }
 
         /** The old name of {@link #takeSnapshot}. */
@@ -958,7 +957,7 @@ public class Kloudlite {
 
     /** {@link Environments#takeSnapshot}: {@code ttlSecs} (3600..=31536000) or {@code never(true)} set the expiry. */
     public static final class TakeEnvironmentSnapshot {
-        private String environment, message, volume, description, branch;
+        private String environment, message, volume, description, tag;
         private List<String> labels;
         private Long ttlSecs;
         private Boolean never;
@@ -969,7 +968,7 @@ public class Kloudlite {
         /** As in {@link TakeWorkspaceSnapshot}. */
         public TakeEnvironmentSnapshot description(String v) { description = v; return this; }
         public TakeEnvironmentSnapshot labels(String... v) { labels = Arrays.asList(v); return this; }
-        public TakeEnvironmentSnapshot branch(String v) { branch = v; return this; }
+        public TakeEnvironmentSnapshot tag(String v) { tag = v; return this; }
         public TakeEnvironmentSnapshot ttlSecs(long v) { ttlSecs = v; return this; }
         public TakeEnvironmentSnapshot never(boolean v) { never = v; return this; }
     }
@@ -1232,8 +1231,8 @@ public class Kloudlite {
 
         /**
          * One named volume; {@code owner} is your handle or a team slug. It carries
-         * {@code description}, {@code labels} and {@code branches} (each branch with the storage
-         * commit number it points at).
+         * {@code description}, {@code labels} and {@code tags} (each tag with the number of the
+         * snapshot it is on).
          */
         public String get(String owner, String name) throws IOException, InterruptedException {
             return api("GET", named(owner, name, ""), null);
@@ -1250,21 +1249,21 @@ public class Kloudlite {
         }
 
         /**
-         * Create {@code branch} on a storage commit, or move it there (like {@code git branch -f}):
-         * give {@code version} (the commit number) or {@code snapshot} (a snapshot id), not both.
+         * Put {@code tag} on a snapshot, or move it there: give {@code version} (the snapshot
+         * number) or {@code snapshot} (a snapshot id), not both.
          * Answers the volume.
          */
-        public String setBranch(SetBranch p) throws IOException, InterruptedException {
-            return api("PUT", named(p.owner, p.name, "/branches/" + seg(need(p.branch, "branch"))), new Json()
+        public String setTag(SetTag p) throws IOException, InterruptedException {
+            return api("PUT", named(p.owner, p.name, "/tags/" + seg(need(p.tag, "tag"))), new Json()
                 .num("version", p.version).str("snapshot", p.snapshot).toString());
         }
 
-        /** Remove a branch (204); its storage commit stays. */
-        public String deleteBranch(String owner, String name, String branch) throws IOException, InterruptedException {
-            return api("DELETE", named(owner, name, "/branches/" + seg(need(branch, "branch"))), null);
+        /** Remove a tag (204); its snapshot stays. */
+        public String deleteTag(String owner, String name, String tag) throws IOException, InterruptedException {
+            return api("DELETE", named(owner, name, "/tags/" + seg(need(tag, "tag"))), null);
         }
 
-        /** The storage commits of a named volume, newest first; each row carries the {@code branches} on it. */
+        /** The storage commits of a named volume, newest first; each row carries the {@code tags} on it. */
         public String versions(String owner, String name) throws IOException, InterruptedException {
             return api("GET", named(owner, name, "/versions"), null);
         }
@@ -1276,7 +1275,7 @@ public class Kloudlite {
 
         /**
          * Delete storage commit {@code n} (204); deleting the last one deletes the volume. A
-         * branch's commit is refused (409).
+         * tagged snapshot is refused (409).
          */
         public String deleteVersion(String owner, String name, int n) throws IOException, InterruptedException {
             return api("DELETE", named(owner, name, "/versions/" + n), null);
@@ -1308,16 +1307,16 @@ public class Kloudlite {
         public DescribeVolume labels(String... v) { labels = Arrays.asList(v); return this; }
     }
 
-    /** {@link Volumes#setBranch}: {@code owner}, {@code name}, {@code branch} and one of {@code version} or {@code snapshot}. */
-    public static final class SetBranch {
-        private String owner, name, branch, snapshot;
+    /** {@link Volumes#setTag}: {@code owner}, {@code name}, {@code tag} and one of {@code version} or {@code snapshot}. */
+    public static final class SetTag {
+        private String owner, name, tag, snapshot;
         private Long version;
 
-        public SetBranch owner(String v) { owner = v; return this; }
-        public SetBranch name(String v) { name = v; return this; }
-        public SetBranch branch(String v) { branch = v; return this; }
-        public SetBranch version(long v) { version = v; return this; }
-        public SetBranch snapshot(String v) { snapshot = v; return this; }
+        public SetTag owner(String v) { owner = v; return this; }
+        public SetTag name(String v) { name = v; return this; }
+        public SetTag tag(String v) { tag = v; return this; }
+        public SetTag version(long v) { version = v; return this; }
+        public SetTag snapshot(String v) { snapshot = v; return this; }
     }
 
     public static final class DeleteSnapshot {
@@ -2320,9 +2319,9 @@ public class Kloudlite {
 
     /** The body of a workspace or environment push; unset fields are left out. */
     static String snapshotBody(String message, String volume, String description, List<String> labels,
-                               String branch, Long ttlSecs, Boolean never) {
+                               String tag, Long ttlSecs, Boolean never) {
         return new Json().str("message", message).str("volume", volume).str("description", description)
-            .raw("labels", labels == null ? null : strings(labels)).str("branch", branch)
+            .raw("labels", labels == null ? null : strings(labels)).str("tag", tag)
             .num("ttl_secs", ttlSecs).bool("never", never).toString();
     }
 

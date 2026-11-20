@@ -254,18 +254,17 @@ type CreateWorkspace struct {
 // TakeWorkspaceSnapshot pushes a snapshot, which is a storage commit of the
 // volume. Volume names the volume and is required on its first push; TtlSecs
 // (3600..=31536000) or Never set its expiry. Description and Labels describe
-// the volume (a given field replaces the stored one). Branch creates that
-// branch at the new commit or moves it there, and the workspace then has it
-// checked out; without it the checked-out branch fast-forwards, and the answer
-// carries branch and, when the branch moved meanwhile, detached. Zero fields
-// are left out.
+// the volume (a given field replaces the stored one). Tag puts that tag
+// on the new snapshot, moving it from wherever it was; without it the snapshot
+// is untagged (a volume's first is tagged base). The answer carries tag. Zero
+// fields are left out.
 type TakeWorkspaceSnapshot struct {
 	Workspace   string
 	Message     string
 	Volume      string
 	Description string
 	Labels      []string
-	Branch      string
+	Tag         string
 	TtlSecs     int64
 	Never       bool
 }
@@ -284,8 +283,8 @@ type CloneWorkspace struct {
 // whose workspace is long gone. Absent overrides mean "whatever the snapshot
 // froze".
 type RestoreWorkspace struct {
-	// Snapshot is a volume name (its base branch, else its newest storage
-	// commit), name@N, name@<branch> or a snapshot id. Team (or To as
+	// Snapshot is a volume name (its snapshot tagged base, else its newest),
+	// name@N, name@<tag> or a snapshot id. Team (or To as
 	// "team/name") is required for a team's volume.
 	Snapshot string
 	To       string
@@ -394,7 +393,7 @@ func (w *Workspaces) Restart(workspace string) error {
 // restorable state (202).
 func (w *Workspaces) TakeSnapshot(req TakeWorkspaceSnapshot) (map[string]any, error) {
 	var out map[string]any
-	body := snapshotBody(snapshotFields{req.Message, req.Volume, req.Description, req.Branch, req.Labels, req.TtlSecs, req.Never})
+	body := snapshotBody(snapshotFields{req.Message, req.Volume, req.Description, req.Tag, req.Labels, req.TtlSecs, req.Never})
 	err := w.at("POST", req.Workspace, "/snapshots", body, &out)
 	return out, err
 }
@@ -404,16 +403,16 @@ func (w *Workspaces) Push(req PushWorkspace) (map[string]any, error) { return w.
 
 // snapshotFields is what the workspace and environment pushes share.
 type snapshotFields struct {
-	message, volume, description, branch string
-	labels                               []string
-	ttlSecs                              int64
-	never                                bool
+	message, volume, description, tag string
+	labels                            []string
+	ttlSecs                           int64
+	never                             bool
 }
 
 // snapshotBody is the body of a snapshot push; unset fields are left out.
 func snapshotBody(f snapshotFields) any {
 	body := map[string]any{}
-	for k, v := range map[string]string{"message": f.message, "volume": f.volume, "description": f.description, "branch": f.branch} {
+	for k, v := range map[string]string{"message": f.message, "volume": f.volume, "description": f.description, "tag": f.tag} {
 		if v != "" {
 			body[k] = v
 		}
@@ -880,7 +879,7 @@ type SetServices struct {
 }
 
 // TakeEnvironmentSnapshot pushes a snapshot (a storage commit); Volume names
-// the volume and is required on its first push. Description, Labels and Branch
+// the volume and is required on its first push. Description, Labels and Tag
 // are as in TakeWorkspaceSnapshot. Zero fields are left out.
 type TakeEnvironmentSnapshot struct {
 	Environment string
@@ -888,7 +887,7 @@ type TakeEnvironmentSnapshot struct {
 	Volume      string
 	Description string
 	Labels      []string
-	Branch      string
+	Tag         string
 	TtlSecs     int64
 	Never       bool
 }
@@ -988,7 +987,7 @@ func (e *Environments) Delete(environment string) error {
 // restorable state (202).
 func (e *Environments) TakeSnapshot(req TakeEnvironmentSnapshot) (map[string]any, error) {
 	var out map[string]any
-	body := snapshotBody(snapshotFields{req.Message, req.Volume, req.Description, req.Branch, req.Labels, req.TtlSecs, req.Never})
+	body := snapshotBody(snapshotFields{req.Message, req.Volume, req.Description, req.Tag, req.Labels, req.TtlSecs, req.Never})
 	err := e.at("POST", req.Environment, "/snapshots", body, &out)
 	return out, err
 }
@@ -1285,22 +1284,21 @@ type DescribeVolume struct {
 	Labels      []string
 }
 
-// SetBranch creates Branch on a storage commit of the volume, or moves it
-// there (like git branch -f): give Version (the commit number) or Snapshot
-// (a snapshot id), not both.
-type SetBranch struct {
+// SetTag puts Tag on a snapshot of the volume, or moves it there: give Version
+// (the snapshot number) or Snapshot (a snapshot id), not both.
+type SetTag struct {
 	Owner    string
 	Name     string
-	Branch   string
+	Tag      string
 	Version  int
 	Snapshot string
 }
 
-// DeleteBranch removes Branch from the volume; its storage commit stays.
-type DeleteBranch struct {
-	Owner  string
-	Name   string
-	Branch string
+// DeleteTag removes Tag from the volume; its snapshot stays.
+type DeleteTag struct {
+	Owner string
+	Name  string
+	Tag   string
 }
 
 // DeleteSnapshot is refused (409) for a sync point or a running worktree's
@@ -1355,8 +1353,8 @@ func named(owner, name, tail string) string {
 }
 
 // Get answers one named volume; owner is your handle or a team slug. It
-// carries description, labels and branches (each branch with the storage
-// commit number it points at).
+// carries description, labels and tags (each tag with the number of the
+// snapshot it is on).
 func (v *Volumes) Get(owner, name string) (map[string]any, error) {
 	var out map[string]any
 	err := v.c.call("GET", named(owner, name, ""), nil, nil, &out)
@@ -1378,8 +1376,8 @@ func (v *Volumes) Describe(req DescribeVolume) (map[string]any, error) {
 	return out, err
 }
 
-// SetBranch creates or moves a branch; it answers the volume.
-func (v *Volumes) SetBranch(req SetBranch) (map[string]any, error) {
+// SetTag puts or moves a tag; it answers the volume.
+func (v *Volumes) SetTag(req SetTag) (map[string]any, error) {
 	body := map[string]any{}
 	if req.Version != 0 {
 		body["version"] = req.Version
@@ -1388,17 +1386,17 @@ func (v *Volumes) SetBranch(req SetBranch) (map[string]any, error) {
 		body["snapshot"] = req.Snapshot
 	}
 	var out map[string]any
-	err := v.c.call("PUT", named(req.Owner, req.Name, "/branches/"+seg(req.Branch)), nil, body, &out)
+	err := v.c.call("PUT", named(req.Owner, req.Name, "/tags/"+seg(req.Tag)), nil, body, &out)
 	return out, err
 }
 
-// DeleteBranch removes a branch (204).
-func (v *Volumes) DeleteBranch(req DeleteBranch) error {
-	return v.c.call("DELETE", named(req.Owner, req.Name, "/branches/"+seg(req.Branch)), nil, nil, nil)
+// DeleteTag removes a tag (204).
+func (v *Volumes) DeleteTag(req DeleteTag) error {
+	return v.c.call("DELETE", named(req.Owner, req.Name, "/tags/"+seg(req.Tag)), nil, nil, nil)
 }
 
 // Versions answers the storage commits of a named volume, newest first; each
-// row carries branches, the branches pointing at it.
+// row carries tags, the tags on it.
 func (v *Volumes) Versions(owner, name string) ([]map[string]any, error) {
 	var out []map[string]any
 	err := v.c.call("GET", named(owner, name, "/versions"), nil, nil, &out)
@@ -1412,7 +1410,7 @@ func (v *Volumes) Delete(owner, name string) error {
 }
 
 // DeleteVersion deletes storage commit n (204); deleting the last one deletes
-// the volume. A commit a branch points at is refused (409).
+// the volume. A tagged snapshot is refused (409).
 func (v *Volumes) DeleteVersion(owner, name string, n int) error {
 	return v.c.call("DELETE", named(owner, name, fmt.Sprintf("/versions/%d", n)), nil, nil, nil)
 }

@@ -70,22 +70,21 @@ Kloudlite kl = new Kloudlite(new Kloudlite.Options().baseUrl("https://dev.kloudl
 String workspaces = kl.workspaces().list(null);
 ```
 
-## Storage commits and branches
+## Snapshots and tags
 
 A snapshot push is a storage commit of the workspace's or environment's volume;
-its number is the commit's version (`v4`). A branch names a commit and moves
-like a git branch: a push with `branch` creates or moves that branch and checks
-it out, a push without one fast-forwards the branch the workspace was made from
-(the answer carries `branch`, and `detached` when the branch had moved). A
-reference is `name` (its `base` branch, else its newest commit), `name@N`,
-`name@<branch>` or a snapshot id. Each client also describes a volume
-(description and labels), lists volumes by label, and sets, moves or deletes a
-branch.
+its number is the snapshot's version (`v4`). A tag names one snapshot and moves
+only when asked: a push with `tag` puts that tag on the new snapshot, moving it
+from wherever it was, and a push without one is untagged (the answer carries
+`tag`). A reference is `name` (its snapshot tagged `base`, else its newest),
+`name@N`, `name@<tag>` or a snapshot id. Each client also describes a volume
+(description and labels), lists volumes by label, and puts, moves or removes a
+tag.
 
 ```go
-kl.Workspaces.TakeSnapshot(kloudlite.TakeWorkspaceSnapshot{Workspace: "api", Branch: "wip-auth", Labels: []string{"auth"}})
-kl.Volumes.SetBranch(kloudlite.SetBranch{Owner: "acme", Name: "api-home", Branch: "base", Version: 4})
-kl.Volumes.DeleteBranch(kloudlite.DeleteBranch{Owner: "acme", Name: "api-home", Branch: "wip-auth"})
+kl.Workspaces.TakeSnapshot(kloudlite.TakeWorkspaceSnapshot{Workspace: "api", Tag: "wip-auth", Labels: []string{"auth"}})
+kl.Volumes.SetTag(kloudlite.SetTag{Owner: "acme", Name: "api-home", Tag: "base", Version: 4})
+kl.Volumes.DeleteTag(kloudlite.DeleteTag{Owner: "acme", Name: "api-home", Tag: "wip-auth"})
 ```
 
 ## License
