@@ -853,7 +853,7 @@ export class Connectors {
 }
 
 /**
- * The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
+ * The btrfs volumes behind workspaces and environments: their snapshots, restore targets, and
  * the two deletes — over `/v1/volumes`.
  */
 export class Volumes {
@@ -864,13 +864,9 @@ export class Volumes {
     return this.c.request<unknown[]>("GET", "/v1/volumes", undefined, { kind, owner, label });
   }
 
-  /** The chain of PUSHED snapshots, newest first — each row a restore target. */
-  history({ volume }: VolumeRef) {
-    return this.c.request("GET", `/v1/volumes/${seg(volume)}/history`);
-  }
-
-  refs({ volume }: VolumeRef) {
-    return this.c.request("GET", `/v1/volumes/${seg(volume)}/refs`);
+  /** A volume by its id, named or not: its disks and its snapshots, newest first. */
+  getById({ volume }: VolumeRef) {
+    return this.c.request("GET", `/v1/volumes/${seg(volume)}`);
   }
 
   /**

@@ -1313,7 +1313,7 @@ func (s *Netgroups) at(method, netgroup, tail string, body, out any) error {
 }
 
 // Volumes is the btrfs volumes behind workspaces and environments: snapshot
-// history, restore targets, and the two deletes — over /v1/volumes.
+// snapshots, restore targets, and the two deletes — over /v1/volumes.
 type Volumes struct{ c *Client }
 
 // ListVolumes filters by Kind ("workspace" or "environment"), Owner (a
@@ -1375,17 +1375,11 @@ func (v *Volumes) List(req ListVolumes) ([]map[string]any, error) {
 	return out, err
 }
 
-// History answers the chain of PUSHED snapshots, newest first — each row a
-// restore target.
-func (v *Volumes) History(volume string) ([]map[string]any, error) {
-	var out []map[string]any
-	err := v.c.call("GET", "/v1/volumes/"+seg(volume)+"/history", nil, nil, &out)
-	return out, err
-}
-
-func (v *Volumes) Refs(volume string) (map[string]any, error) {
+// GetByID answers a volume by its id, named or not: its disks and its
+// snapshots, newest first.
+func (v *Volumes) GetByID(volume string) (map[string]any, error) {
 	var out map[string]any
-	err := v.c.call("GET", "/v1/volumes/"+seg(volume)+"/refs", nil, nil, &out)
+	err := v.c.call("GET", "/v1/volumes/"+seg(volume), nil, nil, &out)
 	return out, err
 }
 

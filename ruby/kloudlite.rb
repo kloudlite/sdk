@@ -677,7 +677,7 @@ module Kloudlite
     end
   end
 
-  # The btrfs volumes behind workspaces and environments: snapshot history, restore targets, and
+  # The btrfs volumes behind workspaces and environments: their snapshots, restore targets, and
   # the deletes — over /v1/volumes.
   class Volumes
     include Names
@@ -692,13 +692,9 @@ module Kloudlite
       @c.request("GET", "/v1/volumes", query: { kind: kind, owner: owner, label: label })
     end
 
-    # The chain of PUSHED snapshots, newest first — each row a restore target.
-    def history(volume:)
-      @c.request("GET", "/v1/volumes/#{seg(volume)}/history")
-    end
-
-    def refs(volume:)
-      @c.request("GET", "/v1/volumes/#{seg(volume)}/refs")
+    # A volume by its id, named or not: its disks and its snapshots, newest first.
+    def get_by_id(volume:)
+      @c.request("GET", "/v1/volumes/#{seg(volume)}")
     end
 
     # Refused (409) for a sync point or a running worktree's base; deleting a detached volume's

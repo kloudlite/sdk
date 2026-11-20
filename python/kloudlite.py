@@ -608,7 +608,7 @@ class Connectors:
 
 
 class Volumes:
-    """The btrfs volumes behind workspaces and environments: snapshot history, restore targets,
+    """The btrfs volumes behind workspaces and environments: their snapshots, restore targets,
     and the two deletes — over ``/v1/volumes``."""
 
     def __init__(self, client: Kloudlite):
@@ -620,12 +620,9 @@ class Volumes:
         return self._c.request("GET", "/v1/volumes",
                                query={"kind": kind, "owner": owner, "label": label})
 
-    def history(self, *, volume: str):
-        """The chain of PUSHED snapshots, newest first — each row a restore target."""
-        return self._c.request("GET", f"/v1/volumes/{_seg(volume)}/history")
-
-    def refs(self, *, volume: str):
-        return self._c.request("GET", f"/v1/volumes/{_seg(volume)}/refs")
+    def get_by_id(self, *, volume: str):
+        """A volume by its id, named or not: its disks and its snapshots, newest first."""
+        return self._c.request("GET", f"/v1/volumes/{_seg(volume)}")
 
     def delete_snapshot(self, *, volume: str, snapshot: str):
         """Refused (409) for a sync point or a running worktree's base; deleting a detached

@@ -1227,7 +1227,7 @@ public class Kloudlite {
     }
 
     /**
-     * The btrfs volumes behind workspaces and environments: snapshot history, restore targets,
+     * The btrfs volumes behind workspaces and environments: their snapshots, restore targets,
      * and the deletes — over {@code /v1/volumes}.
      */
     public class Volumes {
@@ -1239,13 +1239,9 @@ public class Kloudlite {
             return api("GET", "/v1/volumes" + query("kind", p.kind, "owner", p.owner, "label", p.label), null);
         }
 
-        /** The chain of PUSHED snapshots, newest first — each row a restore target. */
-        public String history(String volume) throws IOException, InterruptedException {
-            return api("GET", "/v1/volumes/" + seg(volume) + "/history", null);
-        }
-
-        public String refs(String volume) throws IOException, InterruptedException {
-            return api("GET", "/v1/volumes/" + seg(volume) + "/refs", null);
+        /** A volume by its id, named or not: its disks and its snapshots, newest first. */
+        public String getById(String volume) throws IOException, InterruptedException {
+            return api("GET", "/v1/volumes/" + seg(volume), null);
         }
 
         /**
