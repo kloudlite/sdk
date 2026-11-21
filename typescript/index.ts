@@ -707,10 +707,16 @@ export class Netgroups {
 
   /** `environment`, when given, must be the netgroup's team's: an id, a name or `"team/name"`;
    * without one it connects to nothing until `connect`. `ttlSecs` (600..=2592000) deletes it
-   * after that long unused. */
-  create({ netgroup, environment, ttlSecs }: NetgroupRef & { environment?: string; ttlSecs?: number }) {
+   * after that long unused; `idleSecs` (60..=1800) idle-stops its members after that long unused,
+   * in place of the region's window. */
+  create({ netgroup, environment, ttlSecs, idleSecs }: NetgroupRef & { environment?: string; ttlSecs?: number; idleSecs?: number }) {
     const [team, name] = owned(netgroup);
-    return this.c.request("POST", "/v1/netgroups", { name, team, environment, ttl_secs: ttlSecs });
+    return this.c.request("POST", "/v1/netgroups", { name, team, environment, ttl_secs: ttlSecs, idle_secs: idleSecs });
+  }
+
+  /** Seconds unused before its members idle-stop (60..=1800); `null` follows the region's window again. */
+  setIdle({ netgroup, secs }: NetgroupRef & { secs: number | null }) {
+    return this.at("PUT", netgroup, "/idle", { idle_secs: secs });
   }
 
   /** Seconds unused before the netgroup is deleted (600..=2592000); `null` clears it. */

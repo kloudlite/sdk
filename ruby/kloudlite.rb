@@ -531,11 +531,18 @@ module Kloudlite
 
     # +environment+, when given, must be the netgroup's team's: an id, a name or "team/name";
     # without one it connects to nothing until +connect+. +ttl_secs+ (600..=2592000) deletes it
-    # after that long unused.
-    def create(netgroup:, environment: nil, ttl_secs: nil)
+    # after that long unused; +idle_secs+ (60..=1800) idle-stops its members after that long
+    # unused, in place of the region's window.
+    def create(netgroup:, environment: nil, ttl_secs: nil, idle_secs: nil)
       team, name = owned(netgroup)
       @c.request("POST", "/v1/netgroups",
-                 body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs }.compact)
+                 body: { name: name, team: team, environment: environment, ttl_secs: ttl_secs,
+                         idle_secs: idle_secs }.compact)
+    end
+
+    # Seconds unused before its members idle-stop (60..=1800); nil follows the region's window again.
+    def set_idle(netgroup:, secs:)
+      at("PUT", netgroup, "/idle", body: { idle_secs: secs })
     end
 
     # Seconds unused before the netgroup is deleted (600..=2592000); nil clears it.

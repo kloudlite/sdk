@@ -480,17 +480,25 @@ class Netgroups:
     def __init__(self, client: Kloudlite):
         self._c = client
 
-    def create(self, *, netgroup: str, environment: str | None = None, ttl_secs: int | None = None):
+    def create(self, *, netgroup: str, environment: str | None = None, ttl_secs: int | None = None,
+               idle_secs: int | None = None):
         """``environment``, when given, must be the netgroup's team's: an id, a name or
         ``"team/name"``; without one it connects to nothing until ``connect``. ``ttl_secs``
-        (600..=2592000) deletes it after that long unused."""
+        (600..=2592000) deletes it after that long unused; ``idle_secs`` (60..=1800) idle-stops
+        its members after that long unused, in place of the region's window."""
         team, name = _owned(netgroup)
         return self._c.request("POST", "/v1/netgroups", body=_drop({
-            "name": name, "team": team, "environment": environment, "ttl_secs": ttl_secs}))
+            "name": name, "team": team, "environment": environment, "ttl_secs": ttl_secs,
+            "idle_secs": idle_secs}))
 
     def set_ttl(self, *, netgroup: str, ttl_secs: int | None):
         """Seconds unused before the netgroup is deleted (600..=2592000); ``None`` clears it."""
         return self._at("PUT", netgroup, "/ttl", body={"ttl_secs": ttl_secs})
+
+    def set_idle(self, *, netgroup: str, secs: int | None):
+        """Seconds unused before its members idle-stop (60..=1800); ``None`` follows the region's
+        window again."""
+        return self._at("PUT", netgroup, "/idle", body={"idle_secs": secs})
 
     def list(self, *, team: str | None = None):
         return self._c.request("GET", "/v1/netgroups", query={"team": team})

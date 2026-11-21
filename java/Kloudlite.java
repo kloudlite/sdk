@@ -1014,7 +1014,13 @@ public class Kloudlite {
                 .str("team", on[0])
                 .str("environment", p.environment)
                 .num("ttl_secs", p.ttlSecs)
+                .num("idle_secs", p.idleSecs)
                 .toString());
+        }
+
+        /** Seconds unused before its members idle-stop (60..=1800); {@code null} follows the region's window again. */
+        public String setIdle(String netgroup, Long secs) throws IOException, InterruptedException {
+            return api("PUT", path(need(netgroup, "netgroup"), "/idle"), "{\"idle_secs\":" + secs + "}");
         }
 
         /** Seconds unused before the netgroup is deleted (600..=2592000); {@code null} clears it. */
@@ -1124,12 +1130,14 @@ public class Kloudlite {
 
     public static final class CreateNetgroup {
         private String netgroup, environment;
-        private Long ttlSecs;
+        private Long ttlSecs, idleSecs;
 
         public CreateNetgroup netgroup(String v) { netgroup = v; return this; }
         public CreateNetgroup environment(String v) { environment = v; return this; }
         /** Seconds unused (600..=2592000) before the netgroup is deleted; unset, never. */
         public CreateNetgroup ttlSecs(long v) { ttlSecs = v; return this; }
+        /** Seconds unused (60..=1800) before its members idle-stop, in place of the region's window; unset follows the region's. */
+        public CreateNetgroup idleSecs(long v) { idleSecs = v; return this; }
     }
 
     /** A workspace made in a netgroup: a bare name, and the size for the job. */

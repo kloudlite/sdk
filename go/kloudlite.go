@@ -1112,6 +1112,10 @@ type CreateNetgroup struct {
 	// TtlSecs (600..=2592000) deletes the netgroup after that many seconds
 	// unused; 0 is never.
 	TtlSecs int64
+	// IdleSecs (60..=1800) is how long the netgroup may sit unused before its
+	// members idle-stop, in place of the region's window; 0 follows the
+	// region's.
+	IdleSecs int64
 }
 
 // CreateMember creates a workspace in Netgroup, in its team; Workspace is a
@@ -1170,6 +1174,9 @@ func (s *Netgroups) Create(req CreateNetgroup) (map[string]any, error) {
 	if req.TtlSecs != 0 {
 		body["ttl_secs"] = req.TtlSecs
 	}
+	if req.IdleSecs != 0 {
+		body["idle_secs"] = req.IdleSecs
+	}
 	if team != "" {
 		body["team"] = team
 	}
@@ -1183,6 +1190,14 @@ func (s *Netgroups) Create(req CreateNetgroup) (map[string]any, error) {
 func (s *Netgroups) SetTTL(netgroup string, ttlSecs *int64) (map[string]any, error) {
 	var out map[string]any
 	err := s.at("PUT", netgroup, "/ttl", map[string]*int64{"ttl_secs": ttlSecs}, &out)
+	return out, err
+}
+
+// SetIdle sets the seconds the netgroup may sit unused before its members
+// idle-stop (60..=1800); nil follows the region's window again.
+func (s *Netgroups) SetIdle(netgroup string, idleSecs *int64) (map[string]any, error) {
+	var out map[string]any
+	err := s.at("PUT", netgroup, "/idle", map[string]*int64{"idle_secs": idleSecs}, &out)
 	return out, err
 }
 
