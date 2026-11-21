@@ -304,11 +304,14 @@ class Ide:
     # ── commands and processes ────────────────────────────────────────────
     def exec(self, *, cmd, cwd: str | None = None, env: dict | None = None,
              timeout_ms: int | None = None, head: int | None = None, tail: int | None = None,
-             quiet: bool | None = None, detach: bool | None = None):
-        """``cmd`` is a shell string or an argv list. ``detach=True`` answers ``{id}`` and the
-        command becomes a process for the ``process_*`` calls (pass that id as ``process``)."""
+             quiet: bool | None = None, background: bool | None = None,
+             detach: bool | None = None):
+        """``cmd`` is a shell string or an argv list. ``background=True`` answers ``{id}`` and the
+        command becomes a process for the ``process_*`` calls (pass that id as ``process``).
+        ``detach`` is the old name of ``background`` and is sent as it."""
         return self.call(tool="exec", cmd=cmd, cwd=cwd, env=env, timeout_ms=timeout_ms,
-                         head=head, tail=tail, quiet=quiet, detach=detach)
+                         head=head, tail=tail, quiet=quiet,
+                         background=background if background is not None else detach)
 
     def process_list(self):
         return self.call(tool="process_list")

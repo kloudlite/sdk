@@ -588,17 +588,20 @@ type GrepFiles struct {
 	Max        int
 }
 
-// Exec runs Cmd — a shell string or an argv []string. With Detach the answer
-// is {id}, the Process for ProcessOutput/ProcessKill.
+// Exec runs Cmd — a shell string or an argv []string. With Background the answer
+// is {id}, the Process for ProcessOutput/ProcessKill. Detach is the old name of
+// Background and is sent as it.
 type Exec struct {
-	Cmd       any
-	Cwd       string
-	Env       map[string]string
-	TimeoutMs int64
-	Head      int
-	Tail      int
-	Quiet     bool
-	Detach    bool
+	Cmd        any
+	Cwd        string
+	Env        map[string]string
+	TimeoutMs  int64
+	Head       int
+	Tail       int
+	Quiet      bool
+	Background bool
+	// Deprecated: use Background.
+	Detach bool
 }
 
 // ReadProcess pages a process's output from byte offsets (0 = the start);
@@ -736,7 +739,7 @@ func (i *Ide) Grep(req GrepFiles) (any, error) {
 func (i *Ide) Exec(req Exec) (any, error) {
 	a := toolArgs{"cmd": req.Cmd}.str("cwd", req.Cwd).val("env", req.Env, req.Env != nil).
 		num("timeout_ms", req.TimeoutMs).num("head", int64(req.Head)).num("tail", int64(req.Tail)).
-		flag("quiet", req.Quiet).flag("detach", req.Detach)
+		flag("quiet", req.Quiet).flag("background", req.Background || req.Detach)
 	return i.Call("exec", a)
 }
 

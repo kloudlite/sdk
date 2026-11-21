@@ -534,11 +534,11 @@ public class Kloudlite {
             return call("exec", obj("cmd", cmd));
         }
 
-        /** {@code detach(true)} answers {@code {id}} and the command becomes a process. */
+        /** {@code background(true)} answers {@code {id}} and the command becomes a process. */
         public String exec(ExecCommand p) throws IOException, InterruptedException {
             return call("exec", new Json().raw("cmd", need(p.cmd, "cmd")).str("cwd", p.cwd)
                 .raw("env", p.env == null ? null : stringMap(p.env)).num("timeout_ms", p.timeoutMs)
-                .num("head", p.head).num("tail", p.tail).bool("quiet", p.quiet).bool("detach", p.detach)
+                .num("head", p.head).num("tail", p.tail).bool("quiet", p.quiet).bool("background", p.background != null ? p.background : p.detach)
                 .toString());
         }
 
@@ -675,7 +675,7 @@ public class Kloudlite {
         private String cmd, cwd; // cmd held as JSON: a string or an array
         private Map<String, String> env;
         private Long timeoutMs, head, tail;
-        private Boolean quiet, detach;
+        private Boolean quiet, background, detach;
 
         public ExecCommand cmd(String shell) { cmd = shell == null ? null : quote(shell); return this; }
         public ExecCommand cmd(List<String> argv) { cmd = argv == null ? null : strings(argv); return this; }
@@ -685,7 +685,9 @@ public class Kloudlite {
         public ExecCommand head(long v) { head = v; return this; }
         public ExecCommand tail(long v) { tail = v; return this; }
         public ExecCommand quiet(boolean v) { quiet = v; return this; }
-        public ExecCommand detach(boolean v) { detach = v; return this; }
+        public ExecCommand background(boolean v) { background = v; return this; }
+        /** @deprecated use {@link #background(boolean)}; sent as {@code background}. */
+        @Deprecated public ExecCommand detach(boolean v) { detach = v; return this; }
     }
 
     /** {@code since}/{@code sinceErr} are byte offsets into stdout/stderr; pass back {@code next}/{@code next_err}. */

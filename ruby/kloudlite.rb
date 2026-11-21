@@ -344,10 +344,10 @@ module Kloudlite
                          context: context, ignore_case: ignore_case, max: max)
     end
 
-    # commands and processes — detach: true answers {id}, passed back as +process+
-    def exec(cmd:, cwd: nil, env: nil, timeout_ms: nil, head: nil, tail: nil, quiet: nil, detach: nil)
+    # commands and processes — background: true (formerly detach:, still read) answers {id}, passed back as +process+
+    def exec(cmd:, cwd: nil, env: nil, timeout_ms: nil, head: nil, tail: nil, quiet: nil, background: nil, detach: nil)
       call(tool: "exec", cmd: cmd, cwd: cwd, env: env, timeout_ms: timeout_ms,
-                         head: head, tail: tail, quiet: quiet, detach: detach)
+                         head: head, tail: tail, quiet: quiet, background: background.nil? ? detach : background)
     end
 
     def process_list

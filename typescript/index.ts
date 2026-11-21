@@ -381,6 +381,8 @@ export interface Exec {
   tail?: number;
   quiet?: boolean;
   /** Answer `{id}` at once — the `process` the process_* calls take. */
+  background?: boolean;
+  /** @deprecated use `background`; sent as it. */
   detach?: boolean;
 }
 
@@ -451,9 +453,9 @@ export class Ide {
     return this.run("grep", { pattern, cwd, glob, mode, context, ignore_case: ignoreCase, max });
   }
 
-  // commands and processes — `detach: true` answers `{id}`, the `process` of the process_* calls
-  exec({ cmd, cwd, env, timeoutMs, head, tail, quiet, detach }: Exec) {
-    return this.run("exec", { cmd, cwd, env, timeout_ms: timeoutMs, head, tail, quiet, detach });
+  // commands and processes — `background: true` (formerly `detach`) answers `{id}`, the `process` of the process_* calls
+  exec({ cmd, cwd, env, timeoutMs, head, tail, quiet, background, detach }: Exec) {
+    return this.run("exec", { cmd, cwd, env, timeout_ms: timeoutMs, head, tail, quiet, background: background ?? detach });
   }
   processList() {
     return this.run("process_list");
